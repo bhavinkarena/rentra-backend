@@ -1,32 +1,44 @@
 /**
- * Refuse to start without the module loader, and say why.
+ * Make sure the module loader is active, registering it if it is not.
+ *
+ * WHY THIS EXISTS AT ALL.
  *
  * src/ is the Next.js service layer moved across intact. It still imports
  * `@/services/...`, extensionless relative paths, and five framework modules
  * — `next/headers`, `next/cache`, `next/navigation`, `react`, `server-only`
  * — that are NOT installed as packages. loader/hooks.mjs resolves the first
- * two and redirects the last five to the shims in src/runtime.
- *
- * So the loader is a requirement, not a convenience. Started without it, the
- * process dies on the first import with:
+ * two and redirects the last five to the shims in src/runtime. So the loader
+ * is a hard requirement: without it the process dies on its first import with
  *
  *     Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@/services'
  *
- * which says nothing about the actual mistake. This turns that into an
- * instruction. It exists because a platform's start command is a setting
- * someone can change, and `node src/index.js` looks like the obvious thing
- * to put there.
+ * which says nothing about the actual mistake.
  *
- * Imported for its side effect only, and it must be the FIRST import in the
- * entry module — everything after it has to be a dynamic import, or the
- * static imports resolve before this runs and the message never appears.
+ * WHY IT REGISTERS RATHER THAN JUST COMPLAINING.
+ *
+ * The loader is normally supplied by `node --import ./loader/register.mjs`,
+ * and every script in package.json passes it. But a deployment platform's
+ * start command is a setting, and `node src/index.js` is the obvious thing to
+ * put there — so the flag goes missing in exactly the environment where a
+ * crash costs the most. Rather than depend on that setting being right,
+ * this registers the hooks itself when they are absent.
+ *
+ * `register()` applies to modules imported AFTER it runs, which is why the
+ * entry modules import this one statically and everything else dynamically.
+ * A static `@/…` import in an entry file would be resolved before this code
+ * executes, and would fail no matter what this does.
+ *
+ * Registration is idempotent in effect: when the `--import` flag already
+ * supplied the hooks, the probe below succeeds and nothing further happens,
+ * so the hooks are never installed twice.
  */
+import { register } from 'node:module';
 
 /**
  * `server-only` is the cheapest probe: no such package is installed, so it
- * resolves if and only if the loader's shim table is active.
+ * resolves if and only if the loader's shim table is already active.
  */
-function loaderIsRegistered() {
+function loaderIsActive() {
   try {
     import.meta.resolve('server-only');
     return true;
@@ -35,25 +47,39 @@ function loaderIsRegistered() {
   }
 }
 
-if (!loaderIsRegistered()) {
+if (!loaderIsActive()) {
+  try {
+    register('../loader/hooks.mjs', import.meta.url);
+  } catch (error) {
+    fail(`Registering the module loader failed: ${error?.message ?? error}`);
+  }
+
+  /**
+   * Confirm it took effect. If the hooks registered but still cannot resolve
+   * a shimmed module, the loader files are missing or damaged — that is a
+   * broken deploy, not a misconfigured command, and it needs saying plainly
+   * rather than surfacing later as a confusing resolution error.
+   */
+  if (!loaderIsActive()) {
+    fail('The module loader registered but is not resolving shimmed modules.');
+  }
+}
+
+function fail(reason) {
   process.stderr.write(
     [
       '',
-      'Rentra API: refusing to start — the module loader is not registered.',
+      'Rentra API: cannot start — the module loader is unavailable.',
       '',
-      'This process was started without `--import ./loader/register.mjs`.',
+      `  ${reason}`,
+      '',
       'The service layer imports `@/…` aliases and the framework modules',
       '`next/headers`, `next/cache`, `next/navigation`, `react` and',
-      '`server-only`, none of which are installed packages — the loader in',
-      'loader/hooks.mjs is what resolves them. Without it nothing resolves.',
+      '`server-only`, none of which are installed packages. loader/hooks.mjs',
+      'is what resolves them, so nothing can load without it.',
       '',
-      'Start it with:',
-      '',
-      '    npm start                                           (the web service)',
-      '    node --import ./loader/register.mjs src/cron/index.js   (the worker)',
-      '',
-      'If a host is configured to run `node src/index.js`, change that',
-      'setting to `npm start`. See render.yaml.',
+      'Check that loader/hooks.mjs and loader/register.mjs were deployed, then',
+      'start with `npm start`, which supplies the loader up front.',
       '',
     ].join('\n'),
   );

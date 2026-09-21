@@ -1,16 +1,17 @@
 # Render Blueprint for the Rentra API.
 #
-# THE START COMMAND IS NOT INTERCHANGEABLE WITH `node src/index.js`.
+# On the start commands: `npm start` is preferred because it supplies the
+# module loader up front via `--import ./loader/register.mjs`. A bare
+# `node src/index.js` also works — src/boot-check.js registers the loader
+# itself when the flag is absent — so a host configured the obvious way still
+# boots rather than dying on ERR_MODULE_NOT_FOUND.
 #
-# src/ is the Next.js service layer moved across intact, and it still imports
-# `@/services/...`, extensionless relative paths, and the framework modules
-# `next/headers`, `next/cache`, `next/navigation`, `react` and `server-only`.
-# Those last five are NOT installed as packages — loader/hooks.mjs redirects
-# them to the shims in src/runtime. Without `--import ./loader/register.mjs`
-# nothing resolves and the process dies on the first import, which is exactly
-# the ERR_MODULE_NOT_FOUND a bare `node src/index.js` produces.
-#
-# Always start through `npm start`, which carries the loader flag.
+# That loader is not optional either way. src/ is the Next.js service layer
+# moved across intact, and it imports `@/services/...`, extensionless
+# relative paths, and the framework modules `next/headers`, `next/cache`,
+# `next/navigation`, `react` and `server-only`. Those last five are NOT
+# installed as packages; loader/hooks.mjs redirects them to the shims in
+# src/runtime. If loader/ is missing from a deploy, nothing can resolve.
 services:
   - type: web
     name: rentra-api

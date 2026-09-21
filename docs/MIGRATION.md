@@ -19,6 +19,15 @@ already correct and already shipped through twenty delivery parts.
 alias and extensionless relative imports the way a bundler does, so the ported
 files run under plain Node without being edited.
 
+The loader is normally supplied by `node --import ./loader/register.mjs`,
+which every script in `package.json` passes. It is also registered at runtime
+by `src/boot-check.js` when that flag is missing, so a host whose start
+command is a bare `node src/index.js` still boots. This is why both entry
+modules — `src/index.js` and `src/cron/index.js` — import `boot-check.js`
+statically and everything else dynamically: a static `@/…` import is resolved
+before any code runs, and would fail before the loader could be installed.
+Keep that ordering if you edit either entry point.
+
 **2. Shims instead of edits.** The ported code imports `next/headers`,
 `next/cache`, `next/navigation`, `react` and `server-only`. None of those are
 installed. The loader redirects each to `src/runtime/`, backed by an
