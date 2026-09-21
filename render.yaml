@@ -1,0 +1,80 @@
+# Render Blueprint for the Rentra API.
+#
+# THE START COMMAND IS NOT INTERCHANGEABLE WITH `node src/index.js`.
+#
+# src/ is the Next.js service layer moved across intact, and it still imports
+# `@/services/...`, extensionless relative paths, and the framework modules
+# `next/headers`, `next/cache`, `next/navigation`, `react` and `server-only`.
+# Those last five are NOT installed as packages — loader/hooks.mjs redirects
+# them to the shims in src/runtime. Without `--import ./loader/register.mjs`
+# nothing resolves and the process dies on the first import, which is exactly
+# the ERR_MODULE_NOT_FOUND a bare `node src/index.js` produces.
+#
+# Always start through `npm start`, which carries the loader flag.
+services:
+  - type: web
+    name: rentra-api
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: API_PREFIX
+        value: /api/v1
+      # Exactly one proxy hop in front of this (Render's router). Never `true`:
+      # a caller could then set X-Forwarded-For and hand themselves a fresh
+      # rate-limit bucket, walking straight past the OTP limiter.
+      - key: TRUST_PROXY_HOPS
+        value: 1
+      # The API and the frontend are on different hosts in production, so the
+      # session cookie has to survive a cross-site request.
+      - key: COOKIE_SAME_SITE
+        value: none
+      # A total authentication bypass — accepts 123456 as any OTP. The app
+      # refuses to boot if this is true while NODE_ENV=production, so it is
+      # pinned false here rather than left to chance.
+      - key: DEV_OTP_BYPASS
+        value: false
+      # Set these in the Render dashboard, not here: they are secrets.
+      #   DATABASE_URL
+      #   SESSION_SECRET
+      #   CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET
+      #   RAZORPAY_TEST_KEY_ID / RAZORPAY_TEST_KEY_SECRET
+      #   RAZORPAY_TEST_WEBHOOK_SECRET
+      # And the frontend's public origin, which CORS and the measurement
+      # beacon both check against:
+      #   CORS_ORIGINS          e.g. https://rentra.example
+      #   NEXT_PUBLIC_SITE_URL  e.g. https://rentra.example
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: NEXT_PUBLIC_SITE_URL
+        sync: false
+
+  # Payments reconciliation, notification delivery and inventory expiry.
+  # Same loader requirement, same reason.
+  - type: worker
+    name: rentra-worker
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: node --import ./loader/register.mjs src/cron/index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: DEV_OTP_BYPASS
+        value: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false

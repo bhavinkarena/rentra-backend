@@ -1,10 +1,19 @@
-import { createApp } from './app.js';
-import { config } from './config/env.js';
-import { sql, assertDatabaseReady } from './config/database.js';
-import { logger } from './utils/logger.js';
+import './boot-check.js';
+
+const { createApp } = await import('./app.js');
+const { config } = await import('./config/env.js');
+const { sql, assertDatabaseReady } = await import('./config/database.js');
+const { logger } = await import('./utils/logger.js');
 
 /**
  * Process entry point.
+ *
+ * The imports above are dynamic, and deliberately so: they must not be
+ * resolved until `boot-check.js` has confirmed the module loader is
+ * registered. A static import is hoisted and resolved before any code in
+ * this file runs, so the check would never get to speak — the process would
+ * die on `@/services/...` with a bare ERR_MODULE_NOT_FOUND instead. See
+ * boot-check.js for why the loader is mandatory.
  *
  * `config()` runs first and deliberately throws on bad configuration: a server
  * that boots with a missing SESSION_SECRET and 500s on the first login is

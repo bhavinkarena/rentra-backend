@@ -1,14 +1,22 @@
+import '../boot-check.js';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { sql } from '@/config/database.js';
-import { config } from '@/config/env.js';
-import { runPaymentJobs } from '@/services/payments/jobs.js';
-import { runNotificationJobs } from '@/services/notifications/jobs.js';
-import { recordWorkerHealth, pruneMeasurements } from '@/services/operations/measurement.js';
-import { logger } from '@/utils/logger.js';
+
+const { sql } = await import('@/config/database.js');
+const { config } = await import('@/config/env.js');
+const { runPaymentJobs } = await import('@/services/payments/jobs.js');
+const { runNotificationJobs } = await import('@/services/notifications/jobs.js');
+const { recordWorkerHealth, pruneMeasurements } =
+  await import('@/services/operations/measurement.js');
+const { logger } = await import('@/utils/logger.js');
 
 /**
  * Background worker — payment reconciliation, inventory expiry, booking
  * notifications and measurement retention.
+ *
+ * The `@/…` imports above are dynamic for the same reason as in src/index.js:
+ * a static import is resolved before any code runs, so `boot-check.js` would
+ * never get to explain a missing module loader. `../boot-check.js` is a
+ * relative path deliberately — it has to resolve without the loader.
  *
  * A SEPARATE process from the API, not a timer inside it. Two reasons that
  * matter in practice: the API scales horizontally and N copies of this loop
