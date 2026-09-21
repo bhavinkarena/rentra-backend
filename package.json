@@ -1,0 +1,55 @@
+{
+  "name": "rentra-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Rentra API server — Express + Drizzle over Postgres",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --import ./loader/register.mjs src/index.js",
+    "dev": "nodemon --quiet --watch src --watch loader --ext js,mjs,json --exec \"node --import ./loader/register.mjs --env-file=.env src/index.js\"",
+    "worker": "node --import ./loader/register.mjs --env-file=.env src/cron/index.js",
+    "worker:once": "node --import ./loader/register.mjs --env-file=.env src/cron/index.js --once",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node --env-file=.env src/scripts/migrate.js",
+    "db:studio": "drizzle-kit studio",
+    "db:seed": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed.js",
+    "routes": "node --import ./loader/register.mjs --env-file=.env src/scripts/printRoutes.js",
+    "smoke": "node --import ./loader/register.mjs --env-file=.env src/scripts/smoke.js",
+    "test": "node --import ./loader/register.mjs --env-file=.env --test \"test/**/*.test.js\"",
+    "lint": "eslint . --report-unused-disable-directives --max-warnings 0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{js,mjs,json,md}\"",
+    "format:check": "prettier --check \"**/*.{js,mjs,json,md}\"",
+    "audit": "npm audit --audit-level=high",
+    "ci": "npm run lint && npm run format:check && npm run test"
+  },
+  "dependencies": {
+    "cloudinary": "^2.11.0",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "drizzle-orm": "^0.45.2",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.4.1",
+    "helmet": "^8.1.0",
+    "joi": "^18.2.8",
+    "jose": "^6.2.12",
+    "morgan": "^1.10.1",
+    "multer": "^2.4.0",
+    "otplib": "^13.5.0",
+    "postgres": "^3.4.9",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "nodemon": "^3.1.9",
+    "prettier": "^3.6.2"
+  }
+}

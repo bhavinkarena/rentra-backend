@@ -1,0 +1,153 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788693451004,
+      "tag": "0000_nappy_meggan",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788693974946,
+      "tag": "0001_chemical_pretty_boy",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788694421538,
+      "tag": "0002_sticky_mentallo",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788697998941,
+      "tag": "0003_aberrant_zombie",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788699265939,
+      "tag": "0004_sudden_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788700484345,
+      "tag": "0005_curly_squirrel_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788701283378,
+      "tag": "0006_organic_turbo",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788719686532,
+      "tag": "0007_heavy_the_santerians",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789222512896,
+      "tag": "0008_customer_reservations",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789223816329,
+      "tag": "0009_customer_payment_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789296343794,
+      "tag": "0010_customer_quote_inventory",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789301128609,
+      "tag": "0011_customer_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789302589169,
+      "tag": "0012_financial_trigger_alignment",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789314348632,
+      "tag": "0013_customer_account",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789359827738,
+      "tag": "0014_customer_saved_places",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789829107186,
+      "tag": "0015_customer_checkout",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789891759734,
+      "tag": "0016_customer_cancellation",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789905939654,
+      "tag": "0017_customer_lifecycle_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789913962696,
+      "tag": "0018_customer_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789927686872,
+      "tag": "0019_customer_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789986555927,
+      "tag": "0020_customer_operations",
+      "breakpoints": true
+    }
+  ]
+}

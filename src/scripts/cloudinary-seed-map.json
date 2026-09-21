@@ -1,0 +1,36 @@
+{
+  "pool": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224135/seed/pool-1593029015621.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224136/seed/pool-1603033825246.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224138/seed/pool-1603034203013.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224140/seed/pool-1621437102383.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224141/seed/pool-1652878856832.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224142/seed/pool-1689113690645.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224143/seed/pool-1717284354680.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224145/seed/pool-1771354146834.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224146/seed/pool-1775923293081.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224147/seed/pool-1779269751207.jpg"
+  ],
+  "room": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224148/seed/room-1601221998768.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224149/seed/room-1613553474179.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224150/seed/room-1621626806480.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224152/seed/room-1635286785966.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224153/seed/room-1635286791516.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224154/seed/room-1635321349359.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224155/seed/room-1638840992956.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224156/seed/room-1664538922512.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224157/seed/room-1710224002849.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224158/seed/room-1710883734891.jpg"
+  ],
+  "lawn": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224120/seed/lawn-1557296440.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224122/seed/lawn-1571129618841.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224124/seed/lawn-1584304474743.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224126/seed/lawn-1595037935521.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224127/seed/lawn-1758646652296.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224129/seed/lawn-1772657850449.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224131/seed/lawn-1773433230374.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1789224134/seed/lawn-1774643460689.jpg"
+  ]
+}

@@ -1,0 +1,12 @@
+node_modules
+drizzle
+coverage
+# Ported verbatim from the Next frontend and kept byte-identical on purpose —
+# reformatting here would make every future sync a diff full of noise.
+src/services
+src/scripts/seed.js
+src/scripts/seed-amenities.js
+src/scripts/seed-admin.js
+src/scripts/seed-owner-listings.js
+src/scripts/migrate.js
+src/scripts/cloudinary-seed-map.json
