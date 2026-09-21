@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { readFile } from 'node:fs/promises';
 import * as s from '@/services/db/schema/index.js';
+import { hashPassword } from '@/services/auth/admin-crypto.js';
 
 /**
  * Development seed data.
@@ -72,7 +73,7 @@ const db = drizzle(client, { schema: s });
 console.log('[seed] clearing');
 await client`TRUNCATE TABLE
   review, payout, booking, availability, rentable_price, unit, rentable,
-  client_staff, "user", person, area, city, category, redirect, admin_user
+  client_staff, "user", person, area, city, category, redirect
   RESTART IDENTITY CASCADE`;
 
 /* ------------------------------- taxonomy ------------------------------- */
@@ -121,6 +122,7 @@ const [demoClient] = await db.insert(s.users).values({
   role: 'client',
   name: 'Demo Client',
   email: 'client@gmail.com',
+  accountStatus: 'active',
   clientType: 'owner',
   personId: clientPerson.id,
   kycStatus: 'verified',
@@ -134,23 +136,28 @@ const [demoClient] = await db.insert(s.users).values({
 await db.insert(s.users).values({
   phone: '9000000001', role: 'customer', name: 'Demo Client',
   email: 'client@gmail.com', personId: clientPerson.id, kycStatus: 'verified',
+  accountStatus: 'active',
 });
 
 const guests = await db.insert(s.users).values([
-  { phone: '9898980001', role: 'customer', name: 'Rahul S.',  kycStatus: 'verified' },
-  { phone: '9898980002', role: 'customer', name: 'Priya M.',  kycStatus: 'verified' },
-  { phone: '9898980003', role: 'customer', name: 'Jignesh T.', kycStatus: 'verified' },
-  { phone: '9898980004', role: 'customer', name: 'Ankita D.', kycStatus: 'verified' },
-  { phone: '9898980005', role: 'customer', name: 'Mehul V.',  kycStatus: 'none' },
+  { phone: '9898980001', role: 'customer', name: 'Rahul S.',  kycStatus: 'verified', accountStatus: 'active' },
+  { phone: '9898980002', role: 'customer', name: 'Priya M.',  kycStatus: 'verified', accountStatus: 'active' },
+  { phone: '9898980003', role: 'customer', name: 'Jignesh T.', kycStatus: 'verified', accountStatus: 'active' },
+  { phone: '9898980004', role: 'customer', name: 'Ankita D.', kycStatus: 'verified', accountStatus: 'active' },
+  { phone: '9898980005', role: 'customer', name: 'Mehul V.',  kycStatus: 'none', accountStatus: 'active' },
 ]).returning();
 
-// Admin accounts are deliberately NOT seeded here. There is no self-signup for
-// admins, and a row carrying a placeholder password hash is dead data that can
-// never authenticate — confusing rather than useful.
-//   npm run seed:admin -- admin@gmail.com "Your Name" [--totp]
-//
-// NOTE: this script TRUNCATEs admin_user, so re-seeding wipes your admin.
-// Re-run seed:admin afterwards.
+// Ensure default admin user is seeded so db:seed never leaves an adminless DB
+console.log('[seed] default admin user (admin@gmail.com / Admin@123)');
+const adminEmail = 'admin@gmail.com';
+const adminHash = hashPassword('Admin@123');
+const [existingAdmin] = await client`SELECT id FROM admin_user WHERE email = ${adminEmail}`;
+if (existingAdmin) {
+  await client`UPDATE admin_user SET password_hash = ${adminHash}, is_active = true, failed_attempts = 0, locked_until = NULL WHERE id = ${existingAdmin.id}`;
+} else {
+  await client`INSERT INTO admin_user (email, name, password_hash) VALUES (${adminEmail}, 'Super Admin', ${adminHash})`;
+}
+
 
 // The caretaker who actually runs the properties — a child of the Client.
 await db.insert(s.clientStaff).values({
@@ -376,6 +383,47 @@ for (const l of LISTINGS) {
     ratingAvg: null, reviewCount: 0,
     verifiedAt: l.verified ? new Date() : null,
     availabilityConfirmedAt: new Date(),
+    bookingConfig: {
+      inventoryReady: true,
+      timeZone: 'Asia/Kolkata',
+      leadTimeMinutes: 120,
+      bookingHorizonDays: 90,
+      slots: {
+        day: {
+          enabled: true,
+          startTime: '09:00',
+          endTime: '21:00',
+          endDayOffset: 0,
+          bufferBeforeMinutes: 0,
+          bufferAfterMinutes: 0,
+          capacity: l.capacity,
+          includedGuests: l.capacity,
+          extraGuestChargeMinor: 0,
+        },
+        night: {
+          enabled: true,
+          startTime: '21:00',
+          endTime: '08:00',
+          endDayOffset: 1,
+          bufferBeforeMinutes: 0,
+          bufferAfterMinutes: 0,
+          capacity: l.capacity,
+          includedGuests: l.capacity,
+          extraGuestChargeMinor: 0,
+        },
+        full_day: {
+          enabled: true,
+          startTime: '09:00',
+          endTime: '08:00',
+          endDayOffset: 1,
+          bufferBeforeMinutes: 0,
+          bufferAfterMinutes: 0,
+          capacity: l.capacity,
+          includedGuests: l.capacity,
+          extraGuestChargeMinor: 0,
+        },
+      },
+    },
   }).returning();
 
   await db.insert(s.rentablePrice).values(

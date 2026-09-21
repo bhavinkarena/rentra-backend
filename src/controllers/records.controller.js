@@ -17,6 +17,7 @@ import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 import { badRequest } from '@/utils/apiError.js';
+import { recordKindFromBaseUrl } from '@/services/booking/record-scope.js';
 
 /**
  * Booking records, viewable by three different kinds of actor.
@@ -27,15 +28,9 @@ import { badRequest } from '@/utils/apiError.js';
  * refuses if it does not match, so the route prefix is a convenience and not
  * the security boundary.
  */
-const KINDS = ['customer', 'owner', 'admin'];
-
 const kindOf = (req) => {
-  const kind = req.baseUrl.includes('/admin/')
-    ? 'admin'
-    : req.baseUrl.includes('/partner/')
-      ? 'owner'
-      : 'customer';
-  if (!KINDS.includes(kind)) throw badRequest('UNKNOWN_ACTOR', 'Unknown record scope.');
+  const kind = recordKindFromBaseUrl(req.baseUrl);
+  if (!kind) throw badRequest('UNKNOWN_ACTOR', 'Unknown record scope.');
   return kind;
 };
 
@@ -55,11 +50,7 @@ export const detail = asyncHandler(async (req, res) =>
  * would hand the user a .ics that no calendar app can read.
  */
 export const summary = asyncHandler(async (req, res) => {
-  const file = await bookingSummaryResponse(
-    kindOf(req),
-    req.params.id,
-    req.query.calendar === '1',
-  );
+  const file = await bookingSummaryResponse(kindOf(req), req.params.id, req.query.calendar === '1');
 
   res.status(file.status);
   res.set('Content-Type', file.contentType);

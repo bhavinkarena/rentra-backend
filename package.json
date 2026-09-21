@@ -17,6 +17,7 @@
     "db:migrate": "node --env-file=.env src/scripts/migrate.js",
     "db:studio": "drizzle-kit studio",
     "db:seed": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed.js",
+    "seed:admin": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed-admin.js",
     "routes": "node --import ./loader/register.mjs --env-file=.env src/scripts/printRoutes.js",
     "smoke": "node --import ./loader/register.mjs --env-file=.env src/scripts/smoke.js",
     "test": "node --import ./loader/register.mjs --env-file=.env --test \"test/**/*.test.js\"",

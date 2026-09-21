@@ -7,11 +7,19 @@ import {
 import { listSupportRequests, readSupportRequest } from '@/services/support/service.js';
 import { supportRecordPage } from '@/services/support/page.js';
 import { bookingActor } from '@/services/booking/record-page.js';
+import { recordKindFromBaseUrl } from '@/services/booking/record-scope.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
+import { badRequest } from '@/utils/apiError.js';
 
-const kindOf = (req) => (req.baseUrl.includes('/admin/') ? 'admin' : 'customer');
+const kindOf = (req) => {
+  const kind = recordKindFromBaseUrl(req.baseUrl);
+  if (!['admin', 'customer'].includes(kind)) {
+    throw badRequest('UNKNOWN_ACTOR', 'Unknown support scope.');
+  }
+  return kind;
+};
 
 export const list = asyncHandler(async (req, res) =>
   ok(res, await listSupportRequests(sql, await bookingActor(kindOf(req)), req.query)),

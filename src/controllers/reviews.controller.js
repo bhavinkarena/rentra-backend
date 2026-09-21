@@ -9,10 +9,12 @@ import {
 } from '@/services/reviews/actions.js';
 import { reviewOrder, reviewQueue, publicReview } from '@/services/reviews/service.js';
 import { bookingActor } from '@/services/booking/record-page.js';
+import { recordKindFromBaseUrl } from '@/services/booking/record-scope.js';
 import { getSession } from '@/services/auth/dal.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
+import { badRequest } from '@/utils/apiError.js';
 
 /** What the guest may review for one order, and what they already wrote. */
 export const forOrder = asyncHandler(async (req, res) =>
@@ -26,7 +28,10 @@ export const detail = asyncHandler(async (req, res) =>
 
 /** Moderation queue. The actor decides what is visible in it, not the caller. */
 export const queue = asyncHandler(async (req, res) => {
-  const kind = req.baseUrl.includes('/admin/') ? 'admin' : 'owner';
+  const kind = recordKindFromBaseUrl(req.baseUrl);
+  if (!['admin', 'owner'].includes(kind)) {
+    throw badRequest('UNKNOWN_ACTOR', 'Unknown review scope.');
+  }
   return ok(res, await reviewQueue(sql, await bookingActor(kind), Number(req.query.page ?? 1)));
 });
 

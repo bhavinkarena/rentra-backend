@@ -45,14 +45,22 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
   const filters = historyFilters(input), size = 20;
   return database.begin(async tx => {
     const { condition: allowed } = await scope(tx, actor, env);
-    const tab = filters.tab === 'upcoming' ? tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','disputed') AND v.ends_at>clock_timestamp())`
-      : filters.tab === 'past' ? tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed') AND v.ends_at<=clock_timestamp())`
-      : filters.tab === 'cancelled' ? tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))` : tx`true`;
+    const upcoming = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','disputed') AND v.ends_at>clock_timestamp())`;
+    const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed') AND v.ends_at<=clock_timestamp())`;
+    const cancelled = tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))`;
+    const tab = filters.tab === 'upcoming' ? upcoming
+      : filters.tab === 'past' ? past
+      : filters.tab === 'cancelled' ? cancelled : tx`true`;
     // POSITION treats percent/underscore literally; customer search cannot widen its ownership scope.
     const match = tx`(${filters.q}='' OR position(lower(${filters.q}) in lower(o.reference))>0
       OR position(lower(${filters.q}) in lower(coalesce(o.listing_snapshot->>'title','')))>0
       OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND position(lower(${filters.q}) in lower(v.reference))>0))`;
-    const [{ count }] = await tx`SELECT count(*)::int count FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${tab} AND ${match}`;
+    const [summary] = await tx`SELECT count(*)::int total,
+      count(*) FILTER (WHERE ${upcoming})::int upcoming,
+      count(*) FILTER (WHERE ${past})::int past,
+      count(*) FILTER (WHERE ${cancelled})::int cancelled
+      FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${match}`;
+    const count = filters.tab === 'all' ? summary.total : summary[filters.tab];
     const pages = Math.max(1, Math.ceil(count / size)), page = Math.min(filters.page, pages);
     const rows = await tx`SELECT o.*,o.hold_expires_at<=clock_timestamp() hold_expired,
       (SELECT count(*)::int FROM booking v WHERE v.order_id=o.id) visit_count,
@@ -60,7 +68,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${tab} AND ${match}
       ORDER BY o.created_at DESC,o.id DESC LIMIT ${size} OFFSET ${(page - 1) * size}`;
-    return { ...filters, page, pages, total: count, items: rows.map(row => ({ ...orderDTO(row), visitCount: row.visit_count,
+    return { ...filters, page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), visitCount: row.visit_count,
       visitStates: row.visit_states || [], payments: row.payments || [] })) };
   });
 }

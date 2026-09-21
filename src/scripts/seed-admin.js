@@ -2,10 +2,11 @@
  * Provision (or re-provision) a Super Admin.
  *
  * There is NO self-signup for admins — this script is the only way an admin
- * account comes into existence. The password is generated here, printed once,
- * and stored only as a scrypt hash.
+ * account comes into existence. The password is generated or provided here,
+ * printed once, and stored only as a scrypt hash.
  *
  *   npm run seed:admin -- admin@gmail.com "Kunj Detroja"
+ *   npm run seed:admin -- admin@gmail.com "Kunj Detroja" --password Admin@123
  *   npm run seed:admin -- admin@gmail.com "Kunj Detroja" --totp
  */
 import postgres from 'postgres';
@@ -13,14 +14,17 @@ import {
   hashPassword, generateStrongPassword, generateTotpSecret, totpUri,
 } from '@/services/auth/admin-crypto.js';
 
-const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-const wantTotp = process.argv.includes('--totp');
+const rawArgs = process.argv.slice(2);
+const args = rawArgs.filter((a) => !a.startsWith('--'));
+const wantTotp = rawArgs.includes('--totp');
+const passwordIdx = rawArgs.indexOf('--password');
+const customPassword = passwordIdx !== -1 ? rawArgs[passwordIdx + 1] : null;
 const email = (args[0] ?? 'admin@gmail.com').toLowerCase();
 const name = args[1] ?? 'Rentra Ops';
 
 const sql = postgres(process.env.DATABASE_URL, { prepare: false, max: 1, onnotice: () => {} });
 
-const password = generateStrongPassword();
+const password = customPassword || generateStrongPassword();
 const passwordHash = hashPassword(password);
 const secret = wantTotp ? generateTotpSecret() : null;
 
