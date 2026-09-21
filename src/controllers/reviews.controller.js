@@ -7,7 +7,7 @@ import {
   ownerReviewReport,
   resolveReviewReport,
 } from '@/services/reviews/actions.js';
-import { reviewOrder, reviewQueue } from '@/services/reviews/service.js';
+import { reviewOrder, reviewQueue, publicReview } from '@/services/reviews/service.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import { getSession } from '@/services/auth/dal.js';
 import { runAction } from '@/utils/runAction.js';
@@ -17,6 +17,11 @@ import { ok } from '@/utils/respond.js';
 /** What the guest may review for one order, and what they already wrote. */
 export const forOrder = asyncHandler(async (req, res) =>
   ok(res, await reviewOrder(sql, await getSession(), req.params.orderId)),
+);
+
+/** One review, for the form that reports it. */
+export const detail = asyncHandler(async (req, res) =>
+  ok(res, await publicReview(sql, req.params.reviewId)),
 );
 
 /** Moderation queue. The actor decides what is visible in it, not the caller. */

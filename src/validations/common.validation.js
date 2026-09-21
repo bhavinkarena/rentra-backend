@@ -23,3 +23,4 @@ export const pagination = z.object({
 
 export const idParam = z.object({ id: uuid });
 export const orderIdParam = z.object({ orderId: uuid });
+export const reviewIdParam = z.object({ reviewId: uuid });

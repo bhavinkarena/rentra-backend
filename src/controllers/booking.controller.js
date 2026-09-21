@@ -8,9 +8,11 @@ import {
   unblockDates,
 } from '@/services/booking/calendar-actions.js';
 import { getInventoryState, prepareInventoryCheck } from '@/services/booking/inventory.js';
+import { ownerCalendarPage } from '@/services/booking/calendar-page.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
+import { notFound } from '@/utils/apiError.js';
 
 /**
  * Price a selection without reserving anything.
@@ -30,8 +32,19 @@ export const block = runAction(blockDates);
 export const unblock = runAction(unblockDates);
 
 /**
- * The owner's view of their own calendar state, including whether the
- * inventory rows are complete enough to accept a booking at all.
+ * Everything the owner's calendar screen renders: the listing's booking
+ * configuration and its current owner blocks.
+ */
+export const calendarPage = asyncHandler(async (req, res) => {
+  const page = await ownerCalendarPage(sql, req.user.id, req.params.id);
+  if (!page) throw notFound('LISTING_NOT_FOUND', 'That listing does not exist.');
+  return ok(res, page);
+});
+
+/**
+ * The raw inventory state behind that screen — bookings, reservations and the
+ * availability rows — for checking whether the calendar is complete enough to
+ * accept a booking at all.
  */
 export const calendarState = asyncHandler(async (req, res) =>
   ok(

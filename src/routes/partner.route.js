@@ -112,6 +112,12 @@ router.get(
   '/listings/:id/calendar',
   requireActiveClient,
   validate({ params: listingIdParam }),
+  booking.calendarPage,
+);
+router.get(
+  '/listings/:id/calendar/state',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
   booking.calendarState,
 );
 router.post('/listings/:id/calendar/schedule', requireActiveClient, formFields(), booking.schedule);

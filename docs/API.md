@@ -18,6 +18,25 @@ Failures set `success: false` and add `code`. A 422 also carries `errors`, the
 
 Branch on `code`. Never on `message`.
 
+### Responses that are not the envelope
+
+Three kinds of route answer with something else, on purpose:
+
+- `GET .../records/:id/summary` returns the printable summary as
+  `text/plain`, or the calendar as `text/calendar` when `?calendar=1`. The
+  browser saves it to a file, so wrapping it in `data` would produce a `.ics`
+  no calendar app can read.
+- `GET /admin/documents/:id/file` streams the document's bytes.
+- `POST /webhooks/razorpay` answers in Razorpay's own shape, because the
+  provider reads the status code and nothing else.
+
+### Reads that redirect
+
+A read may answer `200` with `data: null` and a `redirect`. That is the API
+declining to serve the page to this actor — an unfinished customer profile
+asking for `/customer/support`, for instance. Follow the redirect rather than
+rendering the null.
+
 ## Status codes
 
 | Code | Meaning                                                                 |
@@ -89,6 +108,7 @@ GET    /api/v1/admin/reviews
 GET    /api/v1/admin/support
 GET    /api/v1/admin/support/:id
 GET    /api/v1/admin/support/:id/thread
+GET    /api/v1/admin/documents/:id/file
 GET    /api/v1/admin/users/:userId/documents
 POST   /api/v1/admin/applications/approve
 POST   /api/v1/admin/applications/more-info
@@ -116,6 +136,7 @@ GET    /api/v1/customer/notifications
 GET    /api/v1/customer/records
 GET    /api/v1/customer/records/:id
 GET    /api/v1/customer/records/:id/summary
+GET    /api/v1/customer/reviews/:reviewId
 GET    /api/v1/customer/reviews/order/:orderId
 GET    /api/v1/customer/support
 GET    /api/v1/customer/support/:id
@@ -152,6 +173,7 @@ GET    /api/v1/partner/documents
 GET    /api/v1/partner/listings
 GET    /api/v1/partner/listings/:id
 GET    /api/v1/partner/listings/:id/calendar
+GET    /api/v1/partner/listings/:id/calendar/state
 GET    /api/v1/partner/listings/summary
 GET    /api/v1/partner/records
 GET    /api/v1/partner/records/:id

@@ -10,7 +10,7 @@ import { formFields } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
 import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
-import { orderIdParam } from '@/validations/common.validation.js';
+import { orderIdParam, reviewIdParam } from '@/validations/common.validation.js';
 
 const router = Router();
 const customer = requireRole('customer');
@@ -59,6 +59,7 @@ router.get(
   validate({ params: orderIdParam }),
   reviews.forOrder,
 );
+router.get('/reviews/:reviewId', customer, validate({ params: reviewIdParam }), reviews.detail);
 router.post('/reviews', customer, formFields(), reviews.submit);
 router.post('/reviews/report', customer, formFields(), reviews.reportByCustomer);
 

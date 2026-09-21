@@ -113,3 +113,18 @@ export async function reviewQueue(database,actor,page=1) {
     return {rows:rows.slice(0,30),reports,hasNext:rows.length>30,page:offset/30+1};
   });
 }
+
+/**
+ * One published review, as the reporting form shows it back to the reporter.
+ *
+ * Reads the `public_customer_review` view rather than the `review` table: the
+ * view is already filtered to what a signed-in customer is allowed to see, so
+ * a moderated or withdrawn review cannot be surfaced by guessing its id.
+ */
+export async function publicReview(database, id) {
+  uuid.parse(id);
+  const [row] = await database`
+    SELECT id, body, owner_reply FROM public_customer_review WHERE id=${id}`;
+  if (!row) throw new ReviewError('NOT_FOUND');
+  return { id: row.id, body: row.body, ownerReply: row.owner_reply ?? null };
+}

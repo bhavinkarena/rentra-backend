@@ -8,7 +8,12 @@ import * as notifications from '@/controllers/notifications.controller.js';
 import { requireAdmin } from '@/middlewares/auth.middleware.js';
 import { formFields } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
-import { applicationIdParam, userIdParam, decisionsQuery } from '@/validations/admin.validation.js';
+import {
+  applicationIdParam,
+  userIdParam,
+  documentIdParam,
+  decisionsQuery,
+} from '@/validations/admin.validation.js';
 import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
 
@@ -44,6 +49,7 @@ router.post('/clients/suspend', formFields(), admin.suspend);
  * KYC review
  * ---------------------------------------------------------------- */
 router.get('/users/:userId/documents', validate({ params: userIdParam }), admin.documents);
+router.get('/documents/:id/file', validate({ params: documentIdParam }), admin.documentFile);
 router.post('/documents/review', formFields(), admin.decideDocument);
 
 /* ---------------------------------------------------------------- *

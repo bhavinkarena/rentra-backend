@@ -47,10 +47,30 @@ export const detail = asyncHandler(async (req, res) =>
   ok(res, await bookingRecordPage(kindOf(req), req.params.id)),
 );
 
-/** The printable summary. `?calendar=1` returns the calendar variant. */
-export const summary = asyncHandler(async (req, res) =>
-  ok(res, await bookingSummaryResponse(kindOf(req), req.params.id, req.query.calendar === '1')),
-);
+/**
+ * The printable summary. `?calendar=1` returns the .ics calendar variant.
+ *
+ * This one route answers with bytes, not the JSON envelope: the browser saves
+ * it straight to a file, and wrapping a text/calendar body in `{ data: ... }`
+ * would hand the user a .ics that no calendar app can read.
+ */
+export const summary = asyncHandler(async (req, res) => {
+  const file = await bookingSummaryResponse(
+    kindOf(req),
+    req.params.id,
+    req.query.calendar === '1',
+  );
+
+  res.status(file.status);
+  res.set('Content-Type', file.contentType);
+  res.set('Cache-Control', 'private, no-store');
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  res.set('X-Content-Type-Options', 'nosniff');
+  if (file.filename) {
+    res.set('Content-Disposition', `attachment; filename="${file.filename}"`);
+  }
+  return res.send(file.body);
+});
 
 export const actor = asyncHandler(async (req, res) => ok(res, await bookingActor(kindOf(req))));
 

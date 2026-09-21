@@ -3,6 +3,7 @@ import { uuid } from './common.validation.js';
 
 export const applicationIdParam = z.object({ id: uuid });
 export const userIdParam = z.object({ userId: uuid });
+export const documentIdParam = z.object({ id: uuid });
 
 export const decisionsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),

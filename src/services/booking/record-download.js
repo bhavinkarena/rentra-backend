@@ -7,8 +7,16 @@ import { BookingRecordError, readBookingRecord } from './records.js';
 import { bookingSummary } from '../domain/booking-record.js';
 import { bookingCalendar } from '../domain/booking-calendar.js';
 
+/**
+ * The printable booking summary, and its .ics calendar variant.
+ *
+ * Returns a plain descriptor rather than a `Response`. This was ported from a
+ * Next route handler that could return one directly; under Express the
+ * controller has to write the bytes itself, and a `Response` handed to
+ * `res.json()` serialises to `{}` — the download silently arrives empty.
+ * Keeping this a plain object means neither side can make that mistake.
+ */
 export async function bookingSummaryResponse(kind, orderId, calendar = false) {
-  const headers = { 'Cache-Control': 'private, no-store', 'X-Robots-Tag': 'noindex, nofollow', 'X-Content-Type-Options': 'nosniff' };
   try {
     const admin = await getCurrentAdmin();
     let actor;
@@ -16,16 +24,32 @@ export async function bookingSummaryResponse(kind, orderId, calendar = false) {
       if (admin) actor = { kind, id: admin.id };
     } else {
       const user = await getCurrentUser();
-      if (user?.accountStatus === 'active' && user.role === (kind === 'owner' ? 'client' : 'customer') && !(kind === 'customer' && admin)) {
+      if (
+        user?.accountStatus === 'active' &&
+        user.role === (kind === 'owner' ? 'client' : 'customer') &&
+        !(kind === 'customer' && admin)
+      ) {
         actor = kind === 'owner' ? { kind, id: user.id } : { kind, session: await getSession() };
       }
     }
-    if (!actor) return new Response('Please log in to the correct account.', { status: 401, headers });
+    if (!actor) {
+      return { status: 401, body: 'Please log in to the correct account.', contentType: 'text/plain; charset=utf-8' };
+    }
+
     const record = await readBookingRecord(sql, actor, orderId);
-    return new Response(calendar ? bookingCalendar(record) : bookingSummary(record), { headers: { ...headers, 'Content-Type': calendar ? 'text/calendar; charset=utf-8' : 'text/plain; charset=utf-8',
-      'Content-Disposition': `attachment; filename="rentra-booking-${record.id}.${calendar ? 'ics' : 'txt'}"` } });
+    return {
+      status: 200,
+      body: calendar ? bookingCalendar(record) : bookingSummary(record),
+      contentType: calendar ? 'text/calendar; charset=utf-8' : 'text/plain; charset=utf-8',
+      filename: `rentra-booking-${record.id}.${calendar ? 'ics' : 'txt'}`,
+    };
   } catch (error) {
-    const status = error instanceof CustomerAccountError ? 401 : error instanceof BookingRecordError ? 404 : 503;
-    return new Response(status === 503 ? 'Summary temporarily unavailable.' : 'Booking unavailable.', { status, headers });
+    const status =
+      error instanceof CustomerAccountError ? 401 : error instanceof BookingRecordError ? 404 : 503;
+    return {
+      status,
+      body: status === 503 ? 'Summary temporarily unavailable.' : 'Booking unavailable.',
+      contentType: 'text/plain; charset=utf-8',
+    };
   }
 }
