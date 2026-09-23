@@ -1,6 +1,6 @@
 import js from '@eslint/js';
 import globals from 'globals';
-import prettier from 'eslint-config-prettier';
+import prettier from 'eslint-plugin-prettier/recommended';
 
 export default [
   {

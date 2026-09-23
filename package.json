@@ -22,11 +22,13 @@
     "smoke": "node --import ./loader/register.mjs --env-file=.env src/scripts/smoke.js",
     "test": "node --import ./loader/register.mjs --env-file=.env --test \"test/**/*.test.js\"",
     "lint": "eslint . --report-unused-disable-directives --max-warnings 0",
-    "lint:fix": "eslint . --fix",
-    "format": "prettier --write \"**/*.{js,mjs,json,md}\"",
-    "format:check": "prettier --check \"**/*.{js,mjs,json,md}\"",
+    "lint:fix": "eslint . --fix && npm run format",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "audit": "npm audit --audit-level=high",
-    "ci": "npm run lint && npm run format:check && npm run test"
+    "ci": "npm run lint && npm run format:check && npm run db:check && npm test",
+    "prettier:check": "npm run format:check",
+    "db:check": "node src/scripts/checkMigrations.js"
   },
   "dependencies": {
     "cloudinary": "^2.11.0",
@@ -46,9 +48,11 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.39.0",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
     "globals": "^16.5.0",
     "nodemon": "^3.1.9",
     "prettier": "^3.6.2"

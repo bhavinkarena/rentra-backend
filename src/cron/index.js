@@ -3,10 +3,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const { sql } = await import('@/config/database.js');
 const { config } = await import('@/config/env.js');
-const { runPaymentJobs } = await import('@/services/payments/jobs.js');
-const { runNotificationJobs } = await import('@/services/notifications/jobs.js');
-const { recordWorkerHealth, pruneMeasurements } =
-  await import('@/services/operations/measurement.js');
+const { createJobs } = await import('./jobs.js');
+const { runJob } = await import('./runner.js');
 const { logger } = await import('@/utils/logger.js');
 
 /**
@@ -32,10 +30,9 @@ const { logger } = await import('@/utils/logger.js');
  */
 const once = process.argv.includes('--once');
 const TICK_MS = 10_000;
-const MEASUREMENT_PRUNE_MS = 3_600_000;
+const jobs = createJobs(sql);
 
 let stopping = false;
-let lastPrune = 0;
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
@@ -49,16 +46,9 @@ logger.info('worker started', { mode: once ? 'once' : 'loop' });
 
 try {
   do {
-    await tick('payments', () => runPaymentJobs(sql));
-    await tick('notifications', () => runNotificationJobs(sql));
-
-    if (Date.now() - lastPrune >= MEASUREMENT_PRUNE_MS) {
-      try {
-        await pruneMeasurements(sql);
-        lastPrune = Date.now();
-      } catch {
-        logger.error('measurement retention failed');
-      }
+    for (const job of jobs) {
+      const succeeded = await runJob(job, { once });
+      if (!succeeded && once && job.name !== 'retention') process.exitCode = 1;
     }
 
     if (once) break;
@@ -66,33 +56,4 @@ try {
   } while (!stopping);
 } finally {
   await sql.end({ timeout: 5 });
-}
-
-/**
- * One job, with its heartbeat. Failures are logged without the error object:
- * these jobs handle payment identifiers and phone numbers, and a stack trace
- * in a log aggregator is the easiest way to leak both.
- */
-async function tick(name, run) {
-  try {
-    const result = await run();
-    logger.info(`worker ${name}`, summarise(result));
-    await recordWorkerHealth(sql, name, true);
-  } catch {
-    try {
-      await recordWorkerHealth(sql, name, false);
-    } catch {
-      /* A database outage leaves a stale heartbeat, which is itself the signal. */
-    }
-    logger.error(`worker ${name} tick failed`, { retry: once ? 'no' : 'next interval' });
-    if (once) process.exitCode = 1;
-  }
-}
-
-/** Counts only — never the rows themselves. */
-function summarise(result) {
-  if (!result || typeof result !== 'object') return undefined;
-  return Object.fromEntries(
-    Object.entries(result).filter(([, v]) => typeof v === 'number' || typeof v === 'string'),
-  );
 }

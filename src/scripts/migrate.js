@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
@@ -9,12 +10,16 @@ if (!url) throw new Error('DATABASE_URL is not set');
 const client = postgres(url, { prepare: false, max: 1, onnotice: () => {} });
 const db = drizzle(client);
 
-console.log('[migrate] enabling extensions');
-await client`CREATE EXTENSION IF NOT EXISTS postgis`;
-await client`CREATE EXTENSION IF NOT EXISTS pg_trgm`;
+try {
+  console.log('[migrate] enabling extensions');
+  await client`CREATE EXTENSION IF NOT EXISTS postgis`;
+  await client`CREATE EXTENSION IF NOT EXISTS pg_trgm`;
 
-console.log('[migrate] applying migrations from ./drizzle');
-await migrate(db, { migrationsFolder: './drizzle' });
-
-console.log('[migrate] done');
-await client.end();
+  console.log('[migrate] applying migrations');
+  await migrate(db, {
+    migrationsFolder: fileURLToPath(new URL('../../drizzle', import.meta.url)),
+  });
+  console.log('[migrate] done');
+} finally {
+  await client.end();
+}

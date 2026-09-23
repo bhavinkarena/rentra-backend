@@ -110,3 +110,15 @@ Two values need care:
 - [docs/API.md](docs/API.md) — the full route table.
 - [docs/MIGRATION.md](docs/MIGRATION.md) — what moved, what each Server Action
   became, and what to watch for.
+
+## AOG structure and formatting
+
+See [architecture alignment](docs/ARCHITECTURE.md) for the reference comparison,
+folder responsibilities, compatibility choices and feature workflow.
+
+- `npm run lint:fix` runs ESLint autofixes and Prettier document formatting.
+- `npm run format:check` checks formatting without writes.
+- `npm run db:check` checks migration journal ordering and SQL registration without connecting to a database.
+- `npm run ci` runs lint, formatting, migration file checks and tests.
+- `.vscode/` enables format-on-save and recommends ESLint/Prettier extensions.
+- `src/cron/jobs.js` registers jobs; `runner.js` handles isolated execution and heartbeats.

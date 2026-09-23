@@ -8,5 +8,6 @@ src/scripts/seed.js
 src/scripts/seed-amenities.js
 src/scripts/seed-admin.js
 src/scripts/seed-owner-listings.js
-src/scripts/migrate.js
 src/scripts/cloudinary-seed-map.json
+
+package-lock.json
