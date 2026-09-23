@@ -17,7 +17,8 @@ const client =
   ?? postgres(process.env.DATABASE_URL, {
     prepare: false,
     max: 10,
-    idle_timeout: 20,
+    // Reuse established connections across normal pauses between user actions.
+    idle_timeout: 120,
     connect_timeout: 15,
   });
 

@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Rentra API server — Express + Drizzle over Postgres",
+  "description": "Rentra API server \u2014 Express + Drizzle over Postgres",
   "main": "src/index.js",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "start": "node --import ./loader/register.mjs src/index.js",
-    "dev": "nodemon --quiet --watch src --watch loader --ext js,mjs,json --exec \"node --import ./loader/register.mjs --env-file=.env src/index.js\"",
+    "dev": "nodemon --quiet --watch src --watch loader --watch .env --ext js,mjs,json,env --exec \"node --import ./loader/register.mjs --env-file=.env src/index.js\"",
     "worker": "node --import ./loader/register.mjs --env-file=.env src/cron/index.js",
     "worker:once": "node --import ./loader/register.mjs --env-file=.env src/cron/index.js --once",
     "db:generate": "drizzle-kit generate",
@@ -28,7 +28,8 @@
     "audit": "npm audit --audit-level=high",
     "ci": "npm run lint && npm run format:check && npm run db:check && npm test",
     "prettier:check": "npm run format:check",
-    "db:check": "node src/scripts/checkMigrations.js"
+    "db:check": "node src/scripts/checkMigrations.js",
+    "payments:enable-test": "node --import ./loader/register.mjs --env-file=.env src/scripts/enableTestPayments.js"
   },
   "dependencies": {
     "cloudinary": "^2.11.0",

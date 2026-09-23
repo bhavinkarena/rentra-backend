@@ -30,7 +30,7 @@ export const getCurrentUser = cache(async () => {
   const session = await getSession();
   if (!session?.userId) return null;
 
-  const [user] = await db
+  const userQuery = db
     .select({
       id: users.id,
       role: users.role,
@@ -50,8 +50,12 @@ export const getCurrentUser = cache(async () => {
     .where(eq(users.id, session.userId))
     .limit(1);
 
-  if (!user || user.role !== session.role) return null;
-  if (user.role === 'customer' && !await validCustomerSession(sql, session)) return null;
+  // Both checks remain request-local and authoritative, but neither needs the other's result.
+  const [[user], sessionValid] = await Promise.all([
+    userQuery,
+    session.role === 'customer' ? validCustomerSession(sql, session) : true,
+  ]);
+  if (!user || user.role !== session.role || !sessionValid) return null;
   return user;
 });
 

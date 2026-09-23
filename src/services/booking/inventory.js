@@ -108,18 +108,25 @@ export async function getInventoryState(tx, listing) {
   contextFor(tx, listing.id);
   // Completion retains the paid interval. Include its visit while that ledger
   // entry remains active, without requiring inventory for old completed history.
-  const bookings = await tx`SELECT b.id, b.order_id, b.state, b.hours_known, b.units_booked,
-    b.starts_at, b.ends_at, b.blocked_start_at, b.blocked_end_at,
-    o.state AS order_state, o.hold_expires_at AS order_hold_expires_at
-    FROM booking b LEFT JOIN booking_order o ON o.id = b.order_id
-    WHERE b.rentable_id = ${listing.id} AND (b.state IN ${tx(ACTIVE_BOOKINGS)}
-      OR (b.state='completed' AND EXISTS(SELECT 1 FROM inventory_reservation r
-        WHERE r.booking_id=b.id AND r.source='booking' AND r.state IN ('held','committed')))) ORDER BY b.id`;
-  const reservations = await tx`SELECT * FROM inventory_reservation WHERE rentable_id = ${listing.id}
-    AND state IN ('held', 'committed') ORDER BY id`;
-  const availability = await tx`SELECT day::text AS day, slot, units_available, blocked_by_client, price_override
-    FROM availability WHERE rentable_id = ${listing.id} ORDER BY day, slot`;
-  return { bookings, reservations, availability };
+  const [state] = await tx`SELECT
+    COALESCE((SELECT json_agg(b ORDER BY b.id) FROM (
+      SELECT b.id, b.order_id, b.state, b.hours_known, b.units_booked,
+        b.starts_at, b.ends_at, b.blocked_start_at, b.blocked_end_at,
+        o.state AS order_state, o.hold_expires_at AS order_hold_expires_at
+      FROM booking b LEFT JOIN booking_order o ON o.id = b.order_id
+      WHERE b.rentable_id = ${listing.id} AND (b.state IN ${tx(ACTIVE_BOOKINGS)}
+        OR (b.state='completed' AND EXISTS(SELECT 1 FROM inventory_reservation r
+          WHERE r.booking_id=b.id AND r.source='booking' AND r.state IN ('held','committed'))))
+    ) b), '[]'::json) AS bookings,
+    COALESCE((SELECT json_agg(r ORDER BY r.id) FROM (
+      SELECT * FROM inventory_reservation WHERE rentable_id = ${listing.id}
+        AND state IN ('held', 'committed')
+    ) r), '[]'::json) AS reservations,
+    COALESCE((SELECT json_agg(a ORDER BY a.day,a.slot) FROM (
+      SELECT day::text AS day, slot, units_available, blocked_by_client, price_override
+      FROM availability WHERE rentable_id = ${listing.id}
+    ) a), '[]'::json) AS availability`;
+  return state;
 }
 
 function legacyOwnerIntervals(listing, rows, now) {

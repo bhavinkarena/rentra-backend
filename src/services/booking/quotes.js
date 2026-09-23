@@ -143,6 +143,32 @@ export async function revalidateHeldQuoteTerms(tx, listing, order, variables = p
   return quote;
 }
 
+/** Batch independent calendar inputs to avoid one remote DB round trip per table.
+ * Booking writes still use currentInputs and recheck under the same inventory lock.
+ */
+async function currentCalendarInputs(tx, listing, dates, variables) {
+  const [inputs] = await tx`
+    SELECT clock_timestamp() AS now,
+      EXISTS(SELECT 1 FROM "user" WHERE id=${listing.client_id}
+        AND role='client' AND account_status='active') AS owner_active,
+      COALESCE((SELECT json_agg(r ORDER BY r.slot) FROM (
+        SELECT slot,weekday,weekend FROM rentable_price WHERE rentable_id=${listing.id}
+      ) r), '[]'::json) AS rates,
+      COALESCE((SELECT json_agg(a ORDER BY a.day,a.slot) FROM (
+        SELECT day::text AS day,slot,price_override FROM availability
+        WHERE rentable_id=${listing.id} AND day BETWEEN ${dates[0]} AND ${dates.at(-1)}
+          AND price_override IS NOT NULL
+      ) a), '[]'::json) AS legacy,
+      COALESCE((SELECT json_agg(o ORDER BY o.day,o.slot) FROM (
+        SELECT day::text AS day,slot,rent_minor FROM booking_price_override
+        WHERE rentable_id=${listing.id} AND day BETWEEN ${dates[0]} AND ${dates.at(-1)}
+      ) o), '[]'::json) AS explicit`;
+  if (!inputs.owner_active) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
+  // prepareInventoryCheck expires holds before reading the reservation snapshot.
+  const payment = await getPaymentConfiguration(tx, variables);
+  return { now: inputs.now, rates: inputs.rates, overrides: [...inputs.legacy, ...inputs.explicit], payment };
+}
+
 /** Bounded public read with the same price/config/interval rules as quoting. */
 export async function getBookingAvailability(database, { rentableId, from, to, guests = 1 }, variables = process.env) {
   localDateSchema.parse(from);
@@ -157,7 +183,7 @@ export async function getBookingAvailability(database, { rentableId, from, to, g
     const days = {};
     // No database writes to booking_quote occur while painting the calendar.
     const input = bookingSelectionSchema.parse({ rentableId, dates: [from], slot: 'day', guests });
-    const inputs = await currentInputs(tx, listing, { ...input, dates }, variables);
+    const inputs = await currentCalendarInputs(tx, listing, dates, variables);
     const checkInventory = await prepareInventoryCheck(tx, listing);
     for (const date of dates) {
       const entry = { day: false, night: false, full: false, pricesMinor: {}, priceOverride: {}, reasons: {}, intervals: {} };
