@@ -73,6 +73,39 @@ export async function withListingInventory(database, rentableId, run) {
   }
 }
 
+/**
+ * Public calendar reads only. A read-only repeatable-read snapshot: no listing
+ * mutex, no row locks and no writes, so browsing never queues behind checkout
+ * or other viewers. Expired holds are treated as free instead of being expired
+ * here; writers still expire them under withListingInventory.
+ */
+export async function withListingSnapshot(database, rentableId, run) {
+  assertId(rentableId);
+  return database.begin('isolation level repeatable read read only', async (tx) => {
+    const [row] = await tx`SELECT *, clock_timestamp() AS inventory_now FROM rentable WHERE id = ${rentableId}`;
+    if (!row) throw new InventoryError('NOT_FOUND', 'Listing unavailable.');
+    const { inventory_now: now, ...listing } = row;
+    lockContexts.set(tx, { rentableId, now: instant(now), readOnly: true });
+    try {
+      return await run(tx, listing);
+    } finally {
+      lockContexts.delete(tx);
+    }
+  });
+}
+
+/** What expireInventoryHolds would release, applied to a read-only snapshot. */
+function withoutExpiredHolds(state, now) {
+  const expired = (at) => at != null && instant(at) <= now;
+  const bookings = state.bookings.filter(
+    (booking) => !(booking.state === 'requested' && booking.order_state === 'held' && expired(booking.order_hold_expires_at)),
+  );
+  const reservations = state.reservations.filter(
+    (row) => !(row.source === 'booking' && row.state === 'held' && !bookings.some((booking) => booking.id === row.booking_id)),
+  );
+  return { ...state, bookings, reservations };
+}
+
 /** Release expired holds once; payment settlement/reconciliation is independent. */
 export async function expireInventoryHolds(tx, rentableId, now) {
   const context = contextFor(tx, rentableId);
@@ -206,8 +239,13 @@ export async function prepareInventoryCheck(tx, listing) {
   if (listing.booking_config?.inventoryReady !== true) {
     throw new InventoryError('INVENTORY_NOT_READY', 'This listing is awaiting inventory setup.');
   }
-  await expireInventoryHolds(tx, listing.id);
-  const state = await getInventoryState(tx, listing);
+  let state;
+  if (context.readOnly) {
+    state = withoutExpiredHolds(await getInventoryState(tx, listing), context.now);
+  } else {
+    await expireInventoryHolds(tx, listing.id);
+    state = await getInventoryState(tx, listing);
+  }
   await auditInventoryReadiness(tx, listing, state);
   const ownerIntervals = legacyOwnerIntervals(listing, state.availability, context.now);
   return (visits) => {

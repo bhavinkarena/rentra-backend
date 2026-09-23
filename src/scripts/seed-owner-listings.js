@@ -394,17 +394,15 @@ for (const [idx, l] of LISTINGS.entries()) {
 
 /* ----------------------------- availability ----------------------------- */
 const availRows = [];
-for (const [idx, { row }] of inserted.entries()) {
+for (const { row } of inserted) {
   for (let i = 0; i < 90; i += 1) {
     const d = new Date(today);
     d.setDate(d.getDate() + i);
-    // Deterministic but uneven blocks, so the calendar looks lived-in rather
-    // than machine-generated.
-    const blocked = (i + idx * 5) % 11 === 0 || (i + idx * 2) % 17 === 0;
+    // Every date starts open; only real bookings and owner blocks close one.
     for (const slot of ['day', 'night']) {
       availRows.push({
         rentableId: row.id, day: d.toISOString().slice(0, 10), slot,
-        unitsAvailable: blocked ? 0 : 1, blockedByClient: blocked,
+        unitsAvailable: 1, blockedByClient: false,
       });
     }
   }

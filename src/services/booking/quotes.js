@@ -6,7 +6,7 @@ import { BOOKING_POLICY } from '../domain/booking-policy.js';
 import { addLocalDays, buildVisitIntervals, propertyToday } from '../domain/booking-dates.js';
 import { legacyRupeesToMinor, priceVisitsMinor } from '../domain/booking-money.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
-import { withListingInventory, expireInventoryHolds, findInventoryConflicts, prepareInventoryCheck } from './inventory.js';
+import { withListingInventory, withListingSnapshot, expireInventoryHolds, findInventoryConflicts, prepareInventoryCheck } from './inventory.js';
 
 export class BookingQuoteError extends Error {
   constructor(code, message, conflicts = []) { super(message); this.code = code; this.conflicts = conflicts; }
@@ -164,7 +164,7 @@ async function currentCalendarInputs(tx, listing, dates, variables) {
         WHERE rentable_id=${listing.id} AND day BETWEEN ${dates[0]} AND ${dates.at(-1)}
       ) o), '[]'::json) AS explicit`;
   if (!inputs.owner_active) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
-  // prepareInventoryCheck expires holds before reading the reservation snapshot.
+  // prepareInventoryCheck treats expired holds as free in the read-only snapshot.
   const payment = await getPaymentConfiguration(tx, variables);
   return { now: inputs.now, rates: inputs.rates, overrides: [...inputs.legacy, ...inputs.explicit], payment };
 }
@@ -179,12 +179,15 @@ export async function getBookingAvailability(database, { rentableId, from, to, g
     if (dates.length >= 120) throw new BookingQuoteError('INVALID_RANGE', 'Choose at most 120 calendar days.');
     dates.push(day);
   }
-  return withListingInventory(database, rentableId, async (tx, listing) => {
+  // A read-only snapshot: painting the calendar never locks or writes, so it
+  // cannot queue behind checkout. Every write rechecks under the listing lock.
+  return withListingSnapshot(database, rentableId, async (tx, listing) => {
     const days = {};
-    // No database writes to booking_quote occur while painting the calendar.
     const input = bookingSelectionSchema.parse({ rentableId, dates: [from], slot: 'day', guests });
-    const inputs = await currentCalendarInputs(tx, listing, dates, variables);
-    const checkInventory = await prepareInventoryCheck(tx, listing);
+    const [inputs, checkInventory] = await Promise.all([
+      currentCalendarInputs(tx, listing, dates, variables),
+      prepareInventoryCheck(tx, listing),
+    ]);
     for (const date of dates) {
       const entry = { day: false, night: false, full: false, pricesMinor: {}, priceOverride: {}, reasons: {}, intervals: {} };
       for (const slot of ['day', 'night', 'full_day']) {

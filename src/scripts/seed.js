@@ -439,18 +439,17 @@ for (const l of LISTINGS) {
 console.log('[seed] availability — 90 days x day/night per listing');
 const today = new Date();
 const availRows = [];
-for (const [idx, { row }] of inserted.entries()) {
+for (const { row } of inserted) {
   for (let i = 0; i < 90; i += 1) {
     const d = new Date(today);
     d.setDate(d.getDate() + i);
     const day = d.toISOString().slice(0, 10);
-    // Deterministic but uneven blocks, so the calendar looks lived-in.
-    const blocked = (i + idx * 3) % 13 === 0 || (i + idx) % 19 === 0;
+    // Every date starts open; only real bookings and owner blocks close one.
     for (const slot of ['day', 'night']) {
       availRows.push({
         rentableId: row.id, day, slot,
-        unitsAvailable: blocked ? 0 : 1,
-        blockedByClient: blocked,
+        unitsAvailable: 1,
+        blockedByClient: false,
       });
     }
   }

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   withListingInventory,
+  withListingSnapshot,
   prepareInventoryCheck,
 } from '../../src/services/booking/inventory.js';
 
@@ -68,4 +69,69 @@ test('JSON timestamps preserve committed booking overlap checks', async () => {
     blocked_end_at: visit.blockedEndAt,
   };
   assert.equal((await check([reservation], [booking]))[0].code, 'INVENTORY_UNAVAILABLE');
+});
+
+async function snapshotCheck(holdExpiresAt) {
+  const listing = { id, total_units: 1, booking_config: { inventoryReady: true } };
+  const queries = [];
+  const booking = {
+    id: 'booking',
+    order_id: 'order',
+    state: 'requested',
+    hours_known: true,
+    units_booked: 1,
+    blocked_start_at: visit.blockedStartAt,
+    blocked_end_at: visit.blockedEndAt,
+    order_state: 'held',
+    order_hold_expires_at: holdExpiresAt,
+  };
+  const reservation = {
+    booking_id: 'booking',
+    source: 'booking',
+    state: 'held',
+    hold_expires_at: holdExpiresAt,
+    blocked_start_at: visit.blockedStartAt,
+    blocked_end_at: visit.blockedEndAt,
+  };
+  const availability = [
+    { day: visit.date, slot: 'day', units_available: 1, blocked_by_client: false },
+  ];
+  const tx = async (strings) => {
+    const query = strings.join('?');
+    queries.push(query);
+    if (query.includes('FROM rentable'))
+      return [{ ...listing, inventory_now: new Date('2026-09-23T00:00:00Z') }];
+    if (query.includes('AS bookings'))
+      return [{ bookings: [booking], reservations: [reservation], availability }];
+    return [];
+  };
+  let mode;
+  const conflicts = await withListingSnapshot(
+    {
+      begin: (options, fn) => {
+        mode = options;
+        return fn(tx);
+      },
+    },
+    id,
+    async (transaction, row) => {
+      assert.equal(row.inventory_now, undefined);
+      return (await prepareInventoryCheck(transaction, row))([visit]);
+    },
+  );
+  return { conflicts, queries, mode };
+}
+
+test('calendar snapshot is read-only and never locks or writes', async () => {
+  const { queries, mode } = await snapshotCheck('2026-09-23T01:00:00Z');
+  assert.match(mode, /read only/);
+  for (const query of queries) assert.doesNotMatch(query, /FOR UPDATE|UPDATE |INSERT /);
+});
+
+test('calendar snapshot frees expired holds but keeps live holds', async () => {
+  assert.deepEqual((await snapshotCheck('2026-09-22T23:00:00Z')).conflicts, []);
+  assert.equal(
+    (await snapshotCheck('2026-09-23T01:00:00Z')).conflicts[0].code,
+    'INVENTORY_UNAVAILABLE',
+  );
 });
