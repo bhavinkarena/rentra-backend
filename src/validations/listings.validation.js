@@ -11,6 +11,8 @@ export const listingsPageQuery = z.object({
       'all',
       'review',
       'attention',
+      'resubmit',
+      'unbookable',
       'draft',
       'pending_review',
       'pending_verification',

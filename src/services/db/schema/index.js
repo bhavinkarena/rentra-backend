@@ -1707,6 +1707,37 @@ export const notificationOutbox = pgTable('notification_outbox', {
   check('notification_valid_chk', sql`${t.template} IN ('confirmation','reminder','cancellation','refund','completion','review_invitation')
     AND ${t.channel}='sms' AND ${t.attempts}>=0 AND ${t.state} IN ('pending','blocked','retry','sending','unknown','accepted','delivered','undelivered','suppressed','failed')`)]);
 
+/**
+ * The client's persisted updates inbox (CP15). Rows are written by database
+ * triggers on audit_log, booking_lifecycle_event and booking_case_update, so
+ * every writer produces them in its own transaction and a replayed event
+ * (same event key) produces nothing new. Only client-safe detail is stored.
+ * `kind` separates required work ('action') from information ('info').
+ */
+export const clientUpdate = pgTable('client_update', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  clientId: uuid('client_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  eventKey: varchar('event_key', { length: 160 }).notNull(),
+  category: varchar('category', { length: 16 }).notNull(),
+  kind: varchar('kind', { length: 8 }).notNull(),
+  action: varchar('action', { length: 64 }).notNull(),
+  rentableId: uuid('rentable_id').references(() => rentable.id, { onDelete: 'restrict' }),
+  orderId: uuid('order_id').references(() => bookingOrder.id, { onDelete: 'restrict' }),
+  detail: jsonb('detail').notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  readAt: timestamp('read_at', { withTimezone: true }),
+}, t => [uniqueIndex('client_update_event_idx').on(t.clientId, t.eventKey),
+  index('client_update_client_idx').on(t.clientId, t.createdAt),
+  check('client_update_valid_chk', sql`${t.category} IN ('account','property','booking','case') AND ${t.kind} IN ('action','info')`)]);
+
+/** Informational categories the client chose to receive already read. Required work cannot be muted. */
+export const clientUpdatePreference = pgTable('client_update_preference', {
+  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'restrict' }),
+  muted: jsonb('muted').notNull().default([]),
+  version: integer('version').notNull().default(1),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const reviewReport = pgTable('review_report', {
   id: uuid('id').primaryKey().defaultRandom(),
   reviewId: uuid('review_id').notNull().references(() => review.id, { onDelete: 'restrict' }),

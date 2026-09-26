@@ -1,7 +1,7 @@
 import 'server-only';
 
 import {
-  and, asc, count, desc, eq, ilike, inArray, isNull, or,
+  and, asc, count, desc, eq, ilike, inArray, isNull, or, sql as raw,
 } from 'drizzle-orm';
 import { db, sql } from './index.js';
 import {
@@ -36,6 +36,16 @@ function listingFilters(clientId, { query = '', status = 'all' } = {}) {
     filters.push(inArray(rentable.status, ['pending_review', 'pending_verification']));
   } else if (status === 'attention') {
     filters.push(inArray(rentable.status, ['draft', 'rejected']));
+  } else if (status === 'resubmit') {
+    // Edited while waiting for review: no submission matches the current content (CP06).
+    filters.push(eq(rentable.status, 'pending_review'), raw`NOT EXISTS (SELECT 1 FROM listing_submission s
+      WHERE s.rentable_id=${rentable.id} AND s.pass_number=${rentable.reviewPass}
+        AND s.content_version=${rentable.contentVersion})`);
+  } else if (status === 'unbookable') {
+    // Live is not bookable until hours are confirmed and a future date is open (CP09).
+    filters.push(eq(rentable.status, 'live'), raw`NOT (coalesce(${rentable.bookingConfig}->>'inventoryReady','')='true'
+      AND EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=${rentable.id}
+        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0 AND a.blocked_by_client = false))`);
   } else if (FILTERABLE_STATUSES.has(status)) {
     filters.push(eq(rentable.status, status));
   }

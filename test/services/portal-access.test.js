@@ -4,6 +4,7 @@ import {
   capabilitiesFor,
   canAccessRoute,
   CARETAKER_CAPABILITIES,
+  routeCapability,
 } from '@/services/auth/capabilities.js';
 import { validPortalSession } from '@/services/auth/portal-sessions.js';
 
@@ -122,4 +123,18 @@ test('restriction and correction commands need admin.properties.write', () => {
     assert.equal(canAccessRoute(reader, 'admin', 'POST', `/properties/${id}/${path}`), false);
     assert.equal(canAccessRoute(writer, 'admin', 'POST', `/properties/${id}/${path}`), true);
   }
+});
+
+test('updates reach onboarding clients; tasks need an active client', () => {
+  const pending = { role: 'client', accountStatus: 'pending_application', capabilities: [] };
+  const active = { role: 'client', accountStatus: 'active' };
+  const suspended = { role: 'client', accountStatus: 'suspended' };
+  pending.capabilities = capabilitiesFor(pending, 'client');
+  assert.ok(pending.capabilities.includes('client.updates.read'));
+  assert.ok(pending.capabilities.includes('client.updates.write'));
+  assert.equal(pending.capabilities.includes('client.tasks.read'), false);
+  assert.ok(capabilitiesFor(active, 'client').includes('client.tasks.read'));
+  assert.deepEqual(capabilitiesFor(suspended, 'client'), []);
+  assert.equal(routeCapability('client', 'POST', '/updates/read'), 'client.updates.write');
+  assert.equal(routeCapability('client', 'GET', '/tasks'), 'client.tasks.read');
 });

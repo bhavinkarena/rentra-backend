@@ -6,6 +6,7 @@ import * as settings from '@/controllers/settings.controller.js';
 import * as booking from '@/controllers/booking.controller.js';
 import * as records from '@/controllers/records.controller.js';
 import * as reviews from '@/controllers/reviews.controller.js';
+import * as updates from '@/controllers/updates.controller.js';
 import {
   requireRole,
   requireActiveClient,
@@ -163,6 +164,17 @@ router.post(
 );
 router.post('/listings/:id/calendar/block', requireActiveClient, formFields(), booking.block);
 router.post('/listings/:id/calendar/unblock', requireActiveClient, formFields(), booking.unblock);
+
+/* ---------------------------------------------------------------- *
+ * Updates inbox and tasks (CP15). Updates also serve clients still in
+ * onboarding: their application decisions arrive here.
+ * ---------------------------------------------------------------- */
+router.get('/updates', client, updates.list);
+router.get('/updates/unread', client, updates.unread);
+router.post('/updates/read', client, formFields(), updates.read);
+router.get('/updates/preferences', client, updates.preferences);
+router.post('/updates/preferences', client, formFields(), updates.savePreferences);
+router.get('/tasks', requireActiveClient, updates.tasks);
 
 /* ---------------------------------------------------------------- *
  * Bookings against the owner's places
