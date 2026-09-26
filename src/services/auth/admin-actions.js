@@ -120,7 +120,7 @@ export async function adminLogin(_prev, formData) {
     failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date(),
   }).where(eq(adminUsers.id, admin.id));
 
-  await createAdminSession(admin.id);
+  await createAdminSession(admin.id, { email: admin.email, passwordHash: admin.passwordHash, totpSecret: admin.totpSecret });
 
   await audit({
     actorType: 'admin', actorId: admin.id, entity: 'admin_user',

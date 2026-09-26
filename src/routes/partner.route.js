@@ -6,7 +6,11 @@ import * as settings from '@/controllers/settings.controller.js';
 import * as booking from '@/controllers/booking.controller.js';
 import * as records from '@/controllers/records.controller.js';
 import * as reviews from '@/controllers/reviews.controller.js';
-import { requireRole, requireActiveClient } from '@/middlewares/auth.middleware.js';
+import {
+  requireRole,
+  requireActiveClient,
+  requirePortalCapability,
+} from '@/middlewares/auth.middleware.js';
 import { uploadLimiter } from '@/middlewares/rateLimit.middleware.js';
 import { formFields, manyFiles, singleFile, fileFields } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
@@ -24,6 +28,7 @@ import { recordIdParam, historyQuery } from '@/validations/records.validation.js
  */
 const router = Router();
 const client = requireRole('client');
+router.use(requirePortalCapability('client'));
 
 /* ---------------------------------------------------------------- *
  * Onboarding application

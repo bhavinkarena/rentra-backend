@@ -5,7 +5,10 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { SignJWT, jwtVerify } from 'jose';
 import { eq } from 'drizzle-orm';
-import { db } from '@/services/db';
+import { db, sql } from '@/services/db';
+import { issuePortalSession, validPortalSession, revokePortalSession } from './portal-sessions.js';
+import { capabilitiesFor } from './capabilities.js';
+import { unauthorized } from '@/utils/apiError.js';
 import { adminUsers } from '@/services/db/schema/index.js';
 import { getEnv } from '@/services/schemas/joi/env';
 
@@ -26,8 +29,10 @@ function key() {
   return new TextEncoder().encode(getEnv().SESSION_SECRET);
 }
 
-export async function createAdminSession(adminId) {
-  const token = await new SignJWT({ adminId })
+export async function createAdminSession(adminId, verified) {
+  const sessionId = await issuePortalSession(sql, 'admin', adminId, ADMIN_TTL_SECONDS, verified);
+  if (!sessionId) throw unauthorized('ADMIN_REQUIRED');
+  const token = await new SignJWT({ adminId, sessionId })
     .setProtectedHeader({ alg: 'HS256' })
     .setAudience(AUDIENCE)
     .setIssuedAt()
@@ -45,6 +50,7 @@ export async function createAdminSession(adminId) {
 }
 
 export async function destroyAdminSession() {
+  await revokePortalSession(sql, await readAdminToken(), 'admin');
   const jar = await cookies();
   jar.delete(ADMIN_COOKIE);
 }
@@ -67,7 +73,7 @@ async function readAdminToken() {
 
 export const getCurrentAdmin = cache(async () => {
   const payload = await readAdminToken();
-  if (!payload?.adminId) return null;
+  if (!payload?.adminId || !(await validPortalSession(sql, payload, 'admin'))) return null;
 
   const [admin] = await db
     .select({
@@ -75,6 +81,7 @@ export const getCurrentAdmin = cache(async () => {
       email: adminUsers.email,
       name: adminUsers.name,
       isActive: adminUsers.isActive,
+      permissions: adminUsers.permissions,
       hasTotp: adminUsers.totpSecret,
       lastLoginAt: adminUsers.lastLoginAt,
     })
@@ -85,7 +92,8 @@ export const getCurrentAdmin = cache(async () => {
   // Deactivated mid-session? The cookie is still valid but the account is not.
   if (!admin || !admin.isActive) return null;
 
-  return { ...admin, hasTotp: Boolean(admin.hasTotp) };
+  const { permissions: _permissions, ...publicAdmin } = admin;
+  return { ...publicAdmin, capabilities: capabilitiesFor(admin, 'admin'), hasTotp: Boolean(admin.hasTotp) };
 });
 
 export async function requireAdmin() {

@@ -149,6 +149,7 @@ export async function verifyClientOtp(_prev, formData) {
 
   await createSession({
     userId: user.id,
+    verifiedEmail: email,
     role: user.role,
     accountStatus: user.accountStatus,
   });

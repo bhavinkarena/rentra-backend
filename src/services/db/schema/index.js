@@ -468,6 +468,7 @@ export const adminUsers = pgTable('admin_user', {
   email: varchar('email', { length: 254 }).notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   totpSecret: text('totp_secret'),
+  permissions: jsonb('permissions'),
   name: varchar('name', { length: 160 }).notNull(),
   isActive: boolean('is_active').notNull().default(true),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
@@ -517,6 +518,19 @@ export const city = pgTable('city', {
   state: varchar('state', { length: 80 }).notNull(),
   isActive: boolean('is_active').notNull().default(true),
 });
+
+export const portalSession = pgTable('portal_session', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  adminId: uuid('admin_id').references(() => adminUsers.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, t => [
+  check('portal_session_principal_chk', sql`(${t.userId} IS NOT NULL) <> (${t.adminId} IS NOT NULL)`),
+  index('portal_session_user_idx').on(t.userId),
+  index('portal_session_admin_idx').on(t.adminId),
+]);
 
 export const area = pgTable(
   'area',

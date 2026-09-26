@@ -4,6 +4,8 @@ import { cache } from 'react';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
 import { validCustomerSession } from './customer-identity';
+import { validPortalSession } from './portal-sessions.js';
+import { capabilitiesFor } from './capabilities.js';
 import { db, sql } from '@/services/db';
 import { users } from '@/services/db/schema/index.js';
 import { readSession } from './session';
@@ -53,10 +55,10 @@ export const getCurrentUser = cache(async () => {
   // Both checks remain request-local and authoritative, but neither needs the other's result.
   const [[user], sessionValid] = await Promise.all([
     userQuery,
-    session.role === 'customer' ? validCustomerSession(sql, session) : true,
+    session.role === 'customer' ? validCustomerSession(sql, session) : validPortalSession(sql, session, 'client'),
   ]);
   if (!user || user.role !== session.role || !sessionValid) return null;
-  return user;
+  return { ...user, capabilities: capabilitiesFor(user, 'client') };
 });
 
 /** Redirects to the role's login route when there is no valid session. */

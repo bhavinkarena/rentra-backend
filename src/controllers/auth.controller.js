@@ -29,7 +29,7 @@ export const signOut = runAction(logout, { style: 'none' });
  */
 export const me = asyncHandler(async (req, res) => {
   const user = req.user ?? null;
-  if (!user) return ok(res, { user: null });
+  if (!user) return ok(res, { user: null, sessionState: req.session ? 'ended' : 'signed_out' });
 
   if (user.role !== 'client') return ok(res, { user, completion: null });
 

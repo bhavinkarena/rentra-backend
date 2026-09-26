@@ -2,6 +2,26 @@ import { getCurrentUser, getSession } from '@/services/auth/dal.js';
 import { getCurrentAdmin } from '@/services/auth/admin.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { unauthorized, forbidden } from '@/utils/apiError.js';
+import { routeCapability } from '@/services/auth/capabilities.js';
+
+/** Mounted before all portal controllers, including private file/download routes. */
+export const requirePortalCapability = (kind) =>
+  asyncHandler(async (req, _res, next) => {
+    const actor = kind === 'admin' ? await getCurrentAdmin() : await getCurrentUser();
+    if (!actor)
+      throw unauthorized(
+        kind === 'admin' ? 'ADMIN_REQUIRED' : 'CLIENT_REQUIRED',
+        'Your session has expired or was revoked. Sign in again.',
+      );
+    const capability = routeCapability(kind, req.method, req.path);
+    if (!capability || !actor.capabilities?.includes(capability)) {
+      throw forbidden(
+        'CAPABILITY_REQUIRED',
+        'Your account does not have permission for this action.',
+      );
+    }
+    next();
+  });
 
 /**
  * Authorisation for HTTP.

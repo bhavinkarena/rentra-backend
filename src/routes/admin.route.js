@@ -5,7 +5,7 @@ import * as records from '@/controllers/records.controller.js';
 import * as reviews from '@/controllers/reviews.controller.js';
 import * as support from '@/controllers/support.controller.js';
 import * as notifications from '@/controllers/notifications.controller.js';
-import { requireAdmin } from '@/middlewares/auth.middleware.js';
+import { requireAdmin, requirePortalCapability } from '@/middlewares/auth.middleware.js';
 import { formFields } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
 import {
@@ -25,6 +25,7 @@ import { supportIdParam, supportListQuery } from '@/validations/support.validati
  */
 const router = Router();
 router.use(requireAdmin);
+router.use(requirePortalCapability('admin'));
 
 /** Nothing under /admin should ever be cached or indexed. */
 router.use((_req, res, next) => {

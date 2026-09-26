@@ -25,6 +25,7 @@ export async function encryptSession(payload) {
   return new SignJWT(payload)
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
+    .setAudience(`rentra:${payload.role}`)
     .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
     .sign(key());
 }
@@ -33,6 +34,9 @@ export async function decryptSession(token) {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, key(), { algorithms: ['HS256'] });
+    // Existing customer tokens remain compatible; legacy client tokens must sign in again.
+    if (!['client', 'customer'].includes(payload.role)) return null;
+    if (payload.aud !== `rentra:${payload.role}` && !(payload.role === 'customer' && payload.aud === undefined)) return null;
     return payload;
   } catch {
     // Expired, tampered with, or signed by a rotated secret. All the same
