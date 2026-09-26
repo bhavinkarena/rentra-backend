@@ -26,6 +26,8 @@ import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 import { notFound } from '@/utils/apiError.js';
+import { propertyReviewContext } from '@/services/admin/listings.js';
+import { sql } from '@/config/database.js';
 
 /** The partner's own listings. Ownership is enforced by passing the client id. */
 export const summary = asyncHandler(async (req, res) =>
@@ -44,6 +46,11 @@ export const page = asyncHandler(async (req, res) =>
 export const detail = asyncHandler(async (req, res) => {
   const listing = await getListingForEdit(req.params.id, req.user.id);
   if (!listing) throw notFound('LISTING_NOT_FOUND', 'That listing does not exist.');
+  const review = await propertyReviewContext(sql, req.params.id);
+  listing.listing.reviewNeedsResubmission = review?.needsResubmission ?? false;
+  listing.listing.reviewFlaggedFields = listing.reviews.at(-1)?.flaggedFields ?? [];
+  listing.listing.reviewOutcome = listing.reviews.at(-1)?.outcome ?? null;
+  listing.review = review;
   return ok(res, listing);
 });
 
@@ -65,5 +72,9 @@ export const addPhotos = runAction(uploadListingPhotos);
 export const removePhoto = runAction(removeListingPhoto);
 export const reorderPhotos = runAction(reorderListingPhotos);
 export const ownershipDocument = runAction(uploadOwnershipDocument);
-export const submit = runAction(submitListing);
+const submitAction = runAction(submitListing);
+export const submit = (req, res, next) => {
+  req.body = { ...req.body, id: req.params.id };
+  return submitAction(req, res, next);
+};
 export const togglePause = runAction(toggleListingPause);

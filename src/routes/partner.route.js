@@ -107,7 +107,13 @@ router.post(
   singleFile('file'),
   listings.ownershipDocument,
 );
-router.post('/listings/:id/submit', client, formFields(), listings.submit);
+router.post(
+  '/listings/:id/submit',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.submit,
+);
 router.post('/listings/:id/pause', requireActiveClient, formFields(), listings.togglePause);
 
 /* ---------------------------------------------------------------- *

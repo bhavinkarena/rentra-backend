@@ -662,6 +662,7 @@ export const rentable = pgTable(
     rejectionReason: text('rejection_reason'),
     /** Increments each time the listing goes back for review. */
     reviewPass: integer('review_pass').notNull().default(0),
+    contentVersion: integer('content_version').notNull().default(1),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -720,6 +721,17 @@ export const rentableAmenity = pgTable(
  * Overwriting a single row would lose exactly the context that makes a later
  * decision defensible.
  */
+export const listingSubmission = pgTable('listing_submission', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  rentableId: uuid('rentable_id').notNull().references(() => rentable.id),
+  contentVersion: integer('content_version').notNull(),
+  passNumber: integer('pass_number').notNull(),
+  snapshot: jsonb('snapshot').notNull(),
+  submittedBy: uuid('submitted_by').notNull().references(() => users.id),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
+  assignedTo: uuid('assigned_to').references(() => adminUsers.id),
+}, t => [uniqueIndex('listing_submission_pass_idx').on(t.rentableId, t.passNumber)]);
+
 export const listingReview = pgTable(
   'listing_review',
   {
@@ -727,6 +739,7 @@ export const listingReview = pgTable(
     rentableId: uuid('rentable_id').notNull()
       .references(() => rentable.id, { onDelete: 'cascade' }),
     passNumber: integer('pass_number').notNull().default(1),
+    submissionId: uuid('submission_id').references(() => listingSubmission.id),
     /** { ownership, photos, contacts, price, rules, permits } — each a bool. */
     checklist: jsonb('checklist'),
     outcome: listingReviewOutcome('outcome').notNull(),
@@ -735,7 +748,7 @@ export const listingReview = pgTable(
     reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'set null' }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('listing_review_idx').on(t.rentableId, t.passNumber)],
+  (t) => [index('listing_review_idx').on(t.rentableId, t.passNumber), uniqueIndex('listing_review_submission_idx').on(t.submissionId)],
 );
 
 /**

@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import * as admin from '@/controllers/admin.controller.js';
 import * as clients from '@/controllers/clients.controller.js';
+import * as propertyReviews from '@/controllers/propertyReviews.controller.js';
+import { listingQueueQuery } from '@/services/admin/listings.js';
 import * as customers from '@/controllers/customers.controller.js';
 import * as payments from '@/controllers/payments.controller.js';
 import * as records from '@/controllers/records.controller.js';
@@ -45,6 +47,20 @@ router.use((_req, res, next) => {
  * Partner approval queue
  * ---------------------------------------------------------------- */
 router.get('/applications', validate({ query: applicationQueueQuery }), admin.queue);
+router.get('/properties', validate({ query: listingQueueQuery }), propertyReviews.list);
+router.get('/properties/:id', validate({ params: clientIdParam }), propertyReviews.detail);
+router.post(
+  '/properties/:id/assign',
+  validate({ params: clientIdParam }),
+  formFields(),
+  propertyReviews.assign,
+);
+router.post(
+  '/properties/:id/decision',
+  validate({ params: clientIdParam }),
+  formFields(),
+  propertyReviews.decide,
+);
 router.get('/applications/stats', admin.stats);
 router.get('/applications/decisions', validate({ query: decisionsQuery }), admin.decisions);
 router.get('/applications/:id', validate({ params: applicationIdParam }), admin.application);

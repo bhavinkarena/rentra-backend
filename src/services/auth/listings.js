@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { and, eq } from 'drizzle-orm';
 import { db, sql } from '@/services/db';
+import { submitProperty } from '../admin/listings.js';
 import { withListingInventory, InventoryError } from '@/services/booking/inventory';
 import { legacyRupeesToMinor } from '@/services/domain/booking-money';
 import {
@@ -16,7 +17,7 @@ import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
   pricingSchema, termsSchema, ownershipDocSchema,
 } from '@/services/schemas/zod/listing';
-import { listingCompletion, MIN_PHOTOS, MAX_PHOTOS } from '@/services/domain/listing-completion';
+import { MAX_PHOTOS } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
@@ -566,47 +567,10 @@ export async function uploadOwnershipDocument(_prev, formData) {
 /* ------------------------------- submit ------------------------------- */
 
 export async function submitListing(_prev, formData) {
-  const id = String(formData.get('id'));
-  const { user, listing, prices, amenities, photos, documents: docs } = await load(id);
-
-  // Re-checked server-side: rendering the button is not the authorisation.
-  const completion = listingCompletion(listing, { prices, amenities, photos, documents: docs });
-  if (completion.remaining.length) {
-    const labels = completion.remaining.map((s) => s.label.toLowerCase()).join(', ');
-    return { errors: { _: `Still to do: ${labels}` } };
-  }
-  if (photos.length < MIN_PHOTOS) {
-    return { errors: { _: `At least ${MIN_PHOTOS} photos are needed` } };
-  }
-  /**
-   * Completeness is not the only precondition — the STATUS is. Without this a
-   * replayed submit on a live listing would pull it out of search and back
-   * into the queue, which is a self-inflicted outage dressed as a form post.
-   */
-  if (!['draft', 'rejected'].includes(listing.status)) {
-    return { errors: { _: 'This property is not waiting to be submitted.' } };
-  }
-
-  await db.update(rentable).set({
-    status: 'pending_review',
-    reviewPass: listing.reviewPass + 1,
-    rejectionReason: null,
-    updatedAt: new Date(),
-  }).where(eq(rentable.id, listing.id));
-
-  await audit({
-    actorType: 'client', actorId: user.id, entity: 'rentable',
-    entityId: listing.id, action: 'listing_submitted',
-    after: { pass: listing.reviewPass + 1 }, ip: await clientIp(),
-  });
-
-  // Before the redirect — `redirect()` throws to unwind, so anything after it
-  // never runs.
+  const user = await requireActiveClient();
+  const listing = await submitProperty(sql, { id: String(formData.get('id')), clientId: user.id, ip: await clientIp() });
   revalidateListing(listing, { statusChanged: true });
-
-  // A full screen, not a banner on a list. Twenty-five minutes of work
-  // deserves an ending that says what happens next — see the page itself.
-  redirect(`/partner/listings/${listing.id}/submitted`);
+  redirect(`/partner/listings/${listing.id}?submitted=1`);
 }
 
 /** Owner-side pause. Leaves search; calendar and bookings are preserved. */
