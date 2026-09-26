@@ -31,6 +31,7 @@ import { applicationQueueQuery } from '@/services/admin/applications.js';
 import {
   recordIdParam,
   recordAttachmentParams,
+  caseIdParam,
   operationalHistoryQuery,
 } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
@@ -193,6 +194,14 @@ router.post('/payments/configuration', formFields(), payments.saveConfiguration)
  * Bookings, reviews, support, notifications — the admin view of each
  * ---------------------------------------------------------------- */
 router.get('/records', validate({ query: operationalHistoryQuery }), records.history);
+// CP14 cases sit under /records (admin.records.*) and before /records/:id, which would reject "cases".
+router.get('/records/cases', records.caseList);
+router.get('/records/cases/:caseId', validate({ params: caseIdParam }), records.caseDetail);
+router.post('/records/cases', formFields(), records.adminCreateCase);
+router.post('/records/cases/assign', formFields(), records.assignCase);
+router.post('/records/cases/update', formFields(), records.adminCaseUpdate);
+router.post('/records/cases/preview', formFields(), records.previewCase);
+router.post('/records/cases/resolve', formFields(), records.resolveCase);
 router.get('/records/:id', validate({ params: recordIdParam }), records.detail);
 router.get('/records/:id/summary', validate({ params: recordIdParam }), records.summary);
 router.get(

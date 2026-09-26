@@ -1606,6 +1606,79 @@ export const visitAttachment = pgTable('visit_attachment', {
     AND ${t.bytes} BETWEEN 1 AND 2097152 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
     AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin')`)]);
 
+/**
+ * CP14: an admin booking case tied to exact visits. Owners request, admins
+ * resolve once through a previewed command. A cancellation reuses the existing
+ * cancellation/refund records; a case never edits accepted booking terms.
+ */
+export const bookingCase = pgTable('booking_case', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  reference: varchar('reference', { length: 24 }).notNull(),
+  orderId: uuid('order_id').notNull().references(() => bookingOrder.id, { onDelete: 'restrict' }),
+  type: varchar('type', { length: 24 }).notNull(),
+  requesterKind: varchar('requester_kind', { length: 16 }).notNull(),
+  source: varchar('source', { length: 16 }).notNull(),
+  reason: text('reason').notNull(),
+  requestedOutcome: text('requested_outcome'),
+  requestedChange: jsonb('requested_change'),
+  state: varchar('state', { length: 16 }).notNull().default('open'),
+  outcome: varchar('outcome', { length: 24 }),
+  outcomeNote: text('outcome_note'),
+  refundBasis: varchar('refund_basis', { length: 16 }),
+  cancellationId: uuid('cancellation_id').references(() => bookingCancellation.id, { onDelete: 'restrict' }),
+  assigneeId: uuid('assignee_id').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  version: integer('version').notNull().default(1),
+  createdByKind: varchar('created_by_kind', { length: 16 }).notNull(),
+  createdById: uuid('created_by_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: uuid('resolved_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  requestKey: uuid('request_key').notNull(),
+  requestHash: varchar('request_hash', { length: 64 }).notNull(),
+  resolveKey: uuid('resolve_key'),
+  resolveHash: varchar('resolve_hash', { length: 64 }),
+}, t => [uniqueIndex('booking_case_reference_idx').on(t.reference),
+  uniqueIndex('booking_case_request_idx').on(t.createdByKind, t.createdById, t.requestKey),
+  index('booking_case_queue_idx').on(t.state, t.createdAt),
+  index('booking_case_order_idx').on(t.orderId),
+  index('booking_case_assignee_idx').on(t.assigneeId, t.state),
+  check('booking_case_valid_chk', sql`${t.type} IN ('owner_cancellation','customer_cancellation','change_request','no_show','late_arrival','operational')
+    AND ${t.requesterKind} IN ('customer','owner','admin') AND ${t.source} IN ('portal','support','phone','email','internal')
+    AND ${t.createdByKind} IN ('owner','admin') AND (${t.createdByKind}='admin' OR (${t.requesterKind}='owner' AND ${t.source}='portal'
+      AND ${t.type} IN ('owner_cancellation','no_show','late_arrival','operational')))
+    AND length(trim(${t.reason})) BETWEEN 10 AND 1000 AND (${t.requestedOutcome} IS NULL OR length(${t.requestedOutcome}) <= 500)
+    AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.version} >= 1 AND ${t.state} IN ('open','resolved')
+    AND ((${t.state}='open' AND ${t.outcome} IS NULL AND ${t.outcomeNote} IS NULL AND ${t.refundBasis} IS NULL AND ${t.cancellationId} IS NULL
+        AND ${t.resolvedAt} IS NULL AND ${t.resolvedBy} IS NULL AND ${t.resolveKey} IS NULL AND ${t.resolveHash} IS NULL)
+      OR (${t.state}='resolved' AND ${t.outcome} IN ('visits_cancelled','declined','no_change') AND length(trim(${t.outcomeNote})) BETWEEN 10 AND 1000
+        AND ${t.resolvedAt} IS NOT NULL AND ${t.resolvedBy} IS NOT NULL AND ${t.resolveKey} IS NOT NULL AND ${t.resolveHash} ~ '^[a-f0-9]{64}$'
+        AND ((${t.outcome}='visits_cancelled') = (${t.cancellationId} IS NOT NULL))
+        AND ((${t.outcome}='visits_cancelled') = (${t.refundBasis} IN ('policy','full')))))`)]);
+
+/** CP14: the exact visits a case concerns. */
+export const bookingCaseVisit = pgTable('booking_case_visit', {
+  caseId: uuid('case_id').notNull().references(() => bookingCase.id, { onDelete: 'restrict' }),
+  bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'restrict' }),
+}, t => [primaryKey({ columns: [t.caseId, t.bookingId] }), index('booking_case_visit_booking_idx').on(t.bookingId)]);
+
+/** CP14: case progress. Every update names who may read it. */
+export const bookingCaseUpdate = pgTable('booking_case_update', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  caseId: uuid('case_id').notNull().references(() => bookingCase.id, { onDelete: 'restrict' }),
+  kind: varchar('kind', { length: 16 }).notNull(),
+  audience: varchar('audience', { length: 16 }).notNull(),
+  body: text('body').notNull(),
+  actorKind: varchar('actor_kind', { length: 16 }).notNull(),
+  actorId: uuid('actor_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  requestKey: uuid('request_key'),
+}, t => [index('booking_case_update_case_idx').on(t.caseId, t.createdAt),
+  uniqueIndex('booking_case_update_request_idx').on(t.caseId, t.actorKind, t.actorId, t.requestKey).where(sql`${t.requestKey} IS NOT NULL`),
+  check('booking_case_update_valid_chk', sql`${t.kind} IN ('created','assigned','message','resolved')
+    AND ${t.audience} IN ('internal','client','customer','everyone') AND ${t.actorKind} IN ('owner','admin','system')
+    AND length(trim(${t.body})) BETWEEN 1 AND 2000 AND (${t.actorKind}<>'owner' OR ${t.audience}='client')`)]);
+
 export const notificationOutbox = pgTable('notification_outbox', {
   id: uuid('id').primaryKey().defaultRandom(),
   orderId: uuid('order_id').notNull().references(() => bookingOrder.id, { onDelete: 'restrict' }),

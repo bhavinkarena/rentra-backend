@@ -20,6 +20,17 @@ import {
   correctAdminEvidence,
   visitAttachmentFile,
 } from '@/services/booking/evidence-actions.js';
+import {
+  createOwnerCase,
+  createAdminCase,
+  addOwnerCaseUpdate,
+  addAdminCaseUpdate,
+  assignAdminCase,
+  previewAdminCase,
+  resolveAdminCase,
+  adminCaseList,
+  adminCaseDetail,
+} from '@/services/booking/case-actions.js';
 import { Readable } from 'node:stream';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
@@ -81,6 +92,21 @@ export const rebook = runAction(bookAgain);
 /** Cancellation: always previewed before it is executed, never in one call. */
 export const previewCancellation = runAction(previewCustomerCancellation, { style: 'input' });
 export const cancel = runAction(cancelCustomerVisits, { style: 'input' });
+
+/** CP14: booking cases. Owners request and message; admins do everything else. */
+export const ownerCreateCase = runAction(createOwnerCase);
+export const adminCreateCase = runAction(createAdminCase);
+export const ownerCaseUpdate = runAction(addOwnerCaseUpdate);
+export const adminCaseUpdate = runAction(addAdminCaseUpdate);
+export const assignCase = runAction(assignAdminCase);
+export const previewCase = runAction(previewAdminCase);
+export const resolveCase = runAction(resolveAdminCase);
+export const caseList = asyncHandler(async (req, res) => ok(res, await adminCaseList(req.query)));
+export const caseDetail = asyncHandler(async (req, res) => {
+  const found = await adminCaseDetail(req.params.caseId);
+  if (!found) throw notFound('CASE_NOT_FOUND', 'Not found.');
+  return ok(res, found);
+});
 
 /** CP13: incidents, admin closure and admin evidence corrections. */
 export const ownerIncident = runAction(reportOwnerIncident);

@@ -6,6 +6,9 @@ export const recordIdParam = z.object({ id: uuid });
 /** CP13: one private visit photo, always addressed through its order. */
 export const recordAttachmentParams = z.object({ id: uuid, attachmentId: uuid });
 
+/** CP14: one booking case. */
+export const caseIdParam = z.object({ caseId: uuid });
+
 /**
  * Mirrors `historyFilters` in the booking service, which re-derives all of
  * this anyway. Validating here means a malformed tab is a clean 400 instead of

@@ -205,6 +205,8 @@ router.post(
   evidencePhotos(),
   records.ownerIncident,
 );
+router.post('/records/cases', requireActiveClient, formFields(), records.ownerCreateCase);
+router.post('/records/cases/update', requireActiveClient, formFields(), records.ownerCaseUpdate);
 
 /* ---------------------------------------------------------------- *
  * Reviews on the owner's places

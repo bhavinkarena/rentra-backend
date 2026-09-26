@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
 import { visitEvidenceRecords } from './visit-evidence.js';
+import { casesForOrder } from './booking-cases.js';
 
 export class BookingRecordError extends Error {
   constructor() { super('Booking not found or unavailable'); this.code = 'BOOKING_NOT_FOUND'; }
@@ -134,7 +135,8 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       const [property] = await tx`SELECT client_id FROM rentable WHERE id=${order.rentable_id}`;
       relationships={propertyId:order.rentable_id,...(actor.kind==='admin'?{customerId:order.customer_id,clientId:property.client_id}:{})};
     }
-    return { ...orderDTO(order), ...(relationships ? {relationships} : {}), visits, arrival,
+    const cases = await casesForOrder(tx, order.id, actor.kind);
+    return { ...orderDTO(order), ...(relationships ? {relationships} : {}), visits, arrival, cases,
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
       policy: { version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,
