@@ -277,6 +277,7 @@ export const customerSession = pgTable('customer_session', {
 }, (t) => [index('customer_session_user_idx').on(t.userId)]);
 
 export const customerProfile = pgTable('customer_profile', {
+  photoPublicId: text('photo_public_id'),
   userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   marketingConsent: boolean('marketing_consent').notNull().default(false),
   consentUpdatedAt: timestamp('consent_updated_at', { withTimezone: true }).notNull().defaultNow(),

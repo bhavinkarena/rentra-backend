@@ -1,5 +1,6 @@
 import 'server-only';
 import { z } from 'zod';
+import { profilePhotoUrl } from './photo.js';
 import { CustomerAccountError, lockCustomerAccount } from '../auth/customer-access.js';
 
 const profileSchema = z.object({
@@ -13,10 +14,10 @@ const profileSchema = z.object({
 export async function readCustomerAccount(database, session, env = process.env) {
   return database.begin(async tx => {
     const user = await lockCustomerAccount(tx, session, env);
-    const [profile] = await tx`SELECT marketing_consent,version FROM customer_profile WHERE user_id=${user.id}`;
+    const [profile] = await tx`SELECT marketing_consent,version,photo_public_id FROM customer_profile WHERE user_id=${user.id}`;
     const requests = await tx`SELECT id,kind,state,created_at FROM customer_privacy_request
       WHERE customer_id=${user.id} ORDER BY created_at DESC LIMIT 20`;
-    return { name: user.name ?? '', email: user.email ?? '', phone: user.phone,
+    return { photoUrl: profilePhotoUrl(profile?.photo_public_id, env), name: user.name ?? '', email: user.email ?? '', phone: user.phone,
       emailVerified: Boolean(user.email_verified_at), preferredLocale: user.preferred_locale,
       marketingConsent: profile?.marketing_consent ?? false, version: profile?.version ?? 0,
       complete: Boolean(profile && user.name?.trim()),

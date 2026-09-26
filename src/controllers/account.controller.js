@@ -1,6 +1,7 @@
 import { sql } from '@/config/database.js';
 import {
   updateCustomerProfile,
+  updateCustomerPhoto,
   submitPrivacyRequest,
   requestPhoneChange,
   confirmPhoneChange,
@@ -25,6 +26,8 @@ export const read = asyncHandler(async (_req, res) =>
 export const onboarding = asyncHandler(async (_req, res) =>
   ok(res, await customerPageAccount({ onboarding: true })),
 );
+
+export const updatePhoto = runAction(updateCustomerPhoto);
 
 export const updateProfile = runAction(updateCustomerProfile);
 

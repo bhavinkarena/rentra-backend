@@ -104,8 +104,8 @@ receiving events.
 the session cookie needs `SameSite=None; Secure` and an exact CORS origin
 echo. The simpler option, and the recommended one, is to put both behind one
 parent domain (`app.rentra.in` / `api.rentra.in`) so the cookie stays
-first-party and `SameSite=Lax` keeps working. `COOKIE_SAME_SITE` and
-`CORS_ORIGINS` control this.
+first-party and `SameSite=Lax` keeps working. `COOKIE_SAME_SITE` controls the cookie policy. CORS echoes every request
+origin and permits credentials; no origin allowlist is applied.
 
 ## The shared schema
 
@@ -152,3 +152,29 @@ verified.
 The gate scripts in `Rentra/scripts/verify-*.mjs` still import the
 service layer directly, so they keep passing throughout — they verify the
 domain logic, which did not move.
+
+## Customer profile photos (0021)
+
+Before deploying the customer account refresh, run `npm run db:migrate` in
+this backend's deployment environment. Migration `0021_customer_profile_photo`
+adds the nullable `customer_profile.photo_public_id` column. Existing profiles
+start without a photo and display their name initial in the frontend.
+
+Deploy the backend after migration, then deploy the frontend. The photo endpoint
+uses the existing `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and
+`CLOUDINARY_API_SECRET` settings. No new credentials are required.
+
+The authenticated `POST /customer/account/photo` endpoint accepts one `photo`
+file and `expectedVersion`, or `remove=true` and `expectedVersion`. JPG, PNG,
+and WebP files up to 2 MB are checked by signature and re-encoded by Cloudinary
+as 400px WebP avatars. These are public profile assets; identity documents
+continue to use their separate private upload path.
+
+After deployment, verify customer login returns home, name changes update the
+header initial, uploading/removing a photo updates the account and header,
+and booking cards open their full details. Also verify partner OTP login.
+The implementation checks used an isolated API fixture for browser actions;
+real OTP delivery and Cloudinary upload need this deployment smoke check.
+
+The migration journal has been validated; the configured remote database was
+not migrated as part of the UI implementation.

@@ -56,12 +56,15 @@ export async function verifyCustomerOtp(_previous, formData) {
   await createSession(result);
   if (!result.development) await measure(sql, 'login_completed');
   jar.delete(CHALLENGE_COOKIE);
-  const [profile] = await sql`SELECT p.user_id FROM customer_profile p JOIN "user" u ON u.id=p.user_id
-    WHERE p.user_id=${result.userId} AND length(trim(u.name))>=2`;
-  if (!profile) redirect('/onboarding');
   const intent = await readCustomerSelection(jar.get(SELECTION_COOKIE)?.value);
+  // Browsing can start immediately; a booking still needs a customer name.
+  if (intent) {
+    const [profile] = await sql`SELECT p.user_id FROM customer_profile p JOIN "user" u ON u.id=p.user_id
+      WHERE p.user_id=${result.userId} AND length(trim(u.name))>=2`;
+    if (!profile) redirect('/onboarding');
+  }
   // No anonymous quote survives this navigation. The listing requests a fresh owned quote.
-  redirect(intent?.returnTo ?? '/account');
+  redirect(intent?.returnTo ?? '/');
 }
 
 /** Explicit user action; keeps the saved listing selection while changing role. */

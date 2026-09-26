@@ -85,16 +85,32 @@ test('malformed JSON is a 400, not a 500', async () => {
   assert.equal((await response.json()).code, 'MALFORMED_JSON');
 });
 
-test('CORS echoes an allowed origin and refuses an unknown one', async () => {
-  const allowed = await fetch(`${base}/health/live`, {
-    headers: { Origin: 'http://localhost:3000' },
-  });
-  assert.equal(allowed.headers.get('access-control-allow-origin'), 'http://localhost:3000');
-  assert.equal(allowed.headers.get('access-control-allow-credentials'), 'true');
+test('CORS accepts arbitrary origins with cookie credentials', async () => {
+  for (const origin of [
+    'http://localhost:3000',
+    'https://rentrafarm.vercel.app',
+    'https://other.example',
+  ]) {
+    const response = await fetch(`${base}/health/live`, { headers: { Origin: origin } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+    assert.match(response.headers.get('vary'), /Origin/);
+  }
+});
 
-  const denied = await fetch(`${base}/health/live`, {
-    headers: { Origin: 'https://evil.example' },
+test('CORS preflight permits requests from any origin', async () => {
+  const response = await fetch(`${base}/bookings/quote`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://other.example',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'Content-Type',
+    },
   });
-  assert.equal(denied.status, 403);
-  assert.equal((await denied.json()).code, 'ORIGIN_NOT_ALLOWED');
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get('access-control-allow-origin'), 'https://other.example');
+  assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+  assert.match(response.headers.get('access-control-allow-methods'), /POST/);
+  assert.match(response.headers.get('access-control-allow-headers'), /Content-Type/);
 });

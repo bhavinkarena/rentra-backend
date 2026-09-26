@@ -95,7 +95,7 @@ Validated at boot; the process refuses to start on an invalid value rather than
   here**. Both codebases must agree about `DATABASE_URL`, `SESSION_SECRET` and
   the Razorpay keys.
 - `src/config/env.js` — what only a standalone server needs: `PORT`,
-  `CORS_ORIGINS`, `TRUST_PROXY_HOPS`, `API_PREFIX`, cookie policy.
+  `TRUST_PROXY_HOPS`, `API_PREFIX`, cookie policy. CORS accepts all origins.
 
 Two values need care:
 

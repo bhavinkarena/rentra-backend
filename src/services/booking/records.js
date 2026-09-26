@@ -1,5 +1,6 @@
 import 'server-only';
 import { z } from 'zod';
+import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
 
 export class BookingRecordError extends Error {
@@ -35,7 +36,7 @@ async function scope(tx, actor, env) {
 }
 
 function orderDTO(row) {
-  return { id: row.id, reference: row.reference, title: row.listing_snapshot?.title || 'Booked property',
+  return { photo: normalizePublicPhotos(row.listing_snapshot?.photos ?? row.current_photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME })[0] ?? null, firstVisit: row.first_visit ? String(row.first_visit).slice(0, 10) : null, id: row.id, reference: row.reference, title: row.listing_snapshot?.title || 'Booked property',
     state: row.state === 'held' && row.hold_expired ? 'expired' : row.state,
     createdAt: instant(row.created_at), timeZone: row.time_zone || 'Asia/Kolkata',
     rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor) };
@@ -62,7 +63,8 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${match}`;
     const count = filters.tab === 'all' ? summary.total : summary[filters.tab];
     const pages = Math.max(1, Math.ceil(count / size)), page = Math.min(filters.page, pages);
-    const rows = await tx`SELECT o.*,o.hold_expires_at<=clock_timestamp() hold_expired,
+    const rows = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
+      (SELECT min(v.day)::text FROM booking v WHERE v.order_id=o.id) first_visit,
       (SELECT count(*)::int FROM booking v WHERE v.order_id=o.id) visit_count,
       (SELECT jsonb_agg(DISTINCT v.state) FROM booking v WHERE v.order_id=o.id) visit_states,
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
@@ -77,7 +79,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
   if (!uuid.safeParse(orderId).success) throw new BookingRecordError();
   return database.begin(async tx => {
     const { condition: allowed } = await scope(tx, actor, env);
-    const [order] = await tx`SELECT o.*,o.hold_expires_at<=clock_timestamp() hold_expired FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
+    const [order] = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
       WHERE o.id=${orderId} AND ${allowed}`;
     if (!order) throw new BookingRecordError();
     const rows = await tx`SELECT id,reference,state,local_day,day,slot,guests,starts_at,ends_at,hours_known,

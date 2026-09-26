@@ -135,8 +135,8 @@ export async function getListingsNearby({ lng, lat, km = 25, limit = 24 }) {
 
 /**
  * Public listing detail. Keep exact coordinates, street addresses and owner
- * phone numbers out of both the SELECT and the returned object. Locality names
- * are sufficient here; private arrival details require booking authorization.
+ * phone numbers out of both the SELECT and the returned object. Only the shared
+ * locality centre is public; private arrival details require booking authorization.
  */
 export async function getListingByCode(publicCode) {
   const [row] = await db
@@ -156,6 +156,7 @@ export async function getListingByCode(publicCode) {
       // The detail page needs these; a card does not, which is why they are
       // here rather than in cardColumns.
       areaId: rentable.areaId,
+      areaCentre: area.centre,
       cityId: rentable.cityId,
       farmSize: rentable.farmSize,
       farmSizeUnit: rentable.farmSizeUnit,
@@ -252,6 +253,9 @@ export async function getListingByCode(publicCode) {
     areaName: row.areaName,
     cityName: row.cityName,
     areaId: row.areaId,
+    approximateLocation: row.areaCentre
+      ? { latitude: row.areaCentre.y, longitude: row.areaCentre.x }
+      : null,
     cityId: row.cityId,
     categorySlug: row.categorySlug,
     categoryName: row.categoryName,

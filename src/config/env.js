@@ -10,23 +10,10 @@ import { getEnv, isOtpBypassEnabled } from '@/services/schemas/joi/env';
  * it in one place and copy, never fork it.
  *
  * This file adds only what a standalone HTTP server needs and the Next app has
- * no concept of: a port to bind, the browser origins allowed to send
- * credentialed requests, and the trusted-proxy depth.
+ * no concept of: a port to bind, cookie policy, and the trusted-proxy depth.
  */
 const serverSchema = Joi.object({
   PORT: Joi.number().port().default(4000),
-
-  /**
-   * Comma-separated browser origins permitted to call this API with cookies.
-   *
-   * Required outside development and deliberately has no wildcard escape
-   * hatch: `Access-Control-Allow-Origin: *` is incompatible with
-   * `credentials: include`, so a wildcard here would not loosen security — it
-   * would silently break every authenticated request instead.
-   */
-  CORS_ORIGINS: Joi.string()
-    .default('http://localhost:3000')
-    .when('NODE_ENV', { is: Joi.valid('production', 'staging'), then: Joi.required() }),
 
   /**
    * How many reverse proxies sit in front of this process. Express uses it to
@@ -61,20 +48,9 @@ export function config() {
     throw new Error(`Invalid server configuration:\n${details}`);
   }
 
-  if (
-    value.COOKIE_SAME_SITE === 'none' &&
-    shared.NODE_ENV === 'production' &&
-    !value.CORS_ORIGINS
-  ) {
-    throw new Error('COOKIE_SAME_SITE=none requires CORS_ORIGINS to be set.');
-  }
-
   cached = {
     ...shared,
     ...value,
-    corsOrigins: value.CORS_ORIGINS.split(',')
-      .map((o) => o.trim())
-      .filter(Boolean),
     isProduction: shared.NODE_ENV === 'production',
   };
   return cached;

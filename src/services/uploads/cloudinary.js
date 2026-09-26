@@ -171,3 +171,25 @@ export function detectMime(buffer) {
   if (b.subarray(0, 5).toString('ascii') === '%PDF-') return 'application/pdf';
   return null;
 }
+
+/** Public avatar: decode and re-encode to a small square, stripping original metadata. */
+export async function uploadProfilePhoto({ buffer, publicId }) {
+  const api = client();
+  return new Promise((resolve, reject) => {
+    const stream = api.uploader.upload_stream({
+      folder: 'profile-photos', public_id: publicId, type: 'upload',
+      resource_type: 'image', overwrite: false, format: 'webp',
+      transformation: [{ width: 400, height: 400, crop: 'fill', gravity: 'auto', quality: 85 }],
+      image_metadata: false, tags: ['profile-photo'],
+    }, (error, result) => {
+      if (error) return reject(new Error('Profile photo upload failed.'));
+      resolve({ publicId: result.public_id });
+    });
+    stream.end(buffer);
+  });
+}
+export async function destroyProfilePhoto(publicId) {
+  if (!publicId?.startsWith('profile-photos/')) return false;
+  const result = await client().uploader.destroy(publicId, { type: 'upload', resource_type: 'image', invalidate: true });
+  return result?.result === 'ok' || result?.result === 'not found';
+}

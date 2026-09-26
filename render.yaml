@@ -47,15 +47,11 @@ services:
       #   CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET
       #   RAZORPAY_TEST_KEY_ID / RAZORPAY_TEST_KEY_SECRET
       #   RAZORPAY_TEST_WEBHOOK_SECRET
-      # And the frontend's public origin, which CORS and the measurement
-      # beacon both check against:
-      #   CORS_ORIGINS          e.g. https://rentra.example
+      # The frontend's public origin for measurement beacons:
       #   NEXT_PUBLIC_SITE_URL  e.g. https://rentra.example
       - key: DATABASE_URL
         sync: false
       - key: SESSION_SECRET
-        sync: false
-      - key: CORS_ORIGINS
         sync: false
       - key: NEXT_PUBLIC_SITE_URL
         sync: false

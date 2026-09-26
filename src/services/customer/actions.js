@@ -13,6 +13,8 @@ import { customerRequestIp, requestCustomerCode, verifyCustomerCode } from '../a
 import { CustomerAccountError } from '../auth/customer-access.js';
 import { saveCustomerProfile, requestCustomerPrivacy } from './account.js';
 
+import { saveProfilePhoto, PROFILE_PHOTO_MAX_BYTES } from './photo.js';
+
 const PHONE_COOKIE = 'rentra_phone_change';
 async function actor() {
   if (await getCurrentAdmin()) redirect('/login');
@@ -32,9 +34,10 @@ export async function updateCustomerProfile(_state, form) {
     });
   } catch(error) { return failure(error); }
   revalidatePath('/', 'layout');
+  revalidatePath('/account');
   if(form.get('onboarding')==='true') {
     const intent=await readCustomerSelection((await cookies()).get(SELECTION_COOKIE)?.value);
-    redirect(intent?.returnTo ?? '/account');
+    redirect(intent?.returnTo ?? '/');
   }
   return { ok:'Your profile and preferences were saved.' };
 }
@@ -77,4 +80,22 @@ export async function logoutCustomer() {
   for(const name of [SELECTION_COOKIE,PHONE_COOKIE,'rentra_customer_challenge']) jar.delete(name);
   revalidatePath('/', 'layout');
   return { ok:true };
+}
+
+export async function updateCustomerPhoto(_state, form) {
+  const session = await actor();
+  try {
+    const remove = form.get('remove') === 'true';
+    const file = form.get('photo');
+    if (!remove && (!file || typeof file.arrayBuffer !== 'function' || !file.size || file.size > PROFILE_PHOTO_MAX_BYTES)) {
+      throw new CustomerAccountError('Choose a JPG, PNG or WebP photo smaller than 2 MB.');
+    }
+    await saveProfilePhoto(sql, session, {
+      remove, buffer: remove ? null : Buffer.from(await file.arrayBuffer()),
+      expectedVersion: Number(form.get('expectedVersion')),
+    });
+  } catch (error) { return failure(error); }
+  revalidatePath('/', 'layout');
+  revalidatePath('/account');
+  return { ok: form.get('remove') === 'true' ? 'Profile photo removed.' : 'Profile photo updated.' };
 }

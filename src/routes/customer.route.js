@@ -6,7 +6,7 @@ import * as support from '@/controllers/support.controller.js';
 import * as notifications from '@/controllers/notifications.controller.js';
 import { requireRole } from '@/middlewares/auth.middleware.js';
 import { authLimiter } from '@/middlewares/rateLimit.middleware.js';
-import { formFields } from '@/middlewares/upload.middleware.js';
+import { formFields, singleFile } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
 import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
@@ -21,6 +21,7 @@ const customer = requireRole('customer');
 router.get('/account', customer, account.read);
 router.get('/account/onboarding', customer, account.onboarding);
 router.post('/account/profile', customer, formFields(), account.updateProfile);
+router.post('/account/photo', customer, authLimiter, singleFile('photo'), account.updatePhoto);
 /** Two steps: the new number proves it can receive a code before it replaces the old one. */
 router.post(
   '/account/phone/request',

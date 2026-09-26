@@ -57,7 +57,7 @@ export async function createCheckoutHold(database, session, input, env = process
     const expires = new Date(Math.min(+nowDate + BOOKING_POLICY.holdMinutes * 60000, +new Date(quote.visits[0].startsAt)));
     if (expires <= nowDate) throw new CheckoutError('VISIT_ALREADY_STARTED');
     const orderId = randomUUID(), paymentId = randomUUID();
-    const listingSnapshot = { title: listing.title, publicCode: listing.public_code, rentableId: listing.id, purpose: value.purpose ?? null, contact: { name: customer.name, phone: customer.phone } };
+    const listingSnapshot = { photos: listing.photos ?? [], title: listing.title, publicCode: listing.public_code, rentableId: listing.id, purpose: value.purpose ?? null, contact: { name: customer.name, phone: customer.phone } };
     await tx`INSERT INTO booking_order(id,reference,customer_id,rentable_id,state,currency,time_zone,quote_id,quote_version,quote_hash,
       quote_expires_at,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,
       amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,idempotency_key,request_hash,hold_expires_at)

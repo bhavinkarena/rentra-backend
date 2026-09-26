@@ -1,5 +1,6 @@
 'use server';
 import { z } from 'zod';
+import { readCustomerAccount } from './account.js';
 import { sql } from '../db/index.js';
 import { getSession } from '../auth/dal.js';
 import { getCurrentAdmin } from '../auth/admin.js';
@@ -20,7 +21,8 @@ function failure(error) {
 export async function loadSavedPlaces() {
   try {
     const actor = await identity();
-    return { mode:actor.mode,scope:actor.scope ?? null,owner:actor.owner ?? null,entries:actor.mode==='customer' ? await readCustomerSaved(sql,actor.session) : [] };
+    const account = actor.mode === 'customer' ? await readCustomerAccount(sql, actor.session) : null;
+    return { profile: account ? { name: account.name, photoUrl: account.photoUrl } : null, mode:actor.mode,scope:actor.scope ?? null,owner:actor.owner ?? null,entries:actor.mode==='customer' ? await readCustomerSaved(sql,actor.session) : [] };
   } catch (error) { return failure(error); }
 }
 export async function loadGuestSavedPlaces(input) {
