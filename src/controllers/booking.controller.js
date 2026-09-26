@@ -7,12 +7,12 @@ import {
   blockDates,
   unblockDates,
 } from '@/services/booking/calendar-actions.js';
-import { getInventoryState, prepareInventoryCheck } from '@/services/booking/inventory.js';
+import { ownerPortfolioCalendar } from '@/services/booking/owner-calendar.js';
 import { ownerCalendarPage } from '@/services/booking/calendar-page.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
-import { notFound } from '@/utils/apiError.js';
+import { notFound, badRequest } from '@/utils/apiError.js';
 
 /**
  * Price a selection without reserving anything.
@@ -25,11 +25,18 @@ import { notFound } from '@/utils/apiError.js';
 export const quote = runAction(requestBookingQuote, { style: 'input' });
 
 /** Owner booking calendar. All behind requireActiveClient. */
-export const schedule = runAction(saveSchedule);
-export const priceOverride = runAction(saveOverride);
-export const openDates = runAction(addOpenDates);
-export const block = runAction(blockDates);
-export const unblock = runAction(unblockDates);
+function calendarAction(action) {
+  const handler = runAction(action);
+  return (req, res, next) => {
+    req.body = { ...req.body, rentableId: req.params.id };
+    return handler(req, res, next);
+  };
+}
+export const schedule = calendarAction(saveSchedule);
+export const priceOverride = calendarAction(saveOverride);
+export const openDates = calendarAction(addOpenDates);
+export const block = calendarAction(blockDates);
+export const unblock = calendarAction(unblockDates);
 
 /**
  * Everything the owner's calendar screen renders: the listing's booking
@@ -41,17 +48,25 @@ export const calendarPage = asyncHandler(async (req, res) => {
   return ok(res, page);
 });
 
-/**
- * The raw inventory state behind that screen — bookings, reservations and the
- * availability rows — for checking whether the calendar is complete enough to
- * accept a booking at all.
- */
-export const calendarState = asyncHandler(async (req, res) =>
-  ok(
-    res,
-    await sql.begin(async (tx) => {
-      const listing = await prepareInventoryCheck(tx, req.params.id);
-      return getInventoryState(tx, listing);
-    }),
-  ),
+/** Owner-safe inventory, never the raw internal booking/customer state. */
+export const calendarState = asyncHandler(async (req, res) => {
+  const page = await readCalendar(req.user.id, {
+    ...req.query,
+    property: req.params.id,
+  });
+  if (!page.items.length) throw notFound('LISTING_NOT_FOUND', 'That listing does not exist.');
+  return ok(res, page);
+});
+export const portfolioCalendar = asyncHandler(async (req, res) =>
+  ok(res, await readCalendar(req.user.id, req.query)),
 );
+
+async function readCalendar(ownerId, query) {
+  try {
+    return await ownerPortfolioCalendar(sql, ownerId, query);
+  } catch (error) {
+    if (error instanceof RangeError || error.name === 'ZodError')
+      throw badRequest('INVALID_CALENDAR_FILTER', 'Choose a valid date, property, slot and view.');
+    throw error;
+  }
+}

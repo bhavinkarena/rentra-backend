@@ -1,4 +1,6 @@
 import 'server-only';
+import { withListingSnapshot } from './inventory.js';
+import { calendarSnapshot } from './owner-calendar.js';
 
 /**
  * The owner's booking-calendar screen, assembled.
@@ -17,25 +19,21 @@ export async function ownerCalendarPage(database, ownerId, rentableId) {
     FROM rentable WHERE id=${rentableId} AND client_id=${ownerId}`;
   if (!listing) return null;
 
-  const rows = await database`
-    SELECT id, blocked_start_at, blocked_end_at, reason
-    FROM inventory_reservation
-    WHERE rentable_id=${rentableId} AND source='owner_block' AND state='committed'
-    ORDER BY blocked_start_at`;
-
-  const format = (time) =>
-    new Intl.DateTimeFormat('en-IN', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      timeZone: 'Asia/Kolkata',
+  return withListingSnapshot(database, rentableId, async (tx, current) => {
+    if (current.client_id !== ownerId) return null;
+    const rows = await tx`
+      SELECT id, blocked_start_at, blocked_end_at, reason
+      FROM inventory_reservation
+      WHERE rentable_id=${rentableId} AND source='owner_block' AND state='committed'
+      ORDER BY blocked_start_at`;
+    const format = (time) => new Intl.DateTimeFormat('en-IN', {
+      dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata',
     }).format(new Date(time));
-
-  return {
-    listing,
-    blocks: rows.map((row) => ({
-      id: row.id,
-      reason: row.reason,
-      label: `${format(row.blocked_start_at)} – ${format(row.blocked_end_at)}`,
-    })),
-  };
+    const { id, title, capacity, extra_guest_charge, booking_config, booking_config_version } = current;
+    return {
+      listing: { id, title, capacity, extra_guest_charge, booking_config, booking_config_version,
+        calendar_version: (await calendarSnapshot(tx, current)).version },
+      blocks: rows.map(row => ({ id:row.id, reason:row.reason, label:`${format(row.blocked_start_at)} – ${format(row.blocked_end_at)}` })),
+    };
+  });
 }

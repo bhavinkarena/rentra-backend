@@ -53,6 +53,15 @@ function occupied(row) {
  */
 export async function withListingInventory(database, rentableId, run) {
   assertId(rentableId);
+  // A calendar preview/confirmation already owns this mutex and transaction.
+  // Reuse it without an inner retry loop: serialization retries belong to the
+  // outer transaction, never to an already-aborted PostgreSQL transaction.
+  if (database.inventoryTransaction) {
+    const { transaction, listing } = database.inventoryTransaction;
+    contextFor(transaction, rentableId);
+    if (listing.id !== rentableId) throw new InventoryError('INVENTORY_LOCK_REQUIRED', 'Inventory scope mismatch.');
+    return run(transaction, listing);
+  }
   for (let attempt = 0; ; attempt += 1) {
     try { return await database.begin(async (tx) => {
     const [listing] = await tx`UPDATE rentable SET updated_at = updated_at WHERE id = ${rentableId} RETURNING *`;

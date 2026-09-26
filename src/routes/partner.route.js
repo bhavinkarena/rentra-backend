@@ -125,6 +125,7 @@ router.post('/listings/:id/pause', requireActiveClient, formFields(), listings.t
 /* ---------------------------------------------------------------- *
  * Booking calendar — Gate 1
  * ---------------------------------------------------------------- */
+router.get('/calendar', requireActiveClient, booking.portfolioCalendar);
 router.get(
   '/listings/:id/calendar',
   requireActiveClient,
