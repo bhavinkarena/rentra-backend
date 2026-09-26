@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { lockCustomerAccount } from '../auth/customer-access.js';
 import { ownedCheckout, checkoutStatus, CheckoutError } from './checkout.js';
 import { savedListingHref } from '../domain/saved-places.js';
+import { normalizePublicPhotos } from '../domain/listing-content.js';
 
 function review(row) {
   return { id: row.id, version: row.version, hash: row.quote_hash, selection: row.selection,
@@ -11,9 +12,14 @@ function review(row) {
     totals: { rentMinor: Number(row.amount_rent_minor), feeMinor: Number(row.amount_fee_minor),
       totalMinor: Number(row.amount_rent_minor) + Number(row.amount_fee_minor), depositMinor: Number(row.amount_deposit_minor) } };
 }
+// Public listing facts only (photo, locality, rating): the same allowlist a browsing guest sees.
 async function details(tx, quote, customer, snapshot = null) {
-  const [listing] = await tx`SELECT title,slug,public_code FROM rentable WHERE id=${quote.selection.rentableId}`;
+  const [listing] = await tx`SELECT r.title,r.slug,r.public_code,r.photos,r.rating_avg,r.review_count,a.name area,c.name city
+    FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id WHERE r.id=${quote.selection.rentableId}`;
+  const [photo] = normalizePublicPhotos(snapshot?.photos ?? listing.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME });
   return { quote, title: snapshot?.title ?? listing.title,
+    photo: photo ? { url: photo.url, alt: photo.alt } : null, area: `${listing.area}, ${listing.city}`,
+    rating: Number(listing.rating_avg) || 0, reviewCount: listing.review_count ?? 0,
     contact: { name: snapshot?.contact?.name ?? customer.name ?? '', phone: snapshot?.contact?.phone ?? customer.phone ?? '' }, purpose: snapshot?.purpose ?? '',
     listingHref: savedListingHref(`/listing/${listing.slug}-${listing.public_code}`, quote.selection),
     serverNow: new Date().toISOString() };
