@@ -23,7 +23,7 @@ export const DEV_CODE = '123456';
 const TTL_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const RESEND_COOLDOWN_MS = 60 * 1000;
-const MAX_PER_HOUR = 3;
+const MAX_PER_HOUR = 10;
 
 /** Cryptographically uniform 6 digits — not Math.random(). */
 function generateCode() {

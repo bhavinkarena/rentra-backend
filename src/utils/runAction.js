@@ -2,6 +2,7 @@ import { isRedirect, isNotFound } from '@/runtime/signals.js';
 import { toFormData } from './formData.js';
 import { ok, fail, redirected } from './respond.js';
 import { notFound } from './apiError.js';
+import { asyncHandler } from './asyncHandler.js';
 
 /**
  * Adapter between an Express route and a ported Server Action.
@@ -19,7 +20,9 @@ import { notFound } from './apiError.js';
  * newer ones take a plain object. See the per-route wiring in src/controllers.
  */
 export function runAction(action, { style = 'state' } = {}) {
-  return async function handler(req, res) {
+  // Express 4 ignores a rejected async handler; without this an unexpected
+  // error (a failed query, a missing table) hangs the request until timeout.
+  return asyncHandler(async function handler(req, res) {
     let result;
 
     try {
@@ -57,7 +60,7 @@ export function runAction(action, { style = 'state' } = {}) {
     }
 
     return ok(res, result ?? null);
-  };
+  });
 }
 
 function invoke(action, style, req) {
