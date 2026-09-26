@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { and, asc, desc, eq, isNull, sql as raw } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql as raw } from 'drizzle-orm';
 import { db } from './index.js';
 import {
   users, clientApplication, auditLog, adminUsers, rentable, documents,
@@ -9,50 +9,7 @@ import {
 /** Published SLA from the flow doc: 2 working days for an application. */
 export const SLA_HOURS = 48;
 
-/**
- * The review queue.
- *
- * Ordered oldest-first (FIFO) so nothing rots at the bottom, but the
- * locked-CTA click count rides along as a priority signal: someone hammering
- * a locked "Add place" button has a property ready and is stuck on paperwork,
- * which is the strongest intent signal ops will get (gap 12).
- */
-export async function getApplicationQueue() {
-  const rows = await db
-    .select({
-      id: clientApplication.id,
-      status: clientApplication.status,
-      submittedAt: clientApplication.submittedAt,
-      strikeCount: clientApplication.strikeCount,
-      legalName: clientApplication.legalName,
-      payoutNameMatch: clientApplication.payoutNameMatch,
-      kycNameOnDoc: clientApplication.kycNameOnDoc,
-      userId: users.id,
-      email: users.email,
-      phone: users.phone,
-      clientType: users.clientType,
-      preferredLocale: users.preferredLocale,
-      ageHours: raw`
-        round(extract(epoch from (now() - ${clientApplication.submittedAt})) / 3600)::int
-      `.as('age_hours'),
-      ctaClicks: raw`(
-        select count(*)::int from ${auditLog}
-        where ${auditLog.actorId} = ${users.id}
-          and ${auditLog.action} = 'locked_cta_click'
-      )`.as('cta_clicks'),
-    })
-    .from(clientApplication)
-    .innerJoin(users, eq(users.id, clientApplication.userId))
-    .where(eq(clientApplication.status, 'submitted'))
-    .orderBy(asc(clientApplication.submittedAt));
-
-  return rows.map((r) => ({
-    ...r,
-    overdue: (r.ageHours ?? 0) > SLA_HOURS,
-    /** A confirmed payout name mismatch blocks approval — surface it early. */
-    blocker: r.payoutNameMatch === false ? 'payout name mismatch' : null,
-  }));
-}
+/* The paginated review queue lives in services/admin/applications.js (CP05). */
 
 /** Counts for the dashboard header, in one round trip. */
 export async function getQueueStats() {

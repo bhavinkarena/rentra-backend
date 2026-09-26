@@ -51,6 +51,20 @@ export async function listDocuments({ ownerType, ownerId }) {
     ));
 }
 
+/**
+ * A client's KYC documents. Uploads are owned by the APPLICATION
+ * (owner_type 'client_application'); reading them by user id found nothing,
+ * which left the stepper's identity step permanently incomplete (CP05).
+ */
+export async function listApplicationDocuments(userId) {
+  const [app] = await db
+    .select({ id: clientApplication.id })
+    .from(clientApplication)
+    .where(eq(clientApplication.userId, userId))
+    .limit(1);
+  return app ? listDocuments({ ownerType: 'client_application', ownerId: app.id }) : [];
+}
+
 function validateFile(file, side) {
   if (!file || typeof file.arrayBuffer !== 'function' || file.size === 0) {
     return `Choose a ${side} image`;

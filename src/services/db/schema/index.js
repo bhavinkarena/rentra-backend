@@ -431,11 +431,23 @@ export const clientApplication = pgTable(
     flaggedFields: jsonb('flagged_fields'),
     /** Third rejection blocks the account; only a manual appeal reopens it. */
     strikeCount: integer('strike_count').notNull().default(0),
+    /**
+     * Bumped by every submit, withdraw and decision. A decision must name the
+     * version it reviewed, so a resubmitted or already-decided application
+     * cannot receive a second, contradictory decision.
+     */
+    reviewVersion: integer('review_version').notNull().default(1),
+    /** Responsible reviewer. Kept after a correction request so the resubmission returns to them. */
+    assignedTo: uuid('assigned_to').references(() => adminUsers.id, { onDelete: 'set null' }),
+    assignedAt: timestamp('assigned_at', { withTimezone: true }),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('application_status_idx').on(t.status, t.submittedAt)],
+  (t) => [
+    index('application_status_idx').on(t.status, t.submittedAt),
+    index('application_queue_idx').on(t.status, t.assignedTo, t.submittedAt),
+  ],
 );
 
 /**

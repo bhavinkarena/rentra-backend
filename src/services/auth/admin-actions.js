@@ -1,11 +1,12 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { decideApplication } from '@/services/admin/applications.js';
 import { headers } from 'next/headers';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '@/services/db';
-import { adminUsers, users, clientApplication, documents } from '@/services/db/schema/index.js';
+import { db, sql } from '@/services/db';
+import { adminUsers, documents } from '@/services/db/schema/index.js';
 import { audit } from '@/services/audit';
 import { fieldErrors } from '@/services/schemas/zod';
 import { getEnv } from '@/services/schemas/joi/env';
@@ -143,169 +144,43 @@ export async function adminLogout() {
 
 /* --------------------------- review decisions --------------------------- */
 
-const decisionSchema = z.object({
-  applicationId: z.string().uuid(),
-  reason: z.string().trim().max(1000).optional().or(z.literal('')),
-  flagged: z.union([z.string(), z.array(z.string())]).optional(),
-});
-
-async function loadApplication(id) {
-  const [row] = await db
-    .select()
-    .from(clientApplication)
-    .where(eq(clientApplication.id, id))
-    .limit(1);
-  return row ?? null;
-}
-
 /**
- * APPROVE — closes Gate 1.
+ * Gate 1 decisions. The rules, locking and single audit entry live in
+ * services/admin/applications.js (CP05); these actions keep the existing
+ * routes and redirects. Every decision names the `expectedVersion` it
+ * reviewed — a stale screen gets 409 and changes nothing.
  *
- * Also flips kycStatus to 'verified': until a KYC vendor is wired, the admin's
- * name-match at review IS the verification, and the badge honestly says
- * "verified by our team". Recording it anywhere else would be a second source
- * of truth about the same fact.
+ * APPROVE closes Gate 1. `kyc_status='verified'` means "reviewed by Rentra
+ * staff": no KYC provider is connected, and client-facing copy says so.
+ * REQUEST MORE INFO is not a strike. REJECT is; the third blocks the account.
  */
+async function decide(decision, formData) {
+  const admin = await requireAdmin();
+  const result = await decideApplication(sql, {
+    adminId: admin.id,
+    applicationId: String(formData.get('applicationId') ?? ''),
+    decision,
+    input: {
+      reason: formData.get('reason') ?? '',
+      flagged: formData.getAll('flagged'),
+      expectedVersion: formData.get('expectedVersion'),
+    },
+    ip: await adminIp(),
+  });
+  const outcome = decision === 'reject' && result.accountBlocked ? 'blocked' : { approve: 'approved', more_info: 'more_info', reject: 'rejected' }[decision];
+  redirect(`/admin?decided=${outcome}`);
+}
+
 export async function approveApplication(_prev, formData) {
-  const admin = await requireAdmin();
-  const parsed = decisionSchema.safeParse({
-    applicationId: formData.get('applicationId'),
-    reason: formData.get('reason') ?? '',
-  });
-  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  const app = await loadApplication(parsed.data.applicationId);
-  if (!app) return { errors: { _: 'That application no longer exists.' } };
-  if (app.status !== 'submitted') {
-    // Withdrawn or already decided while this tab was open.
-    return { errors: { _: `Cannot approve an application that is "${app.status}".` } };
-  }
-
-  const ip = await adminIp();
-
-  await db.update(clientApplication).set({
-    status: 'approved',
-    reviewedAt: new Date(),
-    reviewedBy: admin.id,
-    decisionReason: parsed.data.reason || null,
-    flaggedFields: null,
-    updatedAt: new Date(),
-  }).where(eq(clientApplication.id, app.id));
-
-  await db.update(users).set({
-    accountStatus: 'active',
-    kycStatus: 'verified',
-    updatedAt: new Date(),
-  }).where(eq(users.id, app.userId));
-
-  await audit({
-    actorType: 'admin', actorId: admin.id, entity: 'client_application',
-    entityId: app.id, action: 'application_approved',
-    before: { status: app.status }, after: { status: 'approved' },
-    reason: parsed.data.reason || null, ip,
-  });
-
-  // TODO(notify): email + WhatsApp — "you're approved, add your first property".
-  redirect('/admin?decided=approved');
+  return decide('approve', formData);
 }
 
-/**
- * REQUEST MORE INFO — the third outcome, and the reason there are three.
- * Without it a fixable typo becomes a permanent rejection and a support call.
- */
 export async function requestMoreInfo(_prev, formData) {
-  const admin = await requireAdmin();
-  const parsed = decisionSchema.safeParse({
-    applicationId: formData.get('applicationId'),
-    reason: formData.get('reason') ?? '',
-    flagged: formData.getAll('flagged'),
-  });
-  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  if (!parsed.data.reason) {
-    return { errors: { reason: 'Say what is needed — the Client sees this verbatim.' } };
-  }
-
-  const app = await loadApplication(parsed.data.applicationId);
-  if (!app) return { errors: { _: 'That application no longer exists.' } };
-  if (app.status !== 'submitted') {
-    return { errors: { _: `Cannot act on an application that is "${app.status}".` } };
-  }
-
-  const flagged = [].concat(parsed.data.flagged ?? []).filter(Boolean);
-  const ip = await adminIp();
-
-  await db.update(clientApplication).set({
-    status: 'more_info_needed',
-    reviewedAt: new Date(),
-    reviewedBy: admin.id,
-    decisionReason: parsed.data.reason,
-    flaggedFields: flagged.length ? flagged : null,
-    submittedAt: null, // back in the Client's hands; out of the queue
-    updatedAt: new Date(),
-  }).where(eq(clientApplication.id, app.id));
-
-  await audit({
-    actorType: 'admin', actorId: admin.id, entity: 'client_application',
-    entityId: app.id, action: 'application_more_info',
-    after: { flagged }, reason: parsed.data.reason, ip,
-  });
-
-  // Explicitly NOT a strike — asking a question is not a rejection.
-  redirect('/admin?decided=more_info');
+  return decide('more_info', formData);
 }
 
-/**
- * REJECT — a strike. Third strike blocks the account, and only a manual
- * appeal reopens it. The reason is always recorded and always shown verbatim:
- * a silent no generates a support call and a bad review.
- */
 export async function rejectApplication(_prev, formData) {
-  const admin = await requireAdmin();
-  const parsed = decisionSchema.safeParse({
-    applicationId: formData.get('applicationId'),
-    reason: formData.get('reason') ?? '',
-  });
-  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  if (!parsed.data.reason) {
-    return { errors: { reason: 'A rejection must carry a reason. The Client sees it verbatim.' } };
-  }
-
-  const app = await loadApplication(parsed.data.applicationId);
-  if (!app) return { errors: { _: 'That application no longer exists.' } };
-  if (app.status !== 'submitted') {
-    return { errors: { _: `Cannot reject an application that is "${app.status}".` } };
-  }
-
-  const strikes = app.strikeCount + 1;
-  const blocked = strikes >= 3;
-  const ip = await adminIp();
-
-  await db.update(clientApplication).set({
-    status: 'rejected',
-    reviewedAt: new Date(),
-    reviewedBy: admin.id,
-    decisionReason: parsed.data.reason,
-    strikeCount: strikes,
-    submittedAt: null,
-    updatedAt: new Date(),
-  }).where(eq(clientApplication.id, app.id));
-
-  if (blocked) {
-    await db.update(users).set({
-      accountStatus: 'blocked', updatedAt: new Date(),
-    }).where(eq(users.id, app.userId));
-  }
-
-  await audit({
-    actorType: 'admin', actorId: admin.id, entity: 'client_application',
-    entityId: app.id, action: 'application_rejected',
-    after: { strikeCount: strikes, accountBlocked: blocked },
-    reason: parsed.data.reason, ip,
-  });
-
-  redirect(`/admin?decided=${blocked ? 'blocked' : 'rejected'}`);
+  return decide('reject', formData);
 }
 
 /* Client suspension and reinstatement moved to services/admin/clients.js (CP03). */

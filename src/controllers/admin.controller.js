@@ -1,7 +1,11 @@
 import { Readable } from 'node:stream';
 import { sql } from '@/config/database.js';
 import {
-  getApplicationQueue,
+  assignApplication,
+  listApplications,
+  readReviewContext,
+} from '@/services/admin/applications.js';
+import {
   getQueueStats,
   getApplicationForReview,
   getRecentDecisions,
@@ -12,7 +16,7 @@ import {
   rejectApplication,
   reviewDocument,
 } from '@/services/auth/admin-actions.js';
-import { listDocuments } from '@/services/auth/documents.js';
+import { listApplicationDocuments } from '@/services/auth/documents.js';
 import { profileCompletion } from '@/services/auth/profile.js';
 import { readDocumentFile } from '@/services/auth/document-file.js';
 import { readPrivacyQueue } from '@/services/customer/privacy-admin.js';
@@ -24,7 +28,22 @@ import { ok } from '@/utils/respond.js';
 import { notFound } from '@/utils/apiError.js';
 
 /** The partner approval queue and its SLA counters. */
-export const queue = asyncHandler(async (_req, res) => ok(res, await getApplicationQueue()));
+export const queue = asyncHandler(async (req, res) =>
+  ok(res, await listApplications(sql, req.admin.id, req.valid?.query ?? req.query)),
+);
+
+/** Claim, release or take over an application (CP05). */
+export const assign = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await assignApplication(sql, {
+      adminId: req.admin.id,
+      applicationId: req.params.id,
+      action: req.body?.action,
+      ip: req.ip ?? null,
+    }),
+  ),
+);
 export const stats = asyncHandler(async (_req, res) => ok(res, await getQueueStats()));
 export const decisions = asyncHandler(async (req, res) =>
   ok(res, await getRecentDecisions(Number(req.query.limit ?? 10))),
@@ -42,12 +61,13 @@ export const application = asyncHandler(async (req, res) => {
   return ok(res, {
     ...record,
     completion: profileCompletion(record.user, record.app, record.documents ?? []),
+    review: await readReviewContext(sql, req.params.id, req.admin.id),
   });
 });
 
 /** The applicant's KYC documents, for the review panel. */
 export const documents = asyncHandler(async (req, res) =>
-  ok(res, await listDocuments({ ownerType: 'user', ownerId: req.params.userId })),
+  ok(res, await listApplicationDocuments(req.params.userId)),
 );
 
 /**

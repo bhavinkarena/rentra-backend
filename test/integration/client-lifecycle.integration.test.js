@@ -145,6 +145,9 @@ test(
       const audits = await sql`SELECT action, reason, after FROM audit_log
         WHERE entity='user' AND entity_id=${owner} AND actor_type='admin'`;
       assert.equal(audits.length, 1);
+      const [{ kind }] =
+        await sql`SELECT jsonb_typeof(after) AS kind FROM audit_log WHERE action='client_suspended'`;
+      assert.equal(kind, 'object', 'audit stored as a JSON object, not a string');
       assert.equal(audits[0].action, 'client_suspended');
       assert.equal(audits[0].reason, 'Guest safety report under review');
       assert.equal(audits[0].after.impact.upcomingVisits, 1);

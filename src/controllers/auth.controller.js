@@ -8,7 +8,7 @@ import {
 } from '@/services/auth/actions.js';
 import { profileCompletion } from '@/services/auth/profile.js';
 import { getOrCreateApplication } from '@/services/auth/application.js';
-import { listDocuments } from '@/services/auth/documents.js';
+import { listApplicationDocuments } from '@/services/auth/documents.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -34,7 +34,7 @@ export const me = asyncHandler(async (req, res) => {
   if (user.role !== 'client') return ok(res, { user, completion: null });
 
   const application = await getOrCreateApplication(user.id);
-  const documents = await listDocuments({ ownerType: 'user', ownerId: user.id });
+  const documents = await listApplicationDocuments(user.id);
 
   return ok(res, { user, completion: profileCompletion(user, application, documents) });
 });

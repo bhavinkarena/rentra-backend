@@ -2,7 +2,7 @@
 
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/services/db';
 import { users, clientApplication } from '@/services/db/schema/index.js';
 import { audit } from '@/services/audit';
@@ -226,12 +226,19 @@ export async function submitApplication() {
     return { errors: { _: `Still to do: ${labels}` } };
   }
 
-  await db.update(clientApplication).set({
+  // Conditional + version bump: a decision made from a screen that predates
+  // this submission can no longer commit (CP05).
+  const submitted = await db.update(clientApplication).set({
     status: 'submitted',
     submittedAt: new Date(),
     flaggedFields: null,
+    reviewVersion: sql`${clientApplication.reviewVersion} + 1`,
     updatedAt: new Date(),
-  }).where(eq(clientApplication.id, app.id));
+  }).where(and(
+    eq(clientApplication.id, app.id),
+    inArray(clientApplication.status, ['draft', 'more_info_needed', 'rejected']),
+  )).returning({ id: clientApplication.id });
+  if (!submitted.length) redirect('/partner');
 
   await audit({
     actorType: 'client', actorId: user.id, entity: 'client_application',
@@ -249,9 +256,15 @@ export async function withdrawApplication() {
   const { user, app } = await loadContext();
   if (app.status !== 'submitted') redirect('/partner');
 
-  await db.update(clientApplication).set({
-    status: 'draft', submittedAt: null, updatedAt: new Date(),
-  }).where(eq(clientApplication.id, app.id));
+  // Only a still-submitted application can be withdrawn; never overwrite a decision.
+  const withdrawn = await db.update(clientApplication).set({
+    status: 'draft',
+    submittedAt: null,
+    reviewVersion: sql`${clientApplication.reviewVersion} + 1`,
+    updatedAt: new Date(),
+  }).where(and(eq(clientApplication.id, app.id), eq(clientApplication.status, 'submitted')))
+    .returning({ id: clientApplication.id });
+  if (!withdrawn.length) redirect('/partner');
 
   await audit({
     actorType: 'client', actorId: user.id, entity: 'client_application',

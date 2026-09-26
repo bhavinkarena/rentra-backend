@@ -20,6 +20,7 @@ import {
 } from '@/validations/admin.validation.js';
 import { clientListQuery } from '@/services/admin/clients.js';
 import { customerListQuery } from '@/services/admin/customers.js';
+import { applicationQueueQuery } from '@/services/admin/applications.js';
 import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
 
@@ -43,10 +44,16 @@ router.use((_req, res, next) => {
 /* ---------------------------------------------------------------- *
  * Partner approval queue
  * ---------------------------------------------------------------- */
-router.get('/applications', admin.queue);
+router.get('/applications', validate({ query: applicationQueueQuery }), admin.queue);
 router.get('/applications/stats', admin.stats);
 router.get('/applications/decisions', validate({ query: decisionsQuery }), admin.decisions);
 router.get('/applications/:id', validate({ params: applicationIdParam }), admin.application);
+router.post(
+  '/applications/:id/assign',
+  validate({ params: applicationIdParam }),
+  formFields(),
+  admin.assign,
+);
 router.post('/applications/approve', formFields(), admin.approve);
 router.post('/applications/more-info', formFields(), admin.moreInfo);
 router.post('/applications/reject', formFields(), admin.reject);

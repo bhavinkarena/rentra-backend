@@ -6,8 +6,8 @@ import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 /**
  * Admin customer directory and account controls (CP04).
  *
- * Minimization: lists show a masked phone; detail shows contact fields an
- * operator needs, never OTP challenges, session ids, payment-method tokens or
+ * Minimization: lists and detail show the contact fields an operator needs
+ * (admin-only, capability-guarded), never OTP challenges, session ids, payment-method tokens or
  * the profile photo key. Audit entries name changed FIELDS, not their values,
  * matching the customer's own profile audit.
  *
@@ -21,7 +21,9 @@ import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
  */
 
 const PAGE_SIZE = 20;
-const STATUSES = ['active', 'suspended', 'blocked'];
+// `pending_application` is the column default: rows created without a status
+// (older seed/import data). Such a customer cannot sign in until activated.
+const STATUSES = ['active', 'pending_application', 'suspended', 'blocked'];
 const uuid = z.string().uuid();
 const reason = z.string().trim().min(4, 'Say why — this is the audit record.').max(1000);
 const version = z.coerce.number().int().min(0);
@@ -50,8 +52,6 @@ const commandInput = z.object({ reason, expectedVersion: version });
 const fieldErrors = (error) =>
   Object.fromEntries(error.issues.map((issue) => [issue.path[0], issue.message]));
 
-export const maskPhone = (phone) => (phone ? `••••••${String(phone).slice(-4)}` : null);
-
 const upcoming = (sql) =>
   sql`v.state IN ('confirmed','handed_over','disputed') AND v.ends_at > clock_timestamp()`;
 
@@ -62,6 +62,7 @@ export async function listCustomers(database, input = {}) {
     OR position(${f.q} in coalesce(u.phone,'')) > 0)`;
   const [counts] = await database`SELECT count(*)::int AS total,
       count(*) FILTER (WHERE u.account_status='active')::int AS active,
+      count(*) FILTER (WHERE u.account_status='pending_application')::int AS pending_application,
       count(*) FILTER (WHERE u.account_status='suspended')::int AS suspended,
       count(*) FILTER (WHERE u.account_status='blocked')::int AS blocked
     FROM "user" u WHERE u.role='customer' AND ${match}`;
@@ -82,12 +83,15 @@ export async function listCustomers(database, input = {}) {
     pages,
     pageSize: PAGE_SIZE,
     total,
-    counts: { all: counts.total, active: counts.active, suspended: counts.suspended, blocked: counts.blocked },
+    counts: {
+      all: counts.total,
+      ...Object.fromEntries(STATUSES.map((key) => [key, counts[key]])),
+    },
     items: rows.map((r) => ({
       id: r.id,
       name: r.name,
       email: r.email,
-      phoneMasked: maskPhone(r.phone),
+      phone: r.phone,
       accountStatus: r.account_status,
       orderCount: r.order_count,
       openSupport: r.open_support,
@@ -133,9 +137,10 @@ function transition(action, status) {
       ? { allowed: true, to: 'suspended' }
       : { allowed: false, why: `A ${status} account cannot be restricted again.` };
   }
-  return status === 'suspended'
+  // Reinstate restores a restricted account and activates a never-activated one.
+  return status === 'suspended' || status === 'pending_application'
     ? { allowed: true, to: 'active' }
-    : { allowed: false, why: status === 'blocked' ? 'Blocked accounts are not reinstated here.' : 'Only a restricted account can be reinstated.' };
+    : { allowed: false, why: status === 'blocked' ? 'Blocked accounts are not reinstated here.' : 'This account already has access.' };
 }
 
 function preview(action, customer, effects) {
@@ -156,10 +161,15 @@ function preview(action, customer, effects) {
             `${effects.upcomingVisits} upcoming visit(s) stay booked. Changes or cancellations go through Rentra support cases.`,
             `${effects.openSupport} open support request(s) stay visible to staff.`,
           ]
-        : [
-            'The customer can sign in again with a new code; earlier sessions stay revoked.',
-            'Booking, payment and support access return.',
-          ],
+        : customer.account_status === 'pending_application'
+          ? [
+              'This account was never activated, so phone sign-in is refused today.',
+              'After activation the customer can sign in with a one-time code and book.',
+            ]
+          : [
+              'The customer can sign in again with a new code; earlier sessions stay revoked.',
+              'Booking, payment and support access return.',
+            ],
   };
 }
 
@@ -258,14 +268,18 @@ export async function readCustomer(database, customerId) {
       toStatus: h.to_status,
       revoked: h.revoked == null ? null : Number(h.revoked),
     })),
-    lifecycle: preview(customer.account_status === 'suspended' ? 'reinstate' : 'suspend', customer, effects),
+    lifecycle: preview(
+      ['suspended', 'pending_application'].includes(customer.account_status) ? 'reinstate' : 'suspend',
+      customer,
+      effects,
+    ),
   };
 }
 
 async function audit(tx, { adminId, customerId, action, before, after, reason: why, ip }) {
   await tx`INSERT INTO audit_log(actor_type, actor_id, entity, entity_id, action, before, after, reason, ip)
     VALUES ('admin', ${adminId}, 'user', ${customerId}, ${action},
-      ${before ? JSON.stringify(before) : null}::jsonb, ${after ? JSON.stringify(after) : null}::jsonb, ${why}, ${ip})`;
+      ${before ? JSON.stringify(before) : null}::text::jsonb, ${after ? JSON.stringify(after) : null}::text::jsonb, ${why}, ${ip})`;
 }
 
 function stale(customer, expectedVersion) {

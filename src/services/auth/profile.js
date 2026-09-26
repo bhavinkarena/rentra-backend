@@ -125,6 +125,18 @@ export function profileCompletion(user, application = null, documents = []) {
     },
   ];
 
+  // A correction request names steps; show them as needing attention with the
+  // reviewer's reason, not only as a note at the bottom of the page (CP05).
+  const flagged = app.status === 'more_info_needed' && Array.isArray(app.flaggedFields)
+    ? new Set(app.flaggedFields)
+    : new Set();
+  for (const step of steps) {
+    if (!flagged.has(step.id)) continue;
+    step.failed = true;
+    step.flagged = true;
+    step.note = 'Rentra asked you to review and update this step';
+  }
+
   const total = steps.length;
   const done = steps.filter((s) => s.done).length;
   const remaining = steps.filter((s) => !s.done);

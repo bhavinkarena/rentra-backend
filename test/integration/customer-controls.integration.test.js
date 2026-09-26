@@ -26,6 +26,8 @@ test(
       const riya = await person('9876543210', 'Riya Shah', 'riya@fixture.invalid');
       const other = await person('9123456789', 'Other Guest', 'taken@fixture.invalid');
       const blocked = await person('9000000000', 'Blocked Guest', null, 'blocked');
+      // Created without a status: the column default, which cannot sign in.
+      const dormant = await person('9555500000', 'Dormant Guest', null, 'pending_application');
       await sql`INSERT INTO customer_profile(user_id) VALUES (${riya})`;
 
       const [owner] =
@@ -63,15 +65,16 @@ test(
 
       // Directory: counts, search by phone digits, masked phone, no raw phone in lists.
       const all = await customers.listCustomers(sql, {});
-      assert.deepEqual(all.counts, { all: 3, active: 2, suspended: 0, blocked: 1 });
+      assert.deepEqual(all.counts, {
+        all: 4,
+        active: 2,
+        pending_application: 1,
+        suspended: 0,
+        blocked: 1,
+      });
       const found = await customers.listCustomers(sql, { q: '43210' });
       assert.equal(found.items.length, 1);
-      assert.equal(found.items[0].phoneMasked, '••••••3210');
-      assert.equal(
-        JSON.stringify(found).includes('9876543210'),
-        false,
-        'list never carries the full phone',
-      );
+      assert.equal(found.items[0].phone, '9876543210', 'operators see the full phone');
       assert.equal(
         (await customers.listCustomers(sql, { q: '_' })).total,
         0,
@@ -154,6 +157,9 @@ test(
       assert.equal(row.email_verified_at, null, 'changed email needs verification again');
       const [correctionAudit] =
         await sql`SELECT after::text AS after, reason FROM audit_log WHERE action='customer_profile_corrected'`;
+      const [{ kind }] =
+        await sql`SELECT jsonb_typeof(after) AS kind FROM audit_log WHERE action='customer_profile_corrected'`;
+      assert.equal(kind, 'object', 'audit stored as a JSON object, not a string');
       assert.equal(
         correctionAudit.after.includes('riya.shah'),
         false,
@@ -242,6 +248,15 @@ test(
         ),
         { statusCode: 409, code: 'LIFECYCLE_NOT_ALLOWED' },
       );
+      const dormantView = await customers.readCustomer(sql, dormant);
+      assert.equal(dormantView.lifecycle.action, 'reinstate');
+      const activated = await cmd(
+        customers.changeCustomerLifecycle,
+        dormant,
+        { reason: 'Imported account, identity confirmed', expectedVersion: 1 },
+        'reinstate',
+      );
+      assert.equal(activated.accountStatus, 'active');
       const history = (await customers.readCustomer(sql, riya)).history.map((h) => h.action);
       for (const action of [
         'customer_profile_corrected',

@@ -297,8 +297,8 @@ export async function changeLifecycle(database, { adminId, clientId, action, inp
     await tx`INSERT INTO audit_log(actor_type, actor_id, entity, entity_id, action, before, after, reason, ip)
       VALUES ('admin', ${adminId}, 'user', ${client.id},
         ${action === 'suspend' ? 'client_suspended' : 'client_reinstated'},
-        ${JSON.stringify({ accountStatus: client.account_status, lifecycleVersion: client.lifecycle_version })}::jsonb,
-        ${JSON.stringify({ accountStatus: updated.account_status, lifecycleVersion: updated.lifecycle_version, impact: effects })}::jsonb,
+        ${JSON.stringify({ accountStatus: client.account_status, lifecycleVersion: client.lifecycle_version })}::text::jsonb,
+        ${JSON.stringify({ accountStatus: updated.account_status, lifecycleVersion: updated.lifecycle_version, impact: effects })}::text::jsonb,
         ${reason}, ${ip})`;
     const live = await tx`SELECT id, slug, public_code FROM rentable
       WHERE client_id=${client.id} AND status='live'`;

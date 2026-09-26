@@ -1,4 +1,8 @@
-import { listDocuments, uploadKycDocuments, deleteKycDocument } from '@/services/auth/documents.js';
+import {
+  listApplicationDocuments,
+  uploadKycDocuments,
+  deleteKycDocument,
+} from '@/services/auth/documents.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -11,7 +15,7 @@ import { ok } from '@/utils/respond.js';
  * never carries a public URL. See the upload middleware for why.
  */
 export const list = asyncHandler(async (req, res) =>
-  ok(res, await listDocuments({ ownerType: 'user', ownerId: req.user.id })),
+  ok(res, await listApplicationDocuments(req.user.id)),
 );
 
 export const upload = runAction(uploadKycDocuments);

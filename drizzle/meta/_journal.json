@@ -169,6 +169,13 @@
       "when": 1790420127156,
       "tag": "0023_client_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790423299047,
+      "tag": "0024_application_review",
+      "breakpoints": true
     }
   ]
 }
