@@ -19,7 +19,7 @@ export async function seedReviewFixture(sql) {
     await sql`SELECT udt_name FROM information_schema.columns WHERE table_name='rentable' AND column_name='location'`;
   const [listing] =
     await sql`INSERT INTO rentable(client_id,slug,title,description,category_id,city_id,area_id,public_code,capacity,farm_size,exact_address,check_in_from,check_out_by,photos)
-    VALUES (${owner.id},'review-farm','Review River Farm','A quiet farmhouse with enough description for a complete review submission.',${category.id},${city.id},${area.id},'REVIEW01',12,2,'12 Private Lane','09:00','19:00',${JSON.stringify(Array.from({ length: 6 }, (_, i) => ({ url: `https://images.unsplash.com/photo-1518780664697-55e3ad937233?w=400&sig=${i}`, alt: `Farm photo ${i + 1}` })))}::text::jsonb) RETURNING id`;
+    VALUES (${owner.id},'review-farm','Review River Farm','A quiet farmhouse with enough description for a complete review submission.',${category.id},${city.id},${area.id},'review01',12,2,'12 Private Lane','09:00','19:00',${JSON.stringify(Array.from({ length: 6 }, (_, i) => ({ url: `https://images.unsplash.com/photo-1518780664697-55e3ad937233?w=400&sig=${i}`, alt: `Farm photo ${i + 1}` })))}::text::jsonb) RETURNING id`;
   if (geometryType === 'geometry')
     await sql`UPDATE rentable SET location=ST_SetSRID(ST_MakePoint(72.8,21.1),4326) WHERE id=${listing.id}`;
   else {

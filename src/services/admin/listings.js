@@ -4,6 +4,7 @@ import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { listingCompletion } from '../domain/listing-completion.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { rentable } from '../db/schema/index.js';
+import { CHECKLIST, listVerifications, publicationState } from './verification.js';
 
 export const REVIEW_SECTIONS = [
   'basics',
@@ -117,7 +118,15 @@ export async function propertyReviewContext(database, id) {
       row.status === 'pending_review' && (!row.id || row.content_version !== row.current_version),
     stale: !row.id || row.content_version !== row.current_version,
     assignee: row.assigned_to ? { id: row.assigned_to, email: row.reviewer } : null,
+    // Client-safe verification progress: when and how, never the evidence.
+    verification: await clientVerification(database, id),
   };
+}
+
+async function clientVerification(database, id) {
+  const [visit] = await database`SELECT mode, scheduled_at, time_zone FROM verification_visit
+    WHERE rentable_id=${id} AND completed_at IS NULL AND cancelled_at IS NULL LIMIT 1`;
+  return visit ? { mode: visit.mode, scheduledAt: visit.scheduled_at, timeZone: visit.time_zone } : null;
 }
 
 export async function listPropertyReviews(database, adminId, input) {
@@ -147,7 +156,7 @@ export async function listPropertyReviews(database, adminId, input) {
 
 export async function readPropertyReview(database, id) {
   const [owner] =
-    await database`SELECT r.id,r.title,r.status,r.content_version,r.client_id,u.name,u.email,u.account_status,
+    await database`SELECT r.id,r.title,r.slug,r.public_code,r.status,r.content_version,r.client_id,u.name,u.email,u.account_status,
     (SELECT id FROM client_application WHERE user_id=u.id) AS application_id FROM rentable r JOIN "user" u ON u.id=r.client_id WHERE r.id=${id}`;
   if (!owner) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
   const submissions =
@@ -168,6 +177,9 @@ export async function readPropertyReview(database, id) {
     history: history.map(camel),
     stale: !current || current.content_version !== owner.content_version,
     readiness: current ? listingCompletion(current.snapshot.listing, current.snapshot) : null,
+    verifications: await listVerifications(database, id),
+    publication: await publicationState(database, id),
+    checklist: CHECKLIST.map(([key, label]) => ({ key, label })),
   };
 }
 

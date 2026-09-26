@@ -103,3 +103,13 @@ test('customer account controls need admin.customers.write; clients grants do no
     true,
   );
 });
+
+test('verification and publication commands need admin.properties.write', () => {
+  const id = '00000000-0000-4000-8000-000000000000';
+  const reader = { isActive: true, permissions: ['admin.properties.read'] };
+  assert.equal(canAccessRoute(reader, 'admin', 'GET', `/properties/${id}`), true);
+  for (const path of ['verifications', `verifications/${id}/outcome`, 'publish'])
+    assert.equal(canAccessRoute(reader, 'admin', 'POST', `/properties/${id}/${path}`), false);
+  const writer = { isActive: true, permissions: ['admin.properties.write'] };
+  assert.equal(canAccessRoute(writer, 'admin', 'POST', `/properties/${id}/publish`), true);
+});

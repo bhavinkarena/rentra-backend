@@ -663,6 +663,11 @@ export const rentable = pgTable(
     /** Increments each time the listing goes back for review. */
     reviewPass: integer('review_pass').notNull().default(0),
     contentVersion: integer('content_version').notNull().default(1),
+    /** Publication attribution (CP07): the exact reviewed revision that went live, by whom. */
+    // FK to listing_submission is added in 0026 SQL (declared later in this file).
+    publishedSubmissionId: uuid('published_submission_id'),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    publishedBy: uuid('published_by').references(() => adminUsers.id, { onDelete: 'set null' }),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -775,8 +780,23 @@ export const verificationVisit = pgTable(
     recordingKey: varchar('recording_key', { length: 300 }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** CP07: the immutable submitted revision this verification examines. */
+    submissionId: uuid('submission_id').references(() => listingSubmission.id),
+    timeZone: varchar('time_zone', { length: 64 }).notNull().default('Asia/Kolkata'),
+    createdBy: uuid('created_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    recordedBy: uuid('recorded_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancelReason: text('cancel_reason'),
+    /** Optimistic-concurrency token for reschedule, cancel and outcome commands. */
+    version: integer('version').notNull().default(1),
   },
-  (t) => [index('visit_rentable_idx').on(t.rentableId, t.outcome)],
+  (t) => [
+    index('visit_rentable_idx').on(t.rentableId, t.outcome),
+    // At most one open (not completed, not cancelled) verification per property.
+    uniqueIndex('verification_open_idx')
+      .on(t.rentableId)
+      .where(sql`${t.completedAt} IS NULL AND ${t.cancelledAt} IS NULL`),
+  ],
 );
 
 /** Base price per slot. Weekend/weekday, in whole rupees. */

@@ -3,6 +3,10 @@ import * as admin from '@/controllers/admin.controller.js';
 import * as clients from '@/controllers/clients.controller.js';
 import * as propertyReviews from '@/controllers/propertyReviews.controller.js';
 import { listingQueueQuery } from '@/services/admin/listings.js';
+import { z } from 'zod';
+import { uuid } from '@/validations/common.validation.js';
+
+const visitParams = z.object({ id: uuid, visitId: uuid });
 import * as customers from '@/controllers/customers.controller.js';
 import * as payments from '@/controllers/payments.controller.js';
 import * as records from '@/controllers/records.controller.js';
@@ -60,6 +64,31 @@ router.post(
   validate({ params: clientIdParam }),
   formFields(),
   propertyReviews.decide,
+);
+// Verification and publication (CP07): every command re-checks the reviewed revision.
+router.post(
+  '/properties/:id/verifications',
+  validate({ params: clientIdParam }),
+  formFields(),
+  propertyReviews.schedule,
+);
+for (const [path, handler] of [
+  ['reschedule', propertyReviews.reschedule],
+  ['cancel', propertyReviews.cancel],
+  ['outcome', propertyReviews.outcome],
+]) {
+  router.post(
+    `/properties/:id/verifications/:visitId/${path}`,
+    validate({ params: visitParams }),
+    formFields(),
+    handler,
+  );
+}
+router.post(
+  '/properties/:id/publish',
+  validate({ params: clientIdParam }),
+  formFields(),
+  propertyReviews.publish,
 );
 router.get('/applications/stats', admin.stats);
 router.get('/applications/decisions', validate({ query: decisionsQuery }), admin.decisions);

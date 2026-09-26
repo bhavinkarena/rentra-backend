@@ -5,6 +5,13 @@ import {
   assignPropertyReview,
   decidePropertyReview,
 } from '@/services/admin/listings.js';
+import {
+  cancelVerification,
+  publishProperty,
+  recordVerificationOutcome,
+  rescheduleVerification,
+  scheduleVerification,
+} from '@/services/admin/verification.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 
@@ -41,3 +48,23 @@ export const decide = asyncHandler(async (req, res) => {
     }),
   );
 });
+
+/** Verification and publication (CP07). Capability checks run in the router. */
+const verificationCommand = (run) =>
+  asyncHandler(async (req, res) =>
+    ok(
+      res,
+      await run(sql, {
+        adminId: req.admin.id,
+        id: req.params.id,
+        visitId: req.params.visitId,
+        input: req.body,
+        ip: req.ip,
+      }),
+    ),
+  );
+export const schedule = verificationCommand(scheduleVerification);
+export const reschedule = verificationCommand(rescheduleVerification);
+export const cancel = verificationCommand(cancelVerification);
+export const outcome = verificationCommand(recordVerificationOutcome);
+export const publish = verificationCommand(publishProperty);

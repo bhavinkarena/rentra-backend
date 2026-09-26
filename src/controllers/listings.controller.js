@@ -50,6 +50,7 @@ export const detail = asyncHandler(async (req, res) => {
   listing.listing.reviewNeedsResubmission = review?.needsResubmission ?? false;
   listing.listing.reviewFlaggedFields = listing.reviews.at(-1)?.flaggedFields ?? [];
   listing.listing.reviewOutcome = listing.reviews.at(-1)?.outcome ?? null;
+  listing.listing.reviewVerification = review?.verification ?? null;
   listing.review = review;
   return ok(res, listing);
 });

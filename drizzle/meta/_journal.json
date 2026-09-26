@@ -183,6 +183,13 @@
       "when": 1790427834693,
       "tag": "0025_listing_review",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790430564350,
+      "tag": "0026_verification_publication",
+      "breakpoints": true
     }
   ]
 }
