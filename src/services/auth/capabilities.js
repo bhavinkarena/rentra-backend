@@ -1,5 +1,5 @@
 /** Business permissions; record ownership remains a separate service-layer check. */
-const adminDomains = ['applications', 'clients', 'documents', 'payments', 'records', 'reviews', 'support', 'notifications', 'privacy', 'operations'];
+const adminDomains = ['applications', 'clients', 'customers', 'documents', 'payments', 'records', 'reviews', 'support', 'notifications', 'privacy', 'operations'];
 export const ADMIN_CAPABILITIES = Object.freeze(adminDomains.flatMap(domain => [`admin.${domain}.read`, `admin.${domain}.write`]));
 export const CLIENT_BASE_CAPABILITIES = Object.freeze(['client.application.read', 'client.application.write', 'client.documents.read', 'client.documents.write', 'client.settings.write', 'client.catalogue.read', 'client.listings.read']);
 export const CLIENT_ACTIVE_CAPABILITIES = Object.freeze([...CLIENT_BASE_CAPABILITIES, 'client.listings.write', 'client.calendar.read', 'client.calendar.write', 'client.records.read', 'client.records.write', 'client.reviews.read', 'client.reviews.write']);

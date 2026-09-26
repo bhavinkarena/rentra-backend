@@ -81,3 +81,25 @@ test('client lifecycle commands need admin.clients.write, reads need admin.clien
     false,
   );
 });
+
+test('customer account controls need admin.customers.write; clients grants do not carry over', () => {
+  const id = '00000000-0000-4000-8000-000000000000';
+  const reader = { isActive: true, permissions: ['admin.customers.read'] };
+  assert.equal(canAccessRoute(reader, 'admin', 'GET', `/customers/${id}`), true);
+  for (const path of ['restrict', 'reinstate', 'sessions/revoke', 'profile'])
+    assert.equal(canAccessRoute(reader, 'admin', 'POST', `/customers/${id}/${path}`), false);
+  const clientsOnly = {
+    isActive: true,
+    permissions: ['admin.clients.write', 'admin.clients.read'],
+  };
+  assert.equal(canAccessRoute(clientsOnly, 'admin', 'GET', '/customers'), false);
+  assert.equal(
+    canAccessRoute(
+      { isActive: true, permissions: null },
+      'admin',
+      'POST',
+      `/customers/${id}/profile`,
+    ),
+    true,
+  );
+});

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as admin from '@/controllers/admin.controller.js';
 import * as clients from '@/controllers/clients.controller.js';
+import * as customers from '@/controllers/customers.controller.js';
 import * as payments from '@/controllers/payments.controller.js';
 import * as records from '@/controllers/records.controller.js';
 import * as reviews from '@/controllers/reviews.controller.js';
@@ -18,6 +19,7 @@ import {
   lifecyclePreviewQuery,
 } from '@/validations/admin.validation.js';
 import { clientListQuery } from '@/services/admin/clients.js';
+import { customerListQuery } from '@/services/admin/customers.js';
 import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
 
@@ -71,6 +73,37 @@ router.post(
   validate({ params: clientIdParam }),
   formFields(),
   clients.reinstate,
+);
+
+/* ---------------------------------------------------------------- *
+ * Customer directory and account controls (CP04). Every command takes a
+ * reason and the reviewed `expectedVersion`; stale commands answer 409.
+ * ---------------------------------------------------------------- */
+router.get('/customers', validate({ query: customerListQuery }), customers.list);
+router.get('/customers/:id', validate({ params: clientIdParam }), customers.detail);
+router.post(
+  '/customers/:id/restrict',
+  validate({ params: clientIdParam }),
+  formFields(),
+  customers.restrict,
+);
+router.post(
+  '/customers/:id/reinstate',
+  validate({ params: clientIdParam }),
+  formFields(),
+  customers.reinstate,
+);
+router.post(
+  '/customers/:id/sessions/revoke',
+  validate({ params: clientIdParam }),
+  formFields(),
+  customers.revokeSessions,
+);
+router.post(
+  '/customers/:id/profile',
+  validate({ params: clientIdParam }),
+  formFields(),
+  customers.correctProfile,
 );
 
 /* ---------------------------------------------------------------- *
