@@ -43,7 +43,7 @@ async function perform(form, run, command) {
 }
 
 export async function saveSchedule(_state, form) {
-  return perform(form, async (ownerId, rentableId) => {
+  return perform(form, async (ownerId, rentableId, database) => {
     const slots = {};
     for (const slot of ['day', 'night', 'full_day']) {
       slots[slot] = form.get(`${slot}_enabled`) === 'on' ? {
@@ -52,11 +52,11 @@ export async function saveSchedule(_state, form) {
         extraGuestChargeMinor: parseINRMinor(form.get(`${slot}_extraGuestCharge`)),
       } : { enabled: false };
     }
-    await saveBookingConfiguration(sql, ownerId, {
+    return saveBookingConfiguration(database, ownerId, {
       rentableId, expectedVersion: Number(form.get('expectedVersion')),
       configuration: { timeZone: 'Asia/Kolkata', leadTimeMinutes: Number(form.get('leadTimeMinutes')), bookingHorizonDays: Number(form.get('bookingHorizonDays')), slots },
     });
-  });
+  }, 'schedule');
 }
 export async function saveOverride(_state, form) {
   return perform(form, (ownerId, rentableId, database) => saveBookingPriceOverride(database, ownerId, {

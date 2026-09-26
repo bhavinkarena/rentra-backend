@@ -27,7 +27,7 @@ import {
 import { clientListQuery } from '@/services/admin/clients.js';
 import { customerListQuery } from '@/services/admin/customers.js';
 import { applicationQueueQuery } from '@/services/admin/applications.js';
-import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
+import { recordIdParam, operationalHistoryQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
 
 /**
@@ -187,7 +187,7 @@ router.post('/payments/configuration', formFields(), payments.saveConfiguration)
 /* ---------------------------------------------------------------- *
  * Bookings, reviews, support, notifications — the admin view of each
  * ---------------------------------------------------------------- */
-router.get('/records', validate({ query: historyQuery }), records.history);
+router.get('/records', validate({ query: operationalHistoryQuery }), records.history);
 router.get('/records/:id', validate({ params: recordIdParam }), records.detail);
 router.get('/records/:id/summary', validate({ params: recordIdParam }), records.summary);
 router.post('/records/visit', formFields(), records.adminTransition);

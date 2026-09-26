@@ -23,9 +23,9 @@ export async function saveBookingConfiguration(database, ownerId, { rentableId, 
     await expireInventoryHolds(tx, rentableId);
     const candidate = { ...parsed, inventoryReady: true };
     await auditInventoryReadiness(tx, { ...listing, booking_config: candidate });
-    await tx`UPDATE rentable SET booking_config=${JSON.stringify(candidate)}::jsonb, booking_config_version=booking_config_version+1, updated_at=now() WHERE id=${rentableId}`;
+    await tx`UPDATE rentable SET booking_config=${JSON.stringify(candidate)}::text::jsonb, booking_config_version=booking_config_version+1, updated_at=now() WHERE id=${rentableId}`;
     await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"before","after")
-      VALUES ('client',${ownerId},'rentable',${rentableId},'booking_configuration_changed',${JSON.stringify(listing.booking_config)}::jsonb,${JSON.stringify(candidate)}::jsonb)`;
+      VALUES ('client',${ownerId},'rentable',${rentableId},'booking_configuration_changed',${JSON.stringify(listing.booking_config)}::text::jsonb,${JSON.stringify({values:candidate,effectiveVersion:expectedVersion+1})}::text::jsonb)`;
     return { version: expectedVersion + 1 };
   });
 }
@@ -42,10 +42,10 @@ export async function saveBookingPriceOverride(database, ownerId, input) {
         VALUES (${listing.id},${value.day},${value.slot},${value.rentMinor})
         ON CONFLICT (rentable_id,day,slot) DO UPDATE SET rent_minor=excluded.rent_minor,updated_at=now()`;
     }
-    await tx`UPDATE rentable SET booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${listing.id}`;
+    const [updated] = await tx`UPDATE rentable SET booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${listing.id} RETURNING booking_config_version`;
     await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"after") VALUES
-      ('client',${ownerId},'rentable',${listing.id},'booking_price_override_changed',${JSON.stringify(value)}::jsonb)`;
-    return { ok: true };
+      ('client',${ownerId},'rentable',${listing.id},'booking_price_override_changed',${JSON.stringify({values:value,effectiveVersion:updated.booking_config_version})}::text::jsonb)`;
+    return { ok: true, effectiveVersion:updated.booking_config_version };
   });
 }
 
@@ -61,7 +61,7 @@ export async function openBookingDates(database, ownerId, { rentableId, from, to
       FROM generate_series(${from}::date,${to}::date,interval '1 day') d CROSS JOIN unnest(ARRAY['day','night']) s
       ON CONFLICT (rentable_id,day,slot) DO NOTHING RETURNING day`;
     await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"after") VALUES
-      ('client',${ownerId},'rentable',${listing.id},'calendar_dates_added',${JSON.stringify({ from, to, endExclusive: addLocalDays(to, 1) })}::jsonb)`;
+      ('client',${ownerId},'rentable',${listing.id},'calendar_dates_added',${JSON.stringify({ from, to, endExclusive: addLocalDays(to, 1) })}::text::jsonb)`;
     return { added: result.length };
   });
 }

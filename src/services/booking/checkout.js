@@ -16,7 +16,7 @@ const inputSchema = z.object({ rentableId: z.string().uuid(), quoteId: z.string(
   idempotencyKey: z.string().uuid(), accepted: z.literal(true), purpose: z.string().trim().min(3).max(160).optional() }).strict();
 
 export async function lifecycle(tx, orderId, kind, payload = {}) {
-  await tx`INSERT INTO booking_lifecycle_event(order_id,kind,payload) VALUES(${orderId},${kind},${JSON.stringify(payload)}::jsonb)
+  await tx`INSERT INTO booking_lifecycle_event(order_id,kind,payload) VALUES(${orderId},${kind},${JSON.stringify(payload)}::text::jsonb)
     ON CONFLICT(order_id,kind) DO NOTHING`;
 }
 export async function checkoutStatus(tx, orderId) {
@@ -62,7 +62,7 @@ export async function createCheckoutHold(database, session, input, env = process
       quote_expires_at,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,
       amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,idempotency_key,request_hash,hold_expires_at)
       VALUES(${orderId},${'TEST_' + orderId},${customer.id},${listing.id},'held','INR',${quote.timeZone},${quote.id},${quote.version},${quote.hash},
-      ${quote.expiresAt},${quote.pricingVersion},${quote.policy.version},${JSON.stringify(quote.policy)}::jsonb,${JSON.stringify(listingSnapshot)}::jsonb,
+      ${quote.expiresAt},${quote.pricingVersion},${quote.policy.version},${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(listingSnapshot)}::text::jsonb,
       ${quote.totals.rentMinor},${quote.totals.feeMinor},${quote.totals.depositMinor},${quote.totals.illustrativeAdvanceMinor},
       'real','test',${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
     for (const [position, visit] of quote.visits.entries()) {
@@ -76,14 +76,14 @@ export async function createCheckoutHold(database, session, input, env = process
         VALUES(${id},${'T' + id.replaceAll('-','').slice(0,15)},${listing.id},${customer.id},${orderId},${position+1},${visit.date},${visit.date},${visit.slot},${quote.selection.guests},
         ${visit.startsAt},${visit.endsAt},${visit.blockedStartAt},${visit.blockedEndAt},true,'INR',${quote.timeZone},${legacy[0]},${legacy[1]},${legacy[2]},
         ${visit.rentMinor},${visit.feeMinor},${visit.depositMinor},${visit.illustrativeAdvanceMinor},'real','test',${quote.policy.version},${quote.pricingVersion},
-        ${JSON.stringify(listingSnapshot)}::jsonb,${JSON.stringify(quote.policy)}::jsonb,${JSON.stringify(visit)}::jsonb,${JSON.stringify(visit)}::jsonb)`;
+        ${JSON.stringify(listingSnapshot)}::text::jsonb,${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(visit)}::text::jsonb,${JSON.stringify(visit)}::text::jsonb)`;
       await tx`INSERT INTO inventory_reservation(booking_id,rentable_id,source,blocked_start_at,blocked_end_at,state,hold_expires_at)
         VALUES(${id},${listing.id},'booking',${visit.blockedStartAt},${visit.blockedEndAt},'held',${expires.toISOString()})`;
     }
     await tx`INSERT INTO payment_order(id,booking_order_id,provider,environment,mode,currency,purpose,expected_minor,idempotency_key,request_hash,due_at)
       VALUES(${paymentId},${orderId},'razorpay','test','real','INR',${quote.payment.collectionPurpose},${quote.payment.expectedMinor},${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
     await tx`INSERT INTO payment_execution(payment_order_id,config_version,credential_key_id,snapshot)
-      VALUES(${paymentId},${quote.payment.version},${credentials.keyId},${JSON.stringify(quote.payment)}::jsonb)`;
+      VALUES(${paymentId},${quote.payment.version},${credentials.keyId},${JSON.stringify(quote.payment)}::text::jsonb)`;
     await lifecycle(tx, orderId, 'held', { environment: 'test', actualCollectedMinor: 0 });
     return checkoutStatus(tx, orderId);
   });

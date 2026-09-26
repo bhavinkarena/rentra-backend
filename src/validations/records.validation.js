@@ -13,3 +13,8 @@ export const historyQuery = z.object({
   page: z.coerce.number().int().min(1).max(999999).default(1),
   q: z.string().max(100).default(''),
 });
+
+export const operationalHistoryQuery = historyQuery.extend({
+  tab: z.enum(['all', 'upcoming', 'today', 'action_needed', 'past', 'cancelled']).default('all'),
+  property: z.union([uuid, z.literal('')]).optional(),
+});

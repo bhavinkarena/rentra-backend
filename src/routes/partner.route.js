@@ -15,7 +15,7 @@ import { uploadLimiter } from '@/middlewares/rateLimit.middleware.js';
 import { formFields, manyFiles, singleFile, fileFields } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
 import { listingIdParam, listingsPageQuery } from '@/validations/listings.validation.js';
-import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
+import { recordIdParam, operationalHistoryQuery } from '@/validations/records.validation.js';
 
 /**
  * Everything a property owner does.
@@ -157,7 +157,12 @@ router.post('/listings/:id/calendar/unblock', requireActiveClient, formFields(),
 /* ---------------------------------------------------------------- *
  * Bookings against the owner's places
  * ---------------------------------------------------------------- */
-router.get('/records', requireActiveClient, validate({ query: historyQuery }), records.history);
+router.get(
+  '/records',
+  requireActiveClient,
+  validate({ query: operationalHistoryQuery }),
+  records.history,
+);
 router.get(
   '/records/:id',
   requireActiveClient,

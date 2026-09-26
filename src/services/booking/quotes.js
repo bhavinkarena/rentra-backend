@@ -2,6 +2,7 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { bookingSelectionSchema, localDateSchema } from '../schemas/zod/booking.js';
 import { bookingConfigSchema } from '../schemas/zod/booking-config.js';
+import { CANCELLATION_TIERS } from '../domain/pricing.js';
 import { BOOKING_POLICY } from '../domain/booking-policy.js';
 import { addLocalDays, buildVisitIntervals, propertyToday } from '../domain/booking-dates.js';
 import { legacyRupeesToMinor, priceVisitsMinor } from '../domain/booking-money.js';
@@ -50,6 +51,8 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now)
   const policy = {
     version: BOOKING_POLICY.version, listingConfigVersion: listing.booking_config_version,
     cancellationTier: listing.cancellation_tier, houseRules: listing.house_rules,
+    cancellation: { bands: CANCELLATION_TIERS[listing.cancellation_tier].bands.map(band=>[...band]), noShow: CANCELLATION_TIERS[listing.cancellation_tier].noShow, feeOnFullRefund: listing.cancellation_tier === 'flexible' },
+    pricing: { platformFeeBps: BOOKING_POLICY.platformFeeBps, illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
     depositScope: 'per_visit', taxPolicy: 'not_configured', timeZone: config.timeZone,
   };
   // Public quotes remain available while payments are disabled. No credentials
@@ -112,8 +115,8 @@ export async function createBookingQuote(database, input, { customerId = null, v
       INSERT INTO booking_quote (customer_id,intent_hash,rentable_id,currency,time_zone,selection,visit_snapshots,
         policy_snapshot,payment_snapshot,pricing_version,policy_version,version,quote_hash,
         amount_rent_minor,amount_fee_minor,amount_deposit_minor,created_at,expires_at)
-      VALUES (${customerId},${quoteDigest(selection)},${listing.id},'INR',${quote.timeZone},${JSON.stringify(selection)}::jsonb,${JSON.stringify(quote.visits)}::jsonb,
-        ${JSON.stringify(quote.policy)}::jsonb,${JSON.stringify(quote.payment)}::jsonb,${quote.pricingVersion},${BOOKING_POLICY.version},1,${quote.hash},
+      VALUES (${customerId},${quoteDigest(selection)},${listing.id},'INR',${quote.timeZone},${JSON.stringify(selection)}::text::jsonb,${JSON.stringify(quote.visits)}::text::jsonb,
+        ${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(quote.payment)}::text::jsonb,${quote.pricingVersion},${BOOKING_POLICY.version},1,${quote.hash},
         ${quote.totals.rentMinor},${quote.totals.feeMinor},${quote.totals.depositMinor},${quote.createdAt},${quote.expiresAt}) RETURNING id`;
     return { ...quote, id: saved.id, version: 1, advisory: true };
   });

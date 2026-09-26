@@ -28,6 +28,7 @@ import { ok } from '@/utils/respond.js';
 import { notFound } from '@/utils/apiError.js';
 import { propertyReviewContext } from '@/services/admin/listings.js';
 import { ownerPropertyOverview } from '@/services/auth/property-overview.js';
+import { propertyPolicyHistory } from '@/services/booking/property-policy.js';
 import { sql } from '@/config/database.js';
 
 /** The partner's own listings. Ownership is enforced by passing the client id. */
@@ -56,6 +57,7 @@ export const detail = asyncHandler(async (req, res) => {
   listing.listing.adminCorrection = review?.correction ?? null;
   // Which operator acted stays internal.
   delete listing.listing.restrictedBy;
+  listing.listing.policyHistory = await propertyPolicyHistory(sql, req.user.id, req.params.id);
   listing.review = review;
   return ok(res, listing);
 });
@@ -79,8 +81,15 @@ export const location = runAction(saveLocation);
 export const capacity = runAction(saveCapacity);
 export const amenitiesStep = runAction(saveAmenities);
 export const rules = runAction(saveRules);
-export const pricing = runAction(savePricing);
-export const terms = runAction(saveTerms);
+function policyAction(action) {
+  const handler = runAction(action);
+  return (req, res, next) => {
+    req.body = { ...req.body, id: req.params.id };
+    return handler(req, res, next);
+  };
+}
+export const pricing = policyAction(savePricing);
+export const terms = policyAction(saveTerms);
 export const addPhotos = runAction(uploadListingPhotos);
 export const removePhoto = runAction(removeListingPhoto);
 export const reorderPhotos = runAction(reorderListingPhotos);

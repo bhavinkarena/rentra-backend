@@ -78,7 +78,7 @@ export async function commitCancellation(database,session,input,env=process.env)
       AND NOT EXISTS(SELECT 1 FROM booking WHERE order_id=${order.id} AND state<>'cancelled')`;
     const snapshot={...publicPreview(preview),id,refundIds,cancelledAt:new Date().toISOString()};
     await tx`INSERT INTO booking_cancellation(id,order_id,customer_id,idempotency_key,request_hash,snapshot)
-      VALUES(${id},${order.id},${session.userId},${parsed.idempotencyKey},${requestHash},${JSON.stringify(snapshot)}::jsonb)`;
+      VALUES(${id},${order.id},${session.userId},${parsed.idempotencyKey},${requestHash},${JSON.stringify(snapshot)}::text::jsonb)`;
     await lifecycle(tx,order.id,'cancel_'+id.replaceAll('-',''),{cancellationId:id,visitIds:value.visitIds,refundIds,environment:'test',actualBankRefundMinor:0});
     return snapshot;
   },env);

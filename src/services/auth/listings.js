@@ -5,17 +5,16 @@ import { headers } from 'next/headers';
 import { and, eq } from 'drizzle-orm';
 import { db, sql } from '@/services/db';
 import { submitProperty } from '../admin/listings.js';
-import { withListingInventory, InventoryError } from '@/services/booking/inventory';
-import { legacyRupeesToMinor } from '@/services/domain/booking-money';
+import { changePropertyPolicy } from '../booking/property-policy.js';
 import {
-  rentable, rentablePrice, rentableAmenity, documents,
+  rentable, rentableAmenity, documents,
   category, city, area,
 } from '@/services/db/schema/index.js';
 import { audit } from '@/services/audit';
 import { fieldErrors } from '@/services/schemas/zod';
 import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
-  pricingSchema, termsSchema, ownershipDocSchema,
+  ownershipDocSchema,
 } from '@/services/schemas/zod/listing';
 import { MAX_PHOTOS } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
@@ -27,7 +26,7 @@ import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
 } from '@/services/uploads/cloudinary';
-import { conflict } from '@/utils/apiError.js';
+import { conflict, notFound } from '@/utils/apiError.js';
 import { requireActiveClient } from './dal';
 
 /**
@@ -344,72 +343,21 @@ export async function saveRules(_prev, formData) {
   return { ok: true, contentVersion, sentBack };
 }
 
-export async function savePricing(_prev, formData) {
-  const { listing, user } = await load(String(formData.get('id')));
-  const parsed = pricingSchema.safeParse(Object.fromEntries(
-    ['day_weekday', 'day_weekend', 'night_weekday', 'night_weekend',
-      'full_day_weekday', 'full_day_weekend', 'extraGuestCharge', 'extraHourCharge']
-      .map((k) => [k, formData.get(k) || 0]),
-  ));
-  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  const d = parsed.data;
-  const rows = ['day', 'night', 'full_day']
-    .map((slot) => ({
-      rentableId: listing.id,
-      slot,
-      weekday: d[`${slot}_weekday`],
-      weekend: d[`${slot}_weekend`],
-    }))
-    // A slot priced at zero is a slot not offered, not a free slot.
-    .filter((r) => r.weekday > 0 || r.weekend > 0);
-
-  const contentVersion = await withListingInventory(sql, listing.id, async (tx, locked) => {
-    const [active] = await tx`SELECT id FROM "user" WHERE id=${user.id} AND role='client' AND account_status='active' FOR SHARE`;
-    if (!active || locked.client_id !== user.id) throw new InventoryError('FORBIDDEN', 'Property access unavailable.');
-    assertVersion(locked.content_version, expectedVersion(formData));
-    await tx`DELETE FROM rentable_price WHERE rentable_id=${listing.id}`;
-    for (const row of rows) await tx`INSERT INTO rentable_price (rentable_id,slot,weekday,weekend) VALUES (${listing.id},${row.slot},${row.weekday},${row.weekend})`;
-    const config = locked.booking_config;
-    if (config) for (const schedule of Object.values(config.slots)) if (schedule.enabled) schedule.extraGuestChargeMinor = legacyRupeesToMinor(d.extraGuestCharge ?? 0);
-    await tx`UPDATE rentable SET extra_guest_charge=${d.extraGuestCharge ?? 0}, booking_config=${JSON.stringify(config)}::jsonb, booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${listing.id}`;
-    const [after] = await tx`SELECT content_version FROM rentable WHERE id=${listing.id}`;
-    return after.content_version;
+async function policyAction(formData, command) {
+  const user = await requireActiveClient();
+  const data = await getListingForEdit(String(formData.get('id')),user.id);
+  if(!data) throw notFound();
+  const {listing}=data;
+  const keys = command === 'pricing' ? ['day_weekday','day_weekend','night_weekday','night_weekend','full_day_weekday','full_day_weekend','extraGuestCharge','extraHourCharge'] : ['depositAmount','cancellationTier'];
+  const result = await changePropertyPolicy(sql,user.id,listing.id,command,{
+    values:Object.fromEntries(keys.map(key=>[key,formData.get(key)||0])),
+    expectedVersion:Number(formData.get('contentVersion')),preview:formData.get('mode')==='preview',previewToken:formData.get('previewToken'),
   });
-
-  // Free of review, but NOT free of cache: the page, its metadata and its OG
-  // card all quote this number, and a card promising one price beside a page
-  // opening at another is a bait-and-switch even when it is only staleness.
-  revalidateListing(listing);
-
-  return { ok: true, contentVersion, slots: rows.length };
+  if(result.ok) revalidateListing(listing);
+  return result;
 }
-
-export async function saveTerms(_prev, formData) {
-  const { listing } = await load(String(formData.get('id')));
-  const parsed = termsSchema.safeParse({
-    depositAmount: formData.get('depositAmount') || 0,
-    cancellationTier: formData.get('cancellationTier'),
-  });
-  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  // Deposit and cancellation tier are free fields too.
-  const expected = expectedVersion(formData);
-  const [saved] = await db.update(rentable).set({
-    depositAmount: parsed.data.depositAmount,
-    cancellationTier: parsed.data.cancellationTier,
-    updatedAt: new Date(),
-  }).where(and(
-    eq(rentable.id, listing.id),
-    ...(expected ? [eq(rentable.contentVersion, expected)] : []),
-  )).returning({ contentVersion: rentable.contentVersion });
-  if (!saved) throw conflict('LISTING_CHANGED', CHANGED_MESSAGE);
-
-  // The cancellation policy is shown to a guest in rupees before they pay.
-  revalidateListing(listing);
-
-  return { ok: true, contentVersion: saved.contentVersion };
-}
+export async function savePricing(_prev, formData) { return policyAction(formData,'pricing'); }
+export async function saveTerms(_prev, formData) { return policyAction(formData,'terms'); }
 
 /* ------------------------------ photos ------------------------------ */
 
