@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as admin from '@/controllers/admin.controller.js';
+import * as clients from '@/controllers/clients.controller.js';
 import * as payments from '@/controllers/payments.controller.js';
 import * as records from '@/controllers/records.controller.js';
 import * as reviews from '@/controllers/reviews.controller.js';
@@ -13,7 +14,10 @@ import {
   userIdParam,
   documentIdParam,
   decisionsQuery,
+  clientIdParam,
+  lifecyclePreviewQuery,
 } from '@/validations/admin.validation.js';
+import { clientListQuery } from '@/services/admin/clients.js';
 import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
 
@@ -44,7 +48,30 @@ router.get('/applications/:id', validate({ params: applicationIdParam }), admin.
 router.post('/applications/approve', formFields(), admin.approve);
 router.post('/applications/more-info', formFields(), admin.moreInfo);
 router.post('/applications/reject', formFields(), admin.reject);
-router.post('/clients/suspend', formFields(), admin.suspend);
+
+/* ---------------------------------------------------------------- *
+ * Client directory and lifecycle (CP03). Suspend/reinstate require the
+ * reviewed lifecycle version; stale or invalid transitions answer 409.
+ * ---------------------------------------------------------------- */
+router.get('/clients', validate({ query: clientListQuery }), clients.list);
+router.get('/clients/:id', validate({ params: clientIdParam }), clients.detail);
+router.get(
+  '/clients/:id/lifecycle-preview',
+  validate({ params: clientIdParam, query: lifecyclePreviewQuery }),
+  clients.preview,
+);
+router.post(
+  '/clients/:id/suspend',
+  validate({ params: clientIdParam }),
+  formFields(),
+  clients.suspend,
+);
+router.post(
+  '/clients/:id/reinstate',
+  validate({ params: clientIdParam }),
+  formFields(),
+  clients.reinstate,
+);
 
 /* ---------------------------------------------------------------- *
  * KYC review

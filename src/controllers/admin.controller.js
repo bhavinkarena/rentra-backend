@@ -10,7 +10,6 @@ import {
   approveApplication,
   requestMoreInfo,
   rejectApplication,
-  suspendClient,
   reviewDocument,
 } from '@/services/auth/admin-actions.js';
 import { listDocuments } from '@/services/auth/documents.js';
@@ -80,7 +79,6 @@ export const documentFile = asyncHandler(async (req, res) => {
 export const approve = runAction(approveApplication);
 export const moreInfo = runAction(requestMoreInfo);
 export const reject = runAction(rejectApplication);
-export const suspend = runAction(suspendClient);
 export const decideDocument = runAction(reviewDocument);
 
 /** DPDP request queue. */

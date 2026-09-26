@@ -5,6 +5,9 @@ export const applicationIdParam = z.object({ id: uuid });
 export const userIdParam = z.object({ userId: uuid });
 export const documentIdParam = z.object({ id: uuid });
 
+export const clientIdParam = z.object({ id: uuid });
+export const lifecyclePreviewQuery = z.object({ action: z.enum(['suspend', 'reinstate']) });
+
 export const decisionsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
 });

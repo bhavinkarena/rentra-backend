@@ -79,8 +79,19 @@ const nightPrice = and(
   eq(rentablePrice.slot, 'night'),
 );
 
+/**
+ * Public means live AND owned by an active client — the same rule discovery
+ * search applies. A suspended or blocked owner's listings leave every public
+ * read (detail, availability, cards, similar, sitemap, area counts) at once.
+ */
+const publiclyListed = and(
+  eq(rentable.status, 'live'),
+  raw`exists (select 1 from "user" o where o.id = ${rentable.clientId}
+    and o.role = 'client' and o.account_status = 'active')`,
+);
+
 export async function getLiveListings({ citySlug, areaSlug, limit = 24 } = {}) {
-  const filters = [eq(rentable.status, 'live')];
+  const filters = [publiclyListed];
   if (citySlug) filters.push(eq(city.slug, citySlug));
   if (areaSlug) filters.push(eq(area.slug, areaSlug));
 
@@ -120,7 +131,7 @@ export async function getListingsNearby({ lng, lat, km = 25, limit = 24 }) {
     .innerJoin(city, eq(city.id, rentable.cityId))
     .leftJoin(rentablePrice, nightPrice)
     .where(and(
-      eq(rentable.status, 'live'),
+      publiclyListed,
       raw`ST_DWithin(
         ${rentable.location}::geography,
         ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography,
@@ -174,7 +185,7 @@ export async function getListingByCode(publicCode) {
     .innerJoin(category, eq(category.id, rentable.categoryId))
     .leftJoin(rentablePrice, nightPrice)
     // Resolved by CODE, not slug — retitling must never 404.
-    .where(and(eq(rentable.publicCode, publicCode), eq(rentable.status, 'live')))
+    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
     .limit(1);
 
   if (!row) return null;
@@ -306,7 +317,7 @@ export async function getListingIdByCode(publicCode) {
   const [row] = await db
     .select({ id: rentable.id })
     .from(rentable)
-    .where(and(eq(rentable.publicCode, publicCode), eq(rentable.status, 'live')))
+    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
     .limit(1);
   return row?.id ?? null;
 }
@@ -366,7 +377,7 @@ export async function getSimilarListings({ rentableId, areaId, cityId, limit = 4
     .innerJoin(city, eq(city.id, rentable.cityId))
     .leftJoin(rentablePrice, nightPrice)
     .where(and(
-      eq(rentable.status, 'live'),
+      publiclyListed,
       ne(rentable.id, rentableId),
       eq(rentable.cityId, cityId),
     ))
@@ -400,7 +411,7 @@ export async function getSitemapEntries() {
       publicCode: rentable.publicCode,
       updatedAt: rentable.updatedAt,
     })
-    .from(rentable).where(eq(rentable.status, 'live'));
+    .from(rentable).where(publiclyListed);
 
   const cities = await db
     .select({ slug: city.slug }).from(city).where(eq(city.isActive, true));
@@ -424,7 +435,7 @@ export async function countLiveInArea({ citySlug, areaSlug }) {
     .innerJoin(area, eq(area.id, rentable.areaId))
     .innerJoin(city, eq(city.id, rentable.cityId))
     .where(and(
-      eq(rentable.status, 'live'),
+      publiclyListed,
       eq(city.slug, citySlug),
       eq(area.slug, areaSlug),
     ));

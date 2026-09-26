@@ -162,6 +162,13 @@
       "when": 1790414716621,
       "tag": "0022_portal_access",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790420127156,
+      "tag": "0023_client_lifecycle",
+      "breakpoints": true
     }
   ]
 }

@@ -185,6 +185,12 @@ export const users = pgTable(
     emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
     phoneVerifiedAt: timestamp('phone_verified_at', { withTimezone: true }),
     accountStatus: accountStatus('account_status').notNull().default('pending_application'),
+    /**
+     * Optimistic-concurrency token for admin lifecycle commands (suspend,
+     * reinstate). Bumped only by those commands, so a client's own login or
+     * profile edit never makes an admin's reviewed impact preview stale.
+     */
+    lifecycleVersion: integer('lifecycle_version').notNull().default(1),
     preferredLocale: varchar('preferred_locale', { length: 5 }).notNull().default('en'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
 

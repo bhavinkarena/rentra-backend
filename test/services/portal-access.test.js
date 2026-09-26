@@ -59,3 +59,25 @@ test('missing, legacy and wrong-role portal claims fail before SQL', async () =>
     assert.equal(await validPortalSession(database, claims, 'admin'), false);
   }
 });
+
+test('client lifecycle commands need admin.clients.write, reads need admin.clients.read', () => {
+  const reader = { isActive: true, permissions: ['admin.clients.read'] };
+  const id = '00000000-0000-4000-8000-000000000000';
+  assert.equal(canAccessRoute(reader, 'admin', 'GET', '/clients'), true);
+  assert.equal(canAccessRoute(reader, 'admin', 'GET', `/clients/${id}/lifecycle-preview`), true);
+  for (const action of ['suspend', 'reinstate'])
+    assert.equal(canAccessRoute(reader, 'admin', 'POST', `/clients/${id}/${action}`), false);
+  assert.equal(
+    canAccessRoute(
+      { isActive: true, permissions: ['admin.clients.write'] },
+      'admin',
+      'POST',
+      `/clients/${id}/suspend`,
+    ),
+    true,
+  );
+  assert.equal(
+    canAccessRoute({ isActive: true, permissions: [] }, 'admin', 'GET', '/clients'),
+    false,
+  );
+});

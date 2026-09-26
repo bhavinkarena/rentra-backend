@@ -308,47 +308,7 @@ export async function rejectApplication(_prev, formData) {
   redirect(`/admin?decided=${blocked ? 'blocked' : 'rejected'}`);
 }
 
-/**
- * Reverse an approval (gap 08). Every decision is reversible and audited.
- * Listings hide; confirmed bookings are still honoured — punishing a Customer
- * for their Client's misconduct is the worst possible trade.
- */
-export async function suspendClient(_prev, formData) {
-  const admin = await requireAdmin();
-  const parsed = z.object({
-    userId: z.string().uuid(),
-    reason: z.string().trim().min(4, 'Say why — this is the audit record.').max(1000),
-  }).safeParse({
-    userId: formData.get('userId'),
-    reason: formData.get('reason') ?? '',
-  });
-  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  const [target] = await db
-    .select({ id: users.id, accountStatus: users.accountStatus })
-    .from(users)
-    .where(and(eq(users.id, parsed.data.userId), eq(users.role, 'client')))
-    .limit(1);
-
-  if (!target) return { errors: { _: 'No such client.' } };
-
-  await db.update(users).set({
-    accountStatus: 'suspended', updatedAt: new Date(),
-  }).where(eq(users.id, target.id));
-
-  // TODO(step 9): cascade listings to `hidden`, storing prior_status so
-  // reinstatement restores paused-vs-live correctly rather than blanket-live.
-
-  await audit({
-    actorType: 'admin', actorId: admin.id, entity: 'user', entityId: target.id,
-    action: 'client_suspended',
-    before: { accountStatus: target.accountStatus },
-    after: { accountStatus: 'suspended' },
-    reason: parsed.data.reason, ip: await adminIp(),
-  });
-
-  redirect('/admin?decided=suspended');
-}
+/* Client suspension and reinstatement moved to services/admin/clients.js (CP03). */
 
 /* --------------------------- document access --------------------------- */
 

@@ -1,0 +1,1 @@
+ALTER TABLE "user" ADD COLUMN "lifecycle_version" integer DEFAULT 1 NOT NULL;
