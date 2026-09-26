@@ -5,6 +5,7 @@ import { listingCompletion } from '../domain/listing-completion.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { rentable } from '../db/schema/index.js';
 import { CHECKLIST, listVerifications, publicationState } from './verification.js';
+import { clientLifecycle, lifecycleState, propertyActivity } from './property-lifecycle.js';
 
 export const REVIEW_SECTIONS = [
   'basics',
@@ -19,7 +20,7 @@ export const REVIEW_SECTIONS = [
 ];
 export const listingQueueQuery = z.object({
   status: z
-    .enum(['pending_review', 'pending_verification', 'draft', 'rejected', 'all'])
+    .enum(['pending_review', 'pending_verification', 'live', 'paused', 'hidden', 'draft', 'rejected', 'all'])
     .default('pending_review'),
   assignee: z.enum(['any', 'me', 'unassigned']).default('any'),
   q: z.string().trim().max(100).default(''),
@@ -67,7 +68,9 @@ async function snapshot(tx, row) {
   const listing = camel(row);
   if (typeof row.location === 'string' && /^[0-9a-f]+$/i.test(row.location))
     listing.location = rentable.location.mapFromDriverValue(row.location);
-  delete listing.approvedSnapshot;
+  // Admin bookkeeping, not submitted content.
+  for (const key of ['approvedSnapshot', 'restrictedAt', 'restrictedBy', 'restrictionReason', 'lifecycleVersion'])
+    delete listing[key];
   return {
     listing,
     prices: prices.map(camel),
@@ -120,6 +123,8 @@ export async function propertyReviewContext(database, id) {
     assignee: row.assigned_to ? { id: row.assigned_to, email: row.reviewer } : null,
     // Client-safe verification progress: when and how, never the evidence.
     verification: await clientVerification(database, id),
+    // The restriction reason and the latest admin correction, never who made them.
+    ...(await clientLifecycle(database, id)),
   };
 }
 
@@ -180,6 +185,8 @@ export async function readPropertyReview(database, id) {
     verifications: await listVerifications(database, id),
     publication: await publicationState(database, id),
     checklist: CHECKLIST.map(([key, label]) => ({ key, label })),
+    lifecycle: await lifecycleState(database, id),
+    activity: await propertyActivity(database, id),
   };
 }
 

@@ -21,6 +21,8 @@ import { MAX_PHOTOS } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
+import { slugify } from '@/services/domain/listing-url';
+import { ownerEditEffect, ownerPauseTarget } from '@/services/domain/listing-lifecycle';
 import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
@@ -45,15 +47,6 @@ const TRUST_FIELDS = new Set([
 async function clientIp() {
   const h = await headers();
   return h.get('x-forwarded-for')?.split(',')[0]?.trim() ?? h.get('x-real-ip') ?? null;
-}
-
-function slugify(text) {
-  return String(text ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '-')
-    .slice(0, 120) || 'listing';
 }
 
 /** Short, permanent, public id. The URL resolves by THIS, not the slug. */
@@ -82,18 +75,25 @@ async function load(id) {
  */
 async function applyEdit(listing, fields, changed) {
   const touchesTrust = changed.some((f) => TRUST_FIELDS.has(f));
-  const wasLive = listing.status === 'live';
 
-  const patch = { ...fields, updatedAt: new Date() };
-
-  if (wasLive && touchesTrust) {
-    patch.status = 'pending_review';
-    patch.priorStatus = 'live';
-  }
-
-  await db.update(rentable).set(patch).where(eq(rentable.id, listing.id));
-
-  const sentBack = wasLive && touchesTrust;
+  /**
+   * The status decision is made on the row as it is NOW, under its lock, not
+   * on the copy loaded before the form was parsed: an admin restriction or an
+   * owner pause committed in between must not be overwritten by this edit.
+   */
+  const sentBack = await db.transaction(async (tx) => {
+    const [current] = await tx
+      .select({ status: rentable.status, priorStatus: rentable.priorStatus })
+      .from(rentable)
+      .where(eq(rentable.id, listing.id))
+      .for('update');
+    const effect = ownerEditEffect(current, touchesTrust);
+    await tx
+      .update(rentable)
+      .set({ ...fields, ...effect.patch, updatedAt: new Date() })
+      .where(eq(rentable.id, listing.id));
+    return effect.sentBack;
+  });
 
   /**
    * Every write goes through here, so every write purges the cache. Doing it
@@ -101,7 +101,7 @@ async function applyEdit(listing, fields, changed) {
    * stops the tenth section being added without it.
    */
   revalidateListing(
-    { ...listing, slug: patch.slug ?? listing.slug },
+    { ...listing, slug: fields.slug ?? listing.slug },
     { previousSlug: listing.slug, statusChanged: sentBack },
   );
 
@@ -577,24 +577,30 @@ export async function submitListing(_prev, formData) {
 export async function toggleListingPause(_prev, formData) {
   const { user, listing } = await load(String(formData.get('id')));
 
-  if (!['live', 'paused'].includes(listing.status)) {
-    return { errors: { _: 'Only a live listing can be paused.' } };
-  }
+  const target = ownerPauseTarget(listing.status);
+  if (target.error) return { errors: { _: target.error } };
 
-  const next = listing.status === 'live' ? 'paused' : 'live';
-  await db.update(rentable).set({
-    status: next, priorStatus: listing.status, updatedAt: new Date(),
-  }).where(eq(rentable.id, listing.id));
+  // Conditional on the status the owner saw: a restriction, review or publish
+  // committed since then wins, and the owner is told to reload.
+  const [moved] = await db.update(rentable).set({
+    status: target.next, priorStatus: listing.status, updatedAt: new Date(),
+  }).where(and(eq(rentable.id, listing.id), eq(rentable.status, listing.status)))
+    .returning({ id: rentable.id });
+  if (!moved) {
+    const [now] = await db.select({ status: rentable.status }).from(rentable)
+      .where(eq(rentable.id, listing.id));
+    return { errors: { _: ownerPauseTarget(now?.status).error ?? 'This property changed. Reload and try again.' } };
+  }
 
   await audit({
     actorType: 'client', actorId: user.id, entity: 'rentable',
-    entityId: listing.id, action: next === 'paused' ? 'listing_paused' : 'listing_resumed',
-    before: { status: listing.status }, after: { status: next }, ip: await clientIp(),
+    entityId: listing.id, action: target.next === 'paused' ? 'listing_paused' : 'listing_resumed',
+    before: { status: listing.status }, after: { status: target.next }, ip: await clientIp(),
   });
 
   // Pausing removes the listing from every surface that lists it, so this is
   // the one case where `/` and the sitemap have to go too.
   revalidateListing(listing, { statusChanged: true });
 
-  return { ok: true, status: next };
+  return { ok: true, status: target.next };
 }

@@ -668,6 +668,16 @@ export const rentable = pgTable(
     publishedSubmissionId: uuid('published_submission_id'),
     publishedAt: timestamp('published_at', { withTimezone: true }),
     publishedBy: uuid('published_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    /**
+     * Admin visibility restriction (CP08). Status 'hidden' is Rentra's alone:
+     * owner pause/resume cannot reach it, and restore returns to prior_status.
+     * lifecycle_version is bumped by the content trigger on every status change,
+     * so an admin command prepared against an older state answers 409.
+     */
+    restrictedAt: timestamp('restricted_at', { withTimezone: true }),
+    restrictedBy: uuid('restricted_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    restrictionReason: text('restriction_reason'),
+    lifecycleVersion: integer('lifecycle_version').notNull().default(1),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -741,8 +751,9 @@ export const listingReview = pgTable(
   'listing_review',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    // Review history is business history: never deleted with the property (CP08).
     rentableId: uuid('rentable_id').notNull()
-      .references(() => rentable.id, { onDelete: 'cascade' }),
+      .references(() => rentable.id, { onDelete: 'restrict' }),
     passNumber: integer('pass_number').notNull().default(1),
     submissionId: uuid('submission_id').references(() => listingSubmission.id),
     /** { ownership, photos, contacts, price, rules, permits } — each a bool. */
@@ -766,7 +777,7 @@ export const verificationVisit = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     rentableId: uuid('rentable_id').notNull()
-      .references(() => rentable.id, { onDelete: 'cascade' }),
+      .references(() => rentable.id, { onDelete: 'restrict' }),
     mode: visitMode('mode').notNull().default('video_call'),
     assignedTo: uuid('assigned_to').references(() => adminUsers.id, { onDelete: 'set null' }),
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
@@ -1150,7 +1161,7 @@ export const review = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'cascade' }),
-    rentableId: uuid('rentable_id').references(() => rentable.id, { onDelete: 'cascade' }),
+    rentableId: uuid('rentable_id').references(() => rentable.id, { onDelete: 'restrict' }),
     authorId: uuid('author_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     authorRole: userRole('author_role').notNull(),
     rating: integer('rating').notNull(),

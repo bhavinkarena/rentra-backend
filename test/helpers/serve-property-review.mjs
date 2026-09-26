@@ -1,7 +1,8 @@
-// Disposable CP06 browser/API fixture. No configured database or provider is used.
+// Disposable CP06–CP08 browser/API fixture. No configured database or provider is used.
+// FIXTURE_STAGE=published publishes the property and books one confirmed visit (CP08 gate).
 import { writeFile } from 'node:fs/promises';
 import { createDisposableDatabase } from './disposable-db.js';
-import { seedReviewFixture } from './listing-review-fixture.js';
+import { seedConfirmedBooking, seedReviewFixture } from './listing-review-fixture.js';
 import { issuePortalSession } from '@/services/auth/portal-sessions.js';
 import { submitProperty } from '@/services/admin/listings.js';
 import { SignJWT } from 'jose';
@@ -35,9 +36,53 @@ for (const kind of ['owner', 'other'])
     sessionId: await issuePortalSession(fixture.sql, 'client', ids[kind], 3600),
   });
 const submission = await submitProperty(fixture.sql, { id: ids.listing, clientId: ids.owner });
+let booking = null;
+if (process.env.FIXTURE_STAGE === 'published') {
+  const { decidePropertyReview } = await import('@/services/admin/listings.js');
+  const v = await import('@/services/admin/verification.js');
+  const input = { submissionId: submission.submissionId };
+  await decidePropertyReview(fixture.sql, {
+    id: ids.listing,
+    adminId: ids.admin,
+    input: { ...input, outcome: 'approved_for_visit', reason: 'Ready for verification' },
+  });
+  const at = new Date(Date.now() + 2 * 86400000 + 5.5 * 3600000).toISOString().slice(0, 10);
+  const { visitId } = await v.scheduleVerification(fixture.sql, {
+    adminId: ids.admin,
+    id: ids.listing,
+    input: { ...input, mode: 'video_call', scheduledAt: `${at}T11:00` },
+  });
+  await v.recordVerificationOutcome(fixture.sql, {
+    adminId: ids.admin,
+    id: ids.listing,
+    visitId,
+    input: {
+      expectedVersion: 1,
+      outcome: 'passed',
+      findings: 'Video walk-through matched the submitted photos and rules.',
+      checklist: v.CHECKLIST.map(([key]) => key),
+    },
+  });
+  await v.publishProperty(fixture.sql, { adminId: ids.admin, id: ids.listing, input });
+  booking = await seedConfirmedBooking(fixture.sql, ids.listing);
+  const [session] =
+    await fixture.sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booking.customer},now()+interval '1 day') RETURNING id`;
+  tokens.customer = await encryptSession({
+    userId: booking.customer,
+    role: 'customer',
+    sessionId: session.id,
+  });
+  const [{ udt_name: geometryType }] =
+    await fixture.sql`SELECT udt_name FROM information_schema.columns WHERE table_name='rentable' AND column_name='location'`;
+  if (geometryType !== 'geometry') {
+    // No PostGIS on local test clusters; the booking record only reads coordinates.
+    await fixture.sql`CREATE FUNCTION st_x(text) RETURNS float8 LANGUAGE sql AS 'SELECT NULL::float8'`;
+    await fixture.sql`CREATE FUNCTION st_y(text) RETURNS float8 LANGUAGE sql AS 'SELECT NULL::float8'`;
+  }
+}
 await writeFile(
   process.env.CP06_GATE_FIXTURE,
-  JSON.stringify({ ids, tokens, submission, databaseUrl: fixture.url }),
+  JSON.stringify({ ids, tokens, submission, booking, databaseUrl: fixture.url }),
 );
 const { createApp } = await import('@/app.js');
 const server = createApp().listen(4106, () =>

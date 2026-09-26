@@ -113,3 +113,13 @@ test('verification and publication commands need admin.properties.write', () => 
   const writer = { isActive: true, permissions: ['admin.properties.write'] };
   assert.equal(canAccessRoute(writer, 'admin', 'POST', `/properties/${id}/publish`), true);
 });
+
+test('restriction and correction commands need admin.properties.write', () => {
+  const id = '00000000-0000-4000-8000-000000000000';
+  const reader = { isActive: true, permissions: ['admin.properties.read'] };
+  const writer = { isActive: true, permissions: ['admin.properties.write'] };
+  for (const path of ['hide', 'restore', 'correction']) {
+    assert.equal(canAccessRoute(reader, 'admin', 'POST', `/properties/${id}/${path}`), false);
+    assert.equal(canAccessRoute(writer, 'admin', 'POST', `/properties/${id}/${path}`), true);
+  }
+});

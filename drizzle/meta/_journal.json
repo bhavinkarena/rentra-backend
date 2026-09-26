@@ -190,6 +190,13 @@
       "when": 1790430564350,
       "tag": "0026_verification_publication",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1790435794569,
+      "tag": "0027_property_restrictions",
+      "breakpoints": true
     }
   ]
 }

@@ -12,6 +12,11 @@ import {
   rescheduleVerification,
   scheduleVerification,
 } from '@/services/admin/verification.js';
+import {
+  correctProperty,
+  hideProperty,
+  restoreProperty,
+} from '@/services/admin/property-lifecycle.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 
@@ -68,3 +73,6 @@ export const reschedule = verificationCommand(rescheduleVerification);
 export const cancel = verificationCommand(cancelVerification);
 export const outcome = verificationCommand(recordVerificationOutcome);
 export const publish = verificationCommand(publishProperty);
+export const hide = verificationCommand(hideProperty);
+export const restore = verificationCommand(restoreProperty);
+export const correct = verificationCommand(correctProperty);

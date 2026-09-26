@@ -51,6 +51,10 @@ export const detail = asyncHandler(async (req, res) => {
   listing.listing.reviewFlaggedFields = listing.reviews.at(-1)?.flaggedFields ?? [];
   listing.listing.reviewOutcome = listing.reviews.at(-1)?.outcome ?? null;
   listing.listing.reviewVerification = review?.verification ?? null;
+  listing.listing.restriction = review?.restriction ?? null;
+  listing.listing.adminCorrection = review?.correction ?? null;
+  // Which operator acted stays internal.
+  delete listing.listing.restrictedBy;
   listing.review = review;
   return ok(res, listing);
 });

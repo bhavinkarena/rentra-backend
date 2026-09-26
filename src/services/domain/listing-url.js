@@ -22,3 +22,13 @@ export function listingPath(slug, publicCode) {
 export function listingUrl(siteUrl, slug, publicCode) {
   return `${siteUrl}${listingPath(slug, publicCode)}`;
 }
+
+/** The readable half of the URL. Decoration only: the page resolves by the code. */
+export function slugify(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .slice(0, 120) || 'listing';
+}

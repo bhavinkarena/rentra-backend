@@ -90,6 +90,19 @@ router.post(
   formFields(),
   propertyReviews.publish,
 );
+// Admin restriction and documented corrections (CP08): version-guarded, audited.
+for (const [path, handler] of [
+  ['hide', propertyReviews.hide],
+  ['restore', propertyReviews.restore],
+  ['correction', propertyReviews.correct],
+]) {
+  router.post(
+    `/properties/:id/${path}`,
+    validate({ params: clientIdParam }),
+    formFields(),
+    handler,
+  );
+}
 router.get('/applications/stats', admin.stats);
 router.get('/applications/decisions', validate({ query: decisionsQuery }), admin.decisions);
 router.get('/applications/:id', validate({ params: applicationIdParam }), admin.application);
