@@ -27,6 +27,7 @@ import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
 } from '@/services/uploads/cloudinary';
+import { conflict } from '@/utils/apiError.js';
 import { requireActiveClient } from './dal';
 
 /**
@@ -56,6 +57,23 @@ function publicCode() {
     alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
 }
 
+/**
+ * The content version the owner's form was rendered from (CP09). Optional so
+ * older clients keep working; when present, a save made against content that
+ * changed since (another tab, or a Rentra correction) is refused, not merged.
+ */
+function expectedVersion(formData) {
+  const value = Number(formData.get('contentVersion'));
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+const CHANGED_MESSAGE =
+  'This property changed after you opened it (in another tab, or by Rentra). Reload to see the latest version before saving again.';
+
+function assertVersion(current, expected) {
+  if (expected != null && current !== expected) throw conflict('LISTING_CHANGED', CHANGED_MESSAGE);
+}
+
 async function load(id) {
   const user = await requireActiveClient();
   const data = await getListingForEdit(id, user.id);
@@ -73,7 +91,7 @@ async function load(id) {
  * approval defeats the entire verification, which is why the two are not
  * treated the same. Existing confirmed bookings are untouched either way.
  */
-async function applyEdit(listing, fields, changed) {
+async function applyEdit(listing, fields, changed, { expected = null, children = null } = {}) {
   const touchesTrust = changed.some((f) => TRUST_FIELDS.has(f));
 
   /**
@@ -81,18 +99,26 @@ async function applyEdit(listing, fields, changed) {
    * on the copy loaded before the form was parsed: an admin restriction or an
    * owner pause committed in between must not be overwritten by this edit.
    */
-  const sentBack = await db.transaction(async (tx) => {
+  const { sentBack, contentVersion } = await db.transaction(async (tx) => {
     const [current] = await tx
-      .select({ status: rentable.status, priorStatus: rentable.priorStatus })
+      .select({
+        status: rentable.status,
+        priorStatus: rentable.priorStatus,
+        contentVersion: rentable.contentVersion,
+      })
       .from(rentable)
       .where(eq(rentable.id, listing.id))
       .for('update');
+    assertVersion(current.contentVersion, expected);
+    // Child rows (amenities) are written under the same lock, after the check.
+    if (children) await children(tx);
     const effect = ownerEditEffect(current, touchesTrust);
-    await tx
+    const [updated] = await tx
       .update(rentable)
       .set({ ...fields, ...effect.patch, updatedAt: new Date() })
-      .where(eq(rentable.id, listing.id));
-    return effect.sentBack;
+      .where(eq(rentable.id, listing.id))
+      .returning({ contentVersion: rentable.contentVersion });
+    return { sentBack: effect.sentBack, contentVersion: updated.contentVersion };
   });
 
   /**
@@ -105,7 +131,7 @@ async function applyEdit(listing, fields, changed) {
     { previousSlug: listing.slug, statusChanged: sentBack },
   );
 
-  return sentBack;
+  return { sentBack, contentVersion };
 }
 
 /* ------------------------------ create ------------------------------ */
@@ -197,7 +223,7 @@ export async function saveBasics(_prev, formData) {
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
   const d = parsed.data;
-  const sentBack = await applyEdit(listing, {
+  const { sentBack, contentVersion } = await applyEdit(listing, {
     categoryId: d.categoryId,
     title: d.title,
     // The slug follows the title, but the URL resolves by publicCode, so
@@ -205,9 +231,9 @@ export async function saveBasics(_prev, formData) {
     slug: `${slugify(d.title)}-${listing.publicCode}`,
     description: d.description,
     highlight: d.highlight || null,
-  }, ['categoryId', 'title']);
+  }, ['categoryId', 'title'], { expected: expectedVersion(formData) });
 
-  return { ok: true, sentBack };
+  return { ok: true, contentVersion, sentBack };
 }
 
 export async function saveLocation(_prev, formData) {
@@ -223,14 +249,14 @@ export async function saveLocation(_prev, formData) {
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
   const d = parsed.data;
-  const sentBack = await applyEdit(listing, {
+  const { sentBack, contentVersion } = await applyEdit(listing, {
     cityId: d.cityId,
     areaId: d.areaId,
     location: { x: d.lng, y: d.lat },
     exactAddress: d.exactAddress,
-  }, ['location', 'exactAddress']);
+  }, ['location', 'exactAddress'], { expected: expectedVersion(formData) });
 
-  return { ok: true, sentBack };
+  return { ok: true, contentVersion, sentBack };
 }
 
 export async function saveCapacity(_prev, formData) {
@@ -245,15 +271,15 @@ export async function saveCapacity(_prev, formData) {
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
   const d = parsed.data;
-  const sentBack = await applyEdit(listing, {
+  const { sentBack, contentVersion } = await applyEdit(listing, {
     capacity: d.capacity,
     bedrooms: d.bedrooms,
     farmSize: d.farmSize,
     farmSizeUnit: d.farmSizeUnit,
     poolSize: d.poolSize || null,
-  }, ['capacity', 'bedrooms']);
+  }, ['capacity', 'bedrooms'], { expected: expectedVersion(formData) });
 
-  return { ok: true, sentBack };
+  return { ok: true, contentVersion, sentBack };
 }
 
 export async function saveAmenities(_prev, formData) {
@@ -270,11 +296,14 @@ export async function saveAmenities(_prev, formData) {
 
   // Replace wholesale: the form submits the complete set, so a diff would only
   // add a way for the two to disagree.
-  await db.delete(rentableAmenity).where(eq(rentableAmenity.rentableId, listing.id));
-  if (rows.length) await db.insert(rentableAmenity).values(rows);
-
-  const sentBack = await applyEdit(listing, {}, ['amenities']);
-  return { ok: true, sentBack, count: rows.length };
+  const { sentBack, contentVersion } = await applyEdit(listing, {}, ['amenities'], {
+    expected: expectedVersion(formData),
+    children: async (tx) => {
+      await tx.delete(rentableAmenity).where(eq(rentableAmenity.rentableId, listing.id));
+      if (rows.length) await tx.insert(rentableAmenity).values(rows);
+    },
+  });
+  return { ok: true, contentVersion, sentBack, count: rows.length };
 }
 
 export async function saveRules(_prev, formData) {
@@ -306,13 +335,13 @@ export async function saveRules(_prev, formData) {
     notes: d.extraRules || null,
   };
 
-  const sentBack = await applyEdit(listing, {
+  const { sentBack, contentVersion } = await applyEdit(listing, {
     checkInFrom: d.checkInFrom,
     checkOutBy: d.checkOutBy,
     houseRules,
-  }, ['houseRules']);
+  }, ['houseRules'], { expected: expectedVersion(formData) });
 
-  return { ok: true, sentBack };
+  return { ok: true, contentVersion, sentBack };
 }
 
 export async function savePricing(_prev, formData) {
@@ -335,14 +364,17 @@ export async function savePricing(_prev, formData) {
     // A slot priced at zero is a slot not offered, not a free slot.
     .filter((r) => r.weekday > 0 || r.weekend > 0);
 
-  await withListingInventory(sql, listing.id, async (tx, locked) => {
+  const contentVersion = await withListingInventory(sql, listing.id, async (tx, locked) => {
     const [active] = await tx`SELECT id FROM "user" WHERE id=${user.id} AND role='client' AND account_status='active' FOR SHARE`;
     if (!active || locked.client_id !== user.id) throw new InventoryError('FORBIDDEN', 'Property access unavailable.');
+    assertVersion(locked.content_version, expectedVersion(formData));
     await tx`DELETE FROM rentable_price WHERE rentable_id=${listing.id}`;
     for (const row of rows) await tx`INSERT INTO rentable_price (rentable_id,slot,weekday,weekend) VALUES (${listing.id},${row.slot},${row.weekday},${row.weekend})`;
     const config = locked.booking_config;
     if (config) for (const schedule of Object.values(config.slots)) if (schedule.enabled) schedule.extraGuestChargeMinor = legacyRupeesToMinor(d.extraGuestCharge ?? 0);
     await tx`UPDATE rentable SET extra_guest_charge=${d.extraGuestCharge ?? 0}, booking_config=${JSON.stringify(config)}::jsonb, booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${listing.id}`;
+    const [after] = await tx`SELECT content_version FROM rentable WHERE id=${listing.id}`;
+    return after.content_version;
   });
 
   // Free of review, but NOT free of cache: the page, its metadata and its OG
@@ -350,7 +382,7 @@ export async function savePricing(_prev, formData) {
   // opening at another is a bait-and-switch even when it is only staleness.
   revalidateListing(listing);
 
-  return { ok: true, slots: rows.length };
+  return { ok: true, contentVersion, slots: rows.length };
 }
 
 export async function saveTerms(_prev, formData) {
@@ -362,16 +394,21 @@ export async function saveTerms(_prev, formData) {
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
   // Deposit and cancellation tier are free fields too.
-  await db.update(rentable).set({
+  const expected = expectedVersion(formData);
+  const [saved] = await db.update(rentable).set({
     depositAmount: parsed.data.depositAmount,
     cancellationTier: parsed.data.cancellationTier,
     updatedAt: new Date(),
-  }).where(eq(rentable.id, listing.id));
+  }).where(and(
+    eq(rentable.id, listing.id),
+    ...(expected ? [eq(rentable.contentVersion, expected)] : []),
+  )).returning({ contentVersion: rentable.contentVersion });
+  if (!saved) throw conflict('LISTING_CHANGED', CHANGED_MESSAGE);
 
   // The cancellation policy is shown to a guest in rupees before they pay.
   revalidateListing(listing);
 
-  return { ok: true };
+  return { ok: true, contentVersion: saved.contentVersion };
 }
 
 /* ------------------------------ photos ------------------------------ */
@@ -417,7 +454,9 @@ export async function uploadListingPhotos(_prev, formData) {
     });
   }
 
-  const sentBack = await applyEdit(listing, { photos: [...photos, ...added] }, ['photos']);
+  const { sentBack, contentVersion } = await applyEdit(
+    listing, { photos: [...photos, ...added] }, ['photos'], { expected: expectedVersion(formData) },
+  );
 
   await audit({
     actorType: 'client', actorId: user.id, entity: 'rentable',
@@ -426,7 +465,7 @@ export async function uploadListingPhotos(_prev, formData) {
     ip: await clientIp(),
   });
 
-  return { ok: true, sentBack, added: added.length };
+  return { ok: true, contentVersion, sentBack, added: added.length };
 }
 
 export async function removeListingPhoto(_prev, formData) {
@@ -438,10 +477,11 @@ export async function removeListingPhoto(_prev, formData) {
   const next = photos.filter((p) => photoId(p) !== key);
   if (next.length === photos.length) return { errors: { _: 'That photo is already gone.' } };
 
-  const sentBack = await applyEdit(
+  const { sentBack, contentVersion } = await applyEdit(
     listing, { photos: renumberPhotos(next, listing.title) }, ['photos'],
+    { expected: expectedVersion(formData) },
   );
-  return { ok: true, sentBack, remaining: next.length };
+  return { ok: true, contentVersion, sentBack, remaining: next.length };
 }
 
 /**

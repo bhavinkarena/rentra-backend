@@ -100,7 +100,8 @@ async function audit(tx, { adminId, id, action, after, reason = null, ip = null 
       ${JSON.stringify(after)}::text::jsonb, ${reason}, ${ip})`;
 }
 
-async function inventory(database, id, row) {
+/** Saleable inventory facts shared by the admin publish panel and the owner overview. */
+export async function listingInventory(database, id, row) {
   const config = row.booking_config;
   const [{ open }] = await database`SELECT count(*)::int AS open FROM availability
     WHERE rentable_id=${id} AND day >= (now() AT TIME ZONE ${TIME_ZONE})::date
@@ -145,7 +146,7 @@ export async function publicationState(database, id) {
     blockers,
     submissionId: submission?.id ?? null,
     visitId: visit?.id ?? null,
-    inventory: await inventory(database, id, row),
+    inventory: await listingInventory(database, id, row),
     publishedAt: row.published_at,
     publishedSubmissionId: row.published_submission_id,
   };

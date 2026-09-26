@@ -3,7 +3,7 @@ import 'server-only';
 import {
   and, asc, count, desc, eq, ilike, inArray, isNull, or,
 } from 'drizzle-orm';
-import { db } from './index.js';
+import { db, sql } from './index.js';
 import {
   rentable, rentablePrice, rentableAmenity, amenity, documents,
   city, area, category, listingReview,
@@ -74,12 +74,18 @@ export async function getClientListingSummary(clientId) {
       .limit(6),
   ]);
 
+  // Live is not bookable: hours must be confirmed and dates opened (CP09).
+  const [{ bookable }] = await sql`SELECT count(*)::int AS bookable FROM rentable r
+    WHERE r.client_id=${clientId} AND r.status='live' AND r.booking_config->>'inventoryReady'='true'
+      AND EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=r.id
+        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0 AND a.blocked_by_client = false)`;
   const counts = Object.fromEntries(grouped.map((row) => [row.status, Number(row.value)]));
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
 
   return {
     total,
     live: counts.live ?? 0,
+    bookable,
     inReview: (counts.pending_review ?? 0) + (counts.pending_verification ?? 0),
     attention: (counts.draft ?? 0) + (counts.rejected ?? 0),
     counts,

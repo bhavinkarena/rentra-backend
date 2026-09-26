@@ -27,6 +27,7 @@ import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 import { notFound } from '@/utils/apiError.js';
 import { propertyReviewContext } from '@/services/admin/listings.js';
+import { ownerPropertyOverview } from '@/services/auth/property-overview.js';
 import { sql } from '@/config/database.js';
 
 /** The partner's own listings. Ownership is enforced by passing the client id. */
@@ -60,6 +61,13 @@ export const detail = asyncHandler(async (req, res) => {
 });
 
 /** Reference data the wizard needs. Public, cacheable, no actor involved. */
+/** Operations overview (CP09): inventory, upcoming visits, client-safe activity. */
+export const overview = asyncHandler(async (req, res) => {
+  const data = await ownerPropertyOverview(sql, req.user.id, req.params.id);
+  if (!data) throw notFound('LISTING_NOT_FOUND', 'That listing does not exist.');
+  return ok(res, data);
+});
+
 export const amenities = asyncHandler(async (_req, res) => ok(res, await getAmenityCatalogue()));
 export const categories = asyncHandler(async (_req, res) => ok(res, await getCategories()));
 export const places = asyncHandler(async (_req, res) => ok(res, await getCitiesWithAreas()));

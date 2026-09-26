@@ -77,6 +77,12 @@ router.get('/listings/summary', client, listings.summary);
 router.get('/listings', client, validate({ query: listingsPageQuery }), listings.page);
 router.post('/listings', client, formFields(), listings.create);
 router.get('/listings/:id', client, validate({ params: listingIdParam }), listings.detail);
+router.get(
+  '/listings/:id/overview',
+  client,
+  validate({ params: listingIdParam }),
+  listings.overview,
+);
 
 /** One route per wizard step: each step saves independently. */
 for (const [step, handler] of [
