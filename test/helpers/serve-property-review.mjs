@@ -10,6 +10,10 @@ import { SignJWT } from 'jose';
 const fixture = await createDisposableDatabase(process.env.PORTAL_TEST_DATABASE_URL);
 const ids = await seedReviewFixture(fixture.sql);
 globalThis.__rentraSql = fixture.sql;
+// CP13: private evidence photos stay in memory; honoured only because NODE_ENV=test below.
+globalThis.__rentraEvidenceStore = (
+  await import('@/services/uploads/evidence-store.js')
+).memoryEvidenceStore();
 Object.assign(process.env, {
   DATABASE_URL: fixture.url,
   NODE_ENV: 'test',

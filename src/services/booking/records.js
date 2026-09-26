@@ -3,6 +3,7 @@ import { visitOperation } from '../domain/booking-operations.js';
 import { z } from 'zod';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
+import { visitEvidenceRecords } from './visit-evidence.js';
 
 export class BookingRecordError extends Error {
   constructor() { super('Booking not found or unavailable'); this.code = 'BOOKING_NOT_FOUND'; }
@@ -52,7 +53,9 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
     const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed') AND v.ends_at<=clock_timestamp())`;
     const cancelled = tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))`;
     const today = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','disputed') AND v.starts_at < (date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Kolkata') + interval '1 day') AT TIME ZONE 'Asia/Kolkata' AND v.ends_at > date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata')`;
-    const actionNeeded = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (v.state IN ('returned','disputed') OR (v.state='confirmed' AND v.starts_at<=clock_timestamp()) OR (v.state='handed_over' AND v.ends_at<=clock_timestamp()) OR (v.state IN ('confirmed','handed_over') AND NOT v.hours_known)))`;
+    // CP13: an open incident needs Rentra follow-up, so it is admin work, not owner work.
+    const openIncident = actor.kind === 'admin' ? tx`OR EXISTS(SELECT 1 FROM visit_incident i WHERE i.booking_id=v.id AND i.state='open')` : tx``;
+    const actionNeeded = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (v.state IN ('returned','disputed') OR (v.state='confirmed' AND v.starts_at<=clock_timestamp()) OR (v.state='handed_over' AND v.ends_at<=clock_timestamp()) OR (v.state IN ('confirmed','handed_over') AND NOT v.hours_known) ${openIncident}))`;
     const property = operational && filters.property ? tx`o.rentable_id=${filters.property}` : tx`true`;
     const tab = filters.tab === 'today' ? today : filters.tab === 'action_needed' ? actionNeeded : filters.tab === 'upcoming' ? upcoming
       : filters.tab === 'past' ? past
@@ -99,11 +102,10 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       version: row.lifecycle_version, provenance: row.visit_provenance,
       timeline: [{ kind: 'created', at: instant(row.created_at) }, ...(row.confirmed_at ? [{ kind: 'confirmed', at: instant(row.confirmed_at) }] : []),
         ...(row.cancelled_at ? [{ kind: 'cancelled', at: instant(row.cancelled_at) }] : [])], updatedAt: instant(row.updated_at) }));
-    const proofs = await tx`SELECT e.id,e.booking_id,e.kind,e.nature,e.occurred_at,e.recorded_at,e.note FROM visit_evidence e
-      JOIN booking b ON b.id=e.booking_id WHERE b.order_id=${order.id} ORDER BY e.recorded_at,e.id`;
+    const records = await visitEvidenceRecords(tx, order.id, actor.kind);
     for (const visit of visits) {
-      visit.evidence = proofs.filter(p => p.booking_id === visit.id).map(p => ({ id: p.id, kind: p.kind, nature: p.nature,
-        occurredAt: instant(p.occurred_at), recordedAt: instant(p.recorded_at), ...(actor.kind === 'customer' ? {} : { note: p.note }) }));
+      visit.evidence = records.evidence.get(visit.id) ?? [];
+      if (actor.kind !== 'customer') visit.incidents = records.incidents.get(visit.id) ?? [];
       visit.reviewEligible = visit.state === 'completed' && visit.provenance === 'real' && visit.evidence.some(p => p.kind === 'complete' && p.nature === 'actual');
     }
     const payments = await tx`SELECT p.id,p.provider,p.environment,p.mode,p.state,p.purpose,p.provider_order_id,p.expected_minor,

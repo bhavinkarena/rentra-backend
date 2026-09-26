@@ -14,7 +14,8 @@ import * as reviews from '@/controllers/reviews.controller.js';
 import * as support from '@/controllers/support.controller.js';
 import * as notifications from '@/controllers/notifications.controller.js';
 import { requireAdmin, requirePortalCapability } from '@/middlewares/auth.middleware.js';
-import { formFields } from '@/middlewares/upload.middleware.js';
+import { formFields, evidencePhotos } from '@/middlewares/upload.middleware.js';
+import { uploadLimiter } from '@/middlewares/rateLimit.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
 import {
   applicationIdParam,
@@ -27,7 +28,11 @@ import {
 import { clientListQuery } from '@/services/admin/clients.js';
 import { customerListQuery } from '@/services/admin/customers.js';
 import { applicationQueueQuery } from '@/services/admin/applications.js';
-import { recordIdParam, operationalHistoryQuery } from '@/validations/records.validation.js';
+import {
+  recordIdParam,
+  recordAttachmentParams,
+  operationalHistoryQuery,
+} from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
 
 /**
@@ -190,7 +195,15 @@ router.post('/payments/configuration', formFields(), payments.saveConfiguration)
 router.get('/records', validate({ query: operationalHistoryQuery }), records.history);
 router.get('/records/:id', validate({ params: recordIdParam }), records.detail);
 router.get('/records/:id/summary', validate({ params: recordIdParam }), records.summary);
-router.post('/records/visit', formFields(), records.adminTransition);
+router.get(
+  '/records/:id/attachments/:attachmentId',
+  validate({ params: recordAttachmentParams }),
+  records.attachment,
+);
+router.post('/records/visit', uploadLimiter, evidencePhotos(), records.adminTransition);
+router.post('/records/incident', uploadLimiter, evidencePhotos(), records.adminIncident);
+router.post('/records/incident/close', formFields(), records.closeIncident);
+router.post('/records/evidence/correct', formFields(), records.correctEvidence);
 
 router.get('/reviews', reviews.queue);
 router.post('/reviews/moderate', formFields(), reviews.moderate);

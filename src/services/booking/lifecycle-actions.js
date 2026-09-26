@@ -3,19 +3,24 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { bookingActor } from './record-page.js';
 import { recordVisitTransition } from './visit-lifecycle.js';
+import { EvidenceError } from './visit-evidence.js';
+import { evidenceFailure, indiaInstant } from './evidence-actions.js';
 import { quoteBookAgain } from './book-again.js';
 import { sql } from '../db/index.js';
 
 async function transition(kind, form) {
   const actor = await bookingActor(kind);
   try {
-    const local = String(form.get('occurredAt') || '');
-    const occurredAt = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?$/.test(local) ? local + (local.length === 16 ? ':00' : '') + '+05:30' : '';
     const result = await recordVisitTransition(sql, actor, { visitId: form.get('visitId'), phase: form.get('phase'),
-      occurredAt, note: form.get('note'), attested: form.get('attested') === 'on', expectedVersion: Number(form.get('version')), requestKey: form.get('requestKey') });
+      occurredAt: indiaInstant(form.get('occurredAt')), note: form.get('note'), attested: form.get('attested') === 'on', expectedVersion: Number(form.get('version')), requestKey: form.get('requestKey') },
+      { files: form.getAll('photos') });
     for (const base of ['/bookings','/partner/bookings','/admin/bookings']) revalidatePath(`${base}/${result.orderId}`);
     return { message: 'Evidence recorded. The visit status has been updated.' };
-  } catch (error) { return { error: error.code === 'VISIT_CHANGED' ? 'The visit changed. Reload before recording another transition.' : 'Could not record this transition. Check the current status, time and required evidence.' }; }
+  } catch (error) {
+    if (error instanceof EvidenceError) return evidenceFailure(error);
+    if (error.code === 'VISIT_CHANGED') return { error: 'The visit changed. Reload before recording another transition.', code: 'VISIT_CHANGED', status: 409 };
+    return { error: 'Could not record this transition. Check the current status, time and required evidence.' };
+  }
 }
 export async function recordOwnerVisit(previous, form) { return transition('owner', form); }
 export async function recordAdminVisit(previous, form) { return transition('admin', form); }

@@ -12,10 +12,20 @@ import {
   requirePortalCapability,
 } from '@/middlewares/auth.middleware.js';
 import { uploadLimiter } from '@/middlewares/rateLimit.middleware.js';
-import { formFields, manyFiles, singleFile, fileFields } from '@/middlewares/upload.middleware.js';
+import {
+  formFields,
+  manyFiles,
+  singleFile,
+  fileFields,
+  evidencePhotos,
+} from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
 import { listingIdParam, listingsPageQuery } from '@/validations/listings.validation.js';
-import { recordIdParam, operationalHistoryQuery } from '@/validations/records.validation.js';
+import {
+  recordIdParam,
+  recordAttachmentParams,
+  operationalHistoryQuery,
+} from '@/validations/records.validation.js';
 
 /**
  * Everything a property owner does.
@@ -175,7 +185,26 @@ router.get(
   validate({ params: recordIdParam }),
   records.summary,
 );
-router.post('/records/visit', requireActiveClient, formFields(), records.ownerTransition);
+router.get(
+  '/records/:id/attachments/:attachmentId',
+  requireActiveClient,
+  validate({ params: recordAttachmentParams }),
+  records.attachment,
+);
+router.post(
+  '/records/visit',
+  requireActiveClient,
+  uploadLimiter,
+  evidencePhotos(),
+  records.ownerTransition,
+);
+router.post(
+  '/records/incident',
+  requireActiveClient,
+  uploadLimiter,
+  evidencePhotos(),
+  records.ownerIncident,
+);
 
 /* ---------------------------------------------------------------- *
  * Reviews on the owner's places

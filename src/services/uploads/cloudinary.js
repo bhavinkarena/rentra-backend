@@ -105,6 +105,31 @@ export async function uploadPrivateDocument({ buffer, folder, publicId }) {
   });
 }
 
+/**
+ * CP13 visit evidence photo, private like KYC. The public id is the content
+ * hash and `overwrite` is off, so a retry can never replace committed evidence.
+ */
+export async function uploadPrivateEvidence({ buffer, folder, publicId }) {
+  const api = client();
+  return new Promise((resolve, reject) => {
+    const stream = api.uploader.upload_stream({
+      folder,
+      public_id: publicId,
+      type: 'authenticated',
+      access_mode: 'authenticated',
+      overwrite: false,
+      resource_type: 'image',
+      eager: [],
+      image_metadata: false,
+      tags: ['visit-evidence', 'sensitive'],
+    }, (error, result) => {
+      if (error) return reject(new Error(error.message ?? 'Cloudinary upload failed'));
+      return resolve({ publicId: result.public_id, bytes: result.bytes });
+    });
+    stream.end(buffer);
+  });
+}
+
 /** Public listing photography. This must never be used for identity or ownership documents. */
 export async function uploadPublicListingPhoto({ buffer, folder, publicId }) {
   const api = client();

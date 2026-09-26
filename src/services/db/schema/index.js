@@ -1508,11 +1508,103 @@ export const visitEvidence = pgTable('visit_evidence', {
   recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
   requestKey: uuid('request_key').notNull(),
   requestHash: varchar('request_hash', { length: 64 }).notNull(),
+  /** CP13: the visit lifecycle version the transition was recorded against; null on earlier rows. */
+  visitVersion: integer('visit_version'),
 }, t => [uniqueIndex('visit_evidence_kind_idx').on(t.bookingId, t.kind),
   uniqueIndex('visit_evidence_request_idx').on(t.actorKind, t.actorId, t.requestKey),
   check('visit_evidence_valid_chk', sql`${t.kind} IN ('handover','return','complete') AND ${t.nature} IN ('actual','simulation')
     AND ${t.actorKind} IN ('owner','admin') AND length(trim(${t.note})) BETWEEN 20 AND 1000
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.occurredAt} <= ${t.recordedAt}`)]);
+
+/**
+ * CP13: visit-linked incidents. A report is immutable; only the admin closure
+ * fields change, once. Financial liability belongs to a dispute case (CP23).
+ */
+export const visitIncident = pgTable('visit_incident', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  reference: varchar('reference', { length: 24 }).notNull(),
+  bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'restrict' }),
+  category: varchar('category', { length: 24 }).notNull(),
+  summary: varchar('summary', { length: 120 }).notNull(),
+  description: text('description').notNull(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  nature: varchar('nature', { length: 16 }).notNull(),
+  actorKind: varchar('actor_kind', { length: 16 }).notNull(),
+  actorId: uuid('actor_id').notNull(),
+  state: varchar('state', { length: 16 }).notNull().default('open'),
+  resolutionNote: text('resolution_note'),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  closedBy: uuid('closed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  version: integer('version').notNull().default(1),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  requestKey: uuid('request_key').notNull(),
+  requestHash: varchar('request_hash', { length: 64 }).notNull(),
+}, t => [uniqueIndex('visit_incident_reference_idx').on(t.reference),
+  uniqueIndex('visit_incident_request_idx').on(t.actorKind, t.actorId, t.requestKey),
+  index('visit_incident_booking_idx').on(t.bookingId, t.createdAt),
+  check('visit_incident_valid_chk', sql`${t.category} IN ('damage','safety','access','conduct','amenity','other')
+    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin') AND ${t.state} IN ('open','closed')
+    AND length(trim(${t.summary})) BETWEEN 5 AND 120 AND length(trim(${t.description})) BETWEEN 20 AND 2000
+    AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.occurredAt} <= ${t.createdAt} AND ${t.version} >= 1
+    AND ((${t.state}='open' AND ${t.closedAt} IS NULL AND ${t.closedBy} IS NULL AND ${t.resolutionNote} IS NULL)
+      OR (${t.state}='closed' AND ${t.closedAt} IS NOT NULL AND ${t.closedBy} IS NOT NULL AND length(trim(${t.resolutionNote})) BETWEEN 10 AND 1000))`)]);
+
+/**
+ * CP13: an admin evidence decision that supersedes earlier evidence without
+ * erasing it. Corrections form one linear chain per evidence row.
+ */
+export const visitEvidenceCorrection = pgTable('visit_evidence_correction', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  evidenceId: uuid('evidence_id').notNull().references(() => visitEvidence.id, { onDelete: 'restrict' }),
+  bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'restrict' }),
+  supersedesId: uuid('supersedes_id'),
+  reason: text('reason').notNull(),
+  correctedOccurredAt: timestamp('corrected_occurred_at', { withTimezone: true }),
+  correctedNote: text('corrected_note'),
+  nature: varchar('nature', { length: 16 }).notNull(),
+  actorKind: varchar('actor_kind', { length: 16 }).notNull(),
+  actorId: uuid('actor_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  requestKey: uuid('request_key').notNull(),
+  requestHash: varchar('request_hash', { length: 64 }).notNull(),
+}, t => [foreignKey({ columns: [t.supersedesId], foreignColumns: [t.id], name: 'visit_evidence_correction_supersedes_fk' }).onDelete('restrict'),
+  uniqueIndex('visit_evidence_correction_request_idx').on(t.actorKind, t.actorId, t.requestKey),
+  uniqueIndex('visit_evidence_correction_first_idx').on(t.evidenceId).where(sql`${t.supersedesId} IS NULL`),
+  uniqueIndex('visit_evidence_correction_next_idx').on(t.supersedesId).where(sql`${t.supersedesId} IS NOT NULL`),
+  check('visit_evidence_correction_valid_chk', sql`${t.actorKind}='admin' AND ${t.nature} IN ('actual','simulation')
+    AND length(trim(${t.reason})) BETWEEN 10 AND 500 AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
+    AND (${t.correctedOccurredAt} IS NOT NULL OR ${t.correctedNote} IS NOT NULL)
+    AND (${t.correctedNote} IS NULL OR length(trim(${t.correctedNote})) BETWEEN 20 AND 1000)
+    AND (${t.correctedOccurredAt} IS NULL OR ${t.correctedOccurredAt} <= ${t.createdAt})`)]);
+
+/**
+ * CP13: private photos attached to one evidence record or one incident. The
+ * storage key is content-addressed and never leaves the API.
+ */
+export const visitAttachment = pgTable('visit_attachment', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'restrict' }),
+  evidenceId: uuid('evidence_id').references(() => visitEvidence.id, { onDelete: 'restrict' }),
+  incidentId: uuid('incident_id').references(() => visitIncident.id, { onDelete: 'restrict' }),
+  position: integer('position').notNull(),
+  storageKey: text('storage_key').notNull(),
+  sha256: varchar('sha256', { length: 64 }).notNull(),
+  mimeType: varchar('mime_type', { length: 32 }).notNull(),
+  bytes: integer('bytes').notNull(),
+  retentionClass: varchar('retention_class', { length: 24 }).notNull(),
+  nature: varchar('nature', { length: 16 }).notNull(),
+  actorKind: varchar('actor_kind', { length: 16 }).notNull(),
+  actorId: uuid('actor_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [index('visit_attachment_booking_idx').on(t.bookingId),
+  uniqueIndex('visit_attachment_evidence_idx').on(t.evidenceId, t.position),
+  uniqueIndex('visit_attachment_incident_idx').on(t.incidentId, t.position),
+  check('visit_attachment_valid_chk', sql`((${t.evidenceId} IS NOT NULL AND ${t.incidentId} IS NULL AND ${t.retentionClass}='visit_evidence')
+      OR (${t.incidentId} IS NOT NULL AND ${t.evidenceId} IS NULL AND ${t.retentionClass}='incident_evidence'))
+    AND ${t.position} BETWEEN 0 AND 2 AND ${t.mimeType} IN ('image/jpeg','image/png','image/webp')
+    AND ${t.bytes} BETWEEN 1 AND 2097152 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin')`)]);
 
 export const notificationOutbox = pgTable('notification_outbox', {
   id: uuid('id').primaryKey().defaultRandom(),

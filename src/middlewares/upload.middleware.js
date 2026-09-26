@@ -40,5 +40,14 @@ export const manyFiles = (field, max = APP.uploadMaxFiles) => upload.array(field
 /** Distinct field names, e.g. an ID document's front and back. */
 export const fileFields = (fields) => upload.fields(fields);
 
+/**
+ * CP13 visit evidence photos. No MIME filter here: a filtered file would be
+ * dropped silently and the evidence saved without the photo the operator
+ * attached. Every file reaches the service, which sniffs magic bytes and
+ * rejects the whole submission with a field error instead.
+ */
+const evidenceUpload = multer({ storage, limits: { fileSize: APP.uploadFileBytes, files: 3 } });
+export const evidencePhotos = () => evidenceUpload.array('photos', 3);
+
 /** A multipart body that carries no files — parses the text fields only. */
 export const formFields = () => upload.none();
