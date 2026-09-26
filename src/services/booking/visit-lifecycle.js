@@ -17,11 +17,17 @@ const inputSchema = z.object({ visitId: z.string().uuid(), phase: z.enum(['hando
  */
 export async function recordVisitTransition(database, actor, input, { files = [], store = evidenceStore() } = {}) {
   const value = inputSchema.parse(input);
-  if (!['owner','admin'].includes(actor?.kind) || !z.string().uuid().safeParse(actor.id).success) throw new CheckoutError('OPERATOR_REQUIRED');
+  if (!['owner','admin','staff'].includes(actor?.kind) || !z.string().uuid().safeParse(actor.id).success) throw new CheckoutError('OPERATOR_REQUIRED');
   const photos = await preparePhotos(files);
   const hash = quoteDigest(photos.length ? { ...value, photos: photoDigest(photos) } : value);
   const [scope] = await database`SELECT rentable_id,state,lifecycle_version FROM booking WHERE id=${value.visitId}`;
   if (!scope) throw new CheckoutError('VISIT_NOT_FOUND');
+  // CP16: a caretaker without the grant or the assignment uploads nothing; the locked check below stays authoritative.
+  if (actor.kind === 'staff') {
+    const [allowed] = await database`SELECT 1 FROM client_staff s JOIN staff_property sp ON sp.staff_id=s.id AND sp.rentable_id=${scope.rentable_id}
+      WHERE s.id=${actor.id} AND s.is_active AND s.revoked_at IS NULL AND s.accepted_at IS NOT NULL AND s.permissions->>'evidence'='true'`;
+    if (!allowed) throw new CheckoutError('OPERATOR_REQUIRED');
+  }
   if (photos.length) {
     const [earlier] = await database`SELECT id FROM visit_evidence WHERE actor_kind=${actor.kind} AND actor_id=${actor.id} AND request_key=${value.requestKey}`;
     // Refuse a stale form before uploading; the locked check below stays authoritative.
@@ -31,7 +37,13 @@ export async function recordVisitTransition(database, actor, input, { files = []
   return withListingInventory(database, scope.rentable_id, async (tx, listing) => {
     const [active] = actor.kind === 'owner'
       ? await tx`SELECT id FROM "user" WHERE id=${actor.id} AND id=${listing.client_id} AND role='client' AND account_status='active' FOR SHARE`
-      : await tx`SELECT id FROM admin_user WHERE id=${actor.id} AND is_active=true FOR SHARE`;
+      : actor.kind === 'staff'
+        ? await tx`SELECT s.id FROM client_staff s JOIN staff_property sp ON sp.staff_id=s.id AND sp.rentable_id=${listing.id}
+          WHERE s.id=${actor.id} AND s.client_id=${listing.client_id} AND s.is_active AND s.revoked_at IS NULL
+            AND s.accepted_at IS NOT NULL AND s.permissions->>'evidence'='true'
+            AND EXISTS (SELECT 1 FROM "user" o WHERE o.id=s.client_id AND o.role='client' AND o.account_status='active')
+          FOR SHARE OF s`
+        : await tx`SELECT id FROM admin_user WHERE id=${actor.id} AND is_active=true FOR SHARE`;
     if (!active) throw new CheckoutError('OPERATOR_REQUIRED');
     const [visit] = await tx`SELECT * FROM booking WHERE id=${value.visitId}`;
     const [replay] = await tx`SELECT id,booking_id,kind,request_hash FROM visit_evidence WHERE actor_kind=${actor.kind} AND actor_id=${actor.id} AND request_key=${value.requestKey}`;

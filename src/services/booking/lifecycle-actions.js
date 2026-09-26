@@ -14,7 +14,7 @@ async function transition(kind, form) {
     const result = await recordVisitTransition(sql, actor, { visitId: form.get('visitId'), phase: form.get('phase'),
       occurredAt: indiaInstant(form.get('occurredAt')), note: form.get('note'), attested: form.get('attested') === 'on', expectedVersion: Number(form.get('version')), requestKey: form.get('requestKey') },
       { files: form.getAll('photos') });
-    for (const base of ['/bookings','/partner/bookings','/admin/bookings']) revalidatePath(`${base}/${result.orderId}`);
+    for (const base of ['/bookings','/partner/bookings','/admin/bookings','/staff/visits']) revalidatePath(`${base}/${result.orderId}`);
     return { message: 'Evidence recorded. The visit status has been updated.' };
   } catch (error) {
     if (error instanceof EvidenceError) return evidenceFailure(error);
@@ -24,6 +24,7 @@ async function transition(kind, form) {
 }
 export async function recordOwnerVisit(previous, form) { return transition('owner', form); }
 export async function recordAdminVisit(previous, form) { return transition('admin', form); }
+export async function recordStaffVisit(previous, form) { return transition('staff', form); }
 export async function bookAgain(previous, form) {
   const actor = await bookingActor('customer');
   let quote;

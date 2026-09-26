@@ -9,6 +9,7 @@ import bookingRoutes from './booking.route.js';
 import customerRoutes from './customer.route.js';
 import savedRoutes from './saved.route.js';
 import adminRoutes from './admin.route.js';
+import staffRoutes from './staff.route.js';
 
 /**
  * The versioned API surface.
@@ -33,5 +34,6 @@ router.use('/saved', savedRoutes);
 router.use('/partner', partnerRoutes);
 router.use('/customer', customerRoutes);
 router.use('/admin', adminRoutes);
+router.use('/staff', staffRoutes);
 
 export default router;

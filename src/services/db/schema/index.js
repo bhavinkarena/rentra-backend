@@ -66,6 +66,8 @@ export const otpPurpose = pgEnum('otp_purpose', [
 
 export const auditActor = pgEnum('audit_actor', [
   'client', 'customer', 'admin', 'system',
+  // CP16: an owner's caretaker acting on an assigned visit.
+  'staff',
 ]);
 
 /**
@@ -516,13 +518,43 @@ export const clientStaff = pgTable(
     clientId: uuid('client_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     phone: varchar('phone', { length: 15 }).notNull(),
     name: varchar('name', { length: 160 }),
-    // { checkIn, capturePhotos, markReturn, confirmCash } — never earnings/pricing
+    // CP16: { evidence: boolean } — record handover/return/completion. Never
+    // earnings, pricing, KYC or staff administration: those are not grantable.
     permissions: jsonb('permissions').notNull().default({}),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Set when the caretaker first accepts an invitation. */
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedReason: text('revoked_reason'),
+    /** Guards owner edits of access; bumped on every change. */
+    version: integer('version').notNull().default(1),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('staff_client_phone_idx').on(t.clientId, t.phone)],
 );
+
+/** CP16: the owner's properties a caretaker may operate. Read live on every request. */
+export const staffProperty = pgTable('staff_property', {
+  staffId: uuid('staff_id').notNull().references(() => clientStaff.id, { onDelete: 'restrict' }),
+  rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.staffId, t.rentableId] }), index('staff_property_rentable_idx').on(t.rentableId)]);
+
+/**
+ * CP16: one-time invitation or sign-in link. Only the SHA-256 of the token is
+ * stored; the link is shown to the owner once. Used, revoked or expired links
+ * never create a session.
+ */
+export const staffInvitation = pgTable('staff_invitation', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  staffId: uuid('staff_id').notNull().references(() => clientStaff.id, { onDelete: 'restrict' }),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('staff_invitation_staff_idx').on(t.staffId, t.createdAt)]);
 
 /* ==========================================================================
    GEOGRAPHY & TAXONOMY  —  these drive the SEO route tree, so they are real
@@ -541,11 +573,14 @@ export const portalSession = pgTable('portal_session', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   adminId: uuid('admin_id').references(() => adminUsers.id, { onDelete: 'cascade' }),
+  /** CP16: a caretaker session; revoked with the caretaker's access. */
+  staffId: uuid('staff_id').references(() => clientStaff.id, { onDelete: 'restrict' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 }, t => [
-  check('portal_session_principal_chk', sql`(${t.userId} IS NOT NULL) <> (${t.adminId} IS NOT NULL)`),
+  check('portal_session_principal_chk', sql`((${t.userId} IS NOT NULL)::int + (${t.adminId} IS NOT NULL)::int + (${t.staffId} IS NOT NULL)::int) = 1`),
+  index('portal_session_staff_idx').on(t.staffId),
   index('portal_session_user_idx').on(t.userId),
   index('portal_session_admin_idx').on(t.adminId),
 ]);
@@ -1513,7 +1548,7 @@ export const visitEvidence = pgTable('visit_evidence', {
 }, t => [uniqueIndex('visit_evidence_kind_idx').on(t.bookingId, t.kind),
   uniqueIndex('visit_evidence_request_idx').on(t.actorKind, t.actorId, t.requestKey),
   check('visit_evidence_valid_chk', sql`${t.kind} IN ('handover','return','complete') AND ${t.nature} IN ('actual','simulation')
-    AND ${t.actorKind} IN ('owner','admin') AND length(trim(${t.note})) BETWEEN 20 AND 1000
+    AND ${t.actorKind} IN ('owner','admin','staff') AND length(trim(${t.note})) BETWEEN 20 AND 1000
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.occurredAt} <= ${t.recordedAt}`)]);
 
 /**
@@ -1604,7 +1639,7 @@ export const visitAttachment = pgTable('visit_attachment', {
       OR (${t.incidentId} IS NOT NULL AND ${t.evidenceId} IS NULL AND ${t.retentionClass}='incident_evidence'))
     AND ${t.position} BETWEEN 0 AND 2 AND ${t.mimeType} IN ('image/jpeg','image/png','image/webp')
     AND ${t.bytes} BETWEEN 1 AND 2097152 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
-    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin')`)]);
+    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin','staff')`)]);
 
 /**
  * CP14: an admin booking case tied to exact visits. Owners request, admins

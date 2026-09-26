@@ -7,6 +7,7 @@ import * as booking from '@/controllers/booking.controller.js';
 import * as records from '@/controllers/records.controller.js';
 import * as reviews from '@/controllers/reviews.controller.js';
 import * as updates from '@/controllers/updates.controller.js';
+import * as team from '@/controllers/team.controller.js';
 import {
   requireRole,
   requireActiveClient,
@@ -175,6 +176,28 @@ router.post('/updates/read', client, formFields(), updates.read);
 router.get('/updates/preferences', client, updates.preferences);
 router.post('/updates/preferences', client, formFields(), updates.savePreferences);
 router.get('/tasks', requireActiveClient, updates.tasks);
+
+/* ---------------------------------------------------------------- *
+ * Team: caretakers the owner invites (CP16). Active owners only; the
+ * caretaker's own routes live under /staff.
+ * ---------------------------------------------------------------- */
+router.get('/team', requireActiveClient, team.list);
+router.post('/team/invite', requireActiveClient, formFields(), team.invite);
+router.post('/team/:id/link', requireActiveClient, validate({ params: listingIdParam }), team.link);
+router.post(
+  '/team/:id/access',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  formFields(),
+  team.access,
+);
+router.post(
+  '/team/:id/revoke',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  formFields(),
+  team.revoke,
+);
 
 /* ---------------------------------------------------------------- *
  * Bookings against the owner's places

@@ -2,7 +2,7 @@
 const adminDomains = ['applications', 'properties', 'clients', 'customers', 'documents', 'payments', 'records', 'reviews', 'support', 'notifications', 'privacy', 'operations'];
 export const ADMIN_CAPABILITIES = Object.freeze(adminDomains.flatMap(domain => [`admin.${domain}.read`, `admin.${domain}.write`]));
 export const CLIENT_BASE_CAPABILITIES = Object.freeze(['client.application.read', 'client.application.write', 'client.documents.read', 'client.documents.write', 'client.settings.write', 'client.catalogue.read', 'client.listings.read', 'client.updates.read', 'client.updates.write']);
-export const CLIENT_ACTIVE_CAPABILITIES = Object.freeze([...CLIENT_BASE_CAPABILITIES, 'client.listings.write', 'client.calendar.read', 'client.calendar.write', 'client.records.read', 'client.records.write', 'client.reviews.read', 'client.reviews.write', 'client.tasks.read']);
+export const CLIENT_ACTIVE_CAPABILITIES = Object.freeze([...CLIENT_BASE_CAPABILITIES, 'client.listings.write', 'client.calendar.read', 'client.calendar.write', 'client.records.read', 'client.records.write', 'client.reviews.read', 'client.reviews.write', 'client.tasks.read', 'client.team.read', 'client.team.write']);
 // Contract only: staff authentication and property assignments ship in CP16.
 export const CARETAKER_CAPABILITIES = Object.freeze(['staff.assigned-visits.read', 'staff.assigned-visits.evidence']);
 
@@ -11,6 +11,11 @@ export function capabilitiesFor(actor, kind) {
   if (kind === 'admin') {
     if (!actor.isActive) return [];
     return actor.permissions == null ? [...ADMIN_CAPABILITIES] : ADMIN_CAPABILITIES.filter(capability => Array.isArray(actor.permissions) && actor.permissions.includes(capability));
+  }
+  if (kind === 'staff') {
+    // Only the two caretaker capabilities exist; evidence is the owner's per-caretaker grant.
+    if (!actor.active) return [];
+    return CARETAKER_CAPABILITIES.filter((capability) => capability.endsWith('.read') || actor.permissions?.evidence === true);
   }
   if (actor.role !== 'client') return [];
   if (actor.accountStatus === 'active') return [...CLIENT_ACTIVE_CAPABILITIES];

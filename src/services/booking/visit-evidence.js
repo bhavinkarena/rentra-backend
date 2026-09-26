@@ -287,12 +287,15 @@ const correctionShape = (row) => ({
  * read is audited (CA19). Storage keys never leave this function.
  */
 export async function readVisitAttachment(database, actor, orderId, attachmentId, { store = evidenceStore(), ip = null } = {}) {
-  requireOperator(actor);
+  requireOperator(actor, ['owner', 'admin', 'staff']);
   if (!uuid.safeParse(orderId).success || !uuid.safeParse(attachmentId).success) return { status: 404 };
   const allowed =
     actor.kind === 'owner'
       ? database`EXISTS(SELECT 1 FROM "user" u WHERE u.id=${actor.id} AND u.id=r.client_id AND u.role='client' AND u.account_status='active')`
-      : database`EXISTS(SELECT 1 FROM admin_user x WHERE x.id=${actor.id} AND x.is_active)`;
+      : actor.kind === 'staff'
+        ? database`EXISTS(SELECT 1 FROM client_staff s JOIN staff_property sp ON sp.staff_id=s.id AND sp.rentable_id=r.id
+            WHERE s.id=${actor.id} AND s.client_id=r.client_id AND s.is_active AND s.revoked_at IS NULL AND s.accepted_at IS NOT NULL)`
+        : database`EXISTS(SELECT 1 FROM admin_user x WHERE x.id=${actor.id} AND x.is_active)`;
   const [row] = await database`SELECT a.id,a.storage_key,a.mime_type,a.retention_class,a.booking_id,b.order_id FROM visit_attachment a
     JOIN booking b ON b.id=a.booking_id JOIN rentable r ON r.id=b.rentable_id
     WHERE a.id=${attachmentId} AND b.order_id=${orderId} AND ${allowed}`;
@@ -300,7 +303,7 @@ export async function readVisitAttachment(database, actor, orderId, attachmentId
   const file = await store.get(row.storage_key).catch(() => null);
   if (!file) return { status: 502 };
   await database`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after",ip)
-    VALUES(${actor.kind === 'owner' ? 'client' : 'admin'},${actor.id},'visit_attachment',${row.id},'visit_attachment_viewed',
+    VALUES(${{ owner: 'client', staff: 'staff' }[actor.kind] ?? 'admin'},${actor.id},'visit_attachment',${row.id},'visit_attachment_viewed',
     ${JSON.stringify({ orderId: row.order_id, visitId: row.booking_id, retentionClass: row.retention_class })}::text::jsonb,${ip})`;
   const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[row.mime_type];
   return { status: 200, body: file.body, contentType: row.mime_type, filename: `visit-photo-${row.id.slice(0, 8)}.${extension}` };
@@ -315,7 +318,8 @@ export async function readVisitAttachment(database, actor, orderId, attachmentId
 export async function visitEvidenceRecords(tx, orderId, viewer) {
   const operational = viewer !== 'customer';
   const evidence = await tx`SELECT e.id,e.booking_id,e.kind,e.nature,e.occurred_at,e.recorded_at,e.note,e.visit_version,e.actor_kind,
-    CASE e.actor_kind WHEN 'owner' THEN (SELECT name FROM "user" WHERE id=e.actor_id) ELSE (SELECT name FROM admin_user WHERE id=e.actor_id) END actor_name
+    CASE e.actor_kind WHEN 'owner' THEN (SELECT name FROM "user" WHERE id=e.actor_id) WHEN 'staff' THEN (SELECT name FROM client_staff WHERE id=e.actor_id)
+      ELSE (SELECT name FROM admin_user WHERE id=e.actor_id) END actor_name
     FROM visit_evidence e JOIN booking b ON b.id=e.booking_id WHERE b.order_id=${orderId} ORDER BY e.recorded_at,e.id`;
   const corrections = await tx`SELECT c.*,(SELECT name FROM admin_user WHERE id=c.actor_id) actor_name FROM visit_evidence_correction c
     JOIN booking b ON b.id=c.booking_id WHERE b.order_id=${orderId} ORDER BY c.created_at,c.id`;
@@ -329,7 +333,7 @@ export async function visitEvidenceRecords(tx, orderId, viewer) {
     : [];
   const photos = (key, id) =>
     attachments.filter((a) => a[key] === id).map((a) => ({ id: a.id, position: a.position, mimeType: a.mime_type, bytes: a.bytes }));
-  const actorName = (name) => (viewer === 'admin' ? name || null : undefined);
+  const actorName = (name, kind) => (viewer === 'admin' || kind === 'staff' ? name || null : undefined);
   const byVisit = new Map();
   for (const row of evidence) {
     const own = corrections.filter((c) => c.evidence_id === row.id);
@@ -346,7 +350,7 @@ export async function visitEvidenceRecords(tx, orderId, viewer) {
             note: effective.note,
             visitVersion: row.visit_version,
             actorKind: row.actor_kind,
-            actorName: actorName(row.actor_name),
+            actorName: actorName(row.actor_name, row.actor_kind),
             original: effective.corrected ? { occurredAt: instant(row.occurred_at), note: row.note } : null,
             headCorrectionId: effective.headId,
             corrections: effective.chain.map((c) => {

@@ -138,3 +138,44 @@ test('updates reach onboarding clients; tasks need an active client', () => {
   assert.equal(routeCapability('client', 'POST', '/updates/read'), 'client.updates.write');
   assert.equal(routeCapability('client', 'GET', '/tasks'), 'client.tasks.read');
 });
+
+test('caretakers get only the two assigned-visit capabilities; team admin stays with the owner', () => {
+  assert.deepEqual(capabilitiesFor({ active: true, permissions: {} }, 'staff'), [
+    'staff.assigned-visits.read',
+  ]);
+  assert.deepEqual(capabilitiesFor({ active: true, permissions: { evidence: true } }, 'staff'), [
+    'staff.assigned-visits.read',
+    'staff.assigned-visits.evidence',
+  ]);
+  assert.deepEqual(
+    capabilitiesFor({ active: false, permissions: { evidence: true } }, 'staff'),
+    [],
+  );
+  for (const caps of [
+    capabilitiesFor(
+      { active: true, permissions: { evidence: true, pricing: true, team: true } },
+      'staff',
+    ),
+  ])
+    assert.ok(
+      caps.every((c) => c.startsWith('staff.assigned-visits.')),
+      'no pricing, earnings, KYC or team capability',
+    );
+  assert.ok(
+    capabilitiesFor({ role: 'client', accountStatus: 'active' }, 'client').includes(
+      'client.team.write',
+    ),
+  );
+  assert.equal(
+    capabilitiesFor({ role: 'client', accountStatus: 'pending_application' }, 'client').includes(
+      'client.team.read',
+    ),
+    false,
+  );
+  assert.equal(routeCapability('client', 'POST', '/team/invite'), 'client.team.write');
+  assert.equal(
+    routeCapability('admin', 'GET', '/team'),
+    null,
+    'owner team permission is not platform administration',
+  );
+});
