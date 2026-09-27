@@ -1,3 +1,5 @@
+import * as support from '@/controllers/support.controller.js';
+import { supportListQuery } from '@/validations/support.validation.js';
 import { Router } from 'express';
 import * as application from '@/controllers/application.controller.js';
 import * as documents from '@/controllers/documents.controller.js';
@@ -250,4 +252,20 @@ router.get('/reviews', requireActiveClient, reviews.queue);
 router.post('/reviews/reply', requireActiveClient, formFields(), reviews.reply);
 router.post('/reviews/report', requireActiveClient, formFields(), reviews.reportByOwner);
 
+router.get('/support', requireActiveClient, validate({ query: supportListQuery }), support.list);
+router.post('/support', requireActiveClient, formFields(), support.openAsOwner);
+router.get('/support/:id', requireActiveClient, support.detail);
+router.get('/support/:id/thread', requireActiveClient, support.thread);
+router.post(
+  '/support/:id/reply',
+  requireActiveClient,
+  uploadLimiter,
+  evidencePhotos(),
+  (req, res, next) => {
+    req.body.id = req.params.id;
+    next();
+  },
+  support.replyAsOwner,
+);
+router.get('/support/:id/attachments/:attachmentId', requireActiveClient, support.attachment);
 export default router;

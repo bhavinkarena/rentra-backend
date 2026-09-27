@@ -221,7 +221,16 @@ router.post('/reviews/reports/resolve', formFields(), reviews.resolveReport);
 router.get('/support', validate({ query: supportListQuery }), support.list);
 router.get('/support/:id', validate({ params: supportIdParam }), support.detail);
 router.get('/support/:id/thread', validate({ params: supportIdParam }), support.thread);
-router.post('/support/:id/reply', formFields(), support.replyAsAdmin);
+router.post(
+  '/support/:id/reply',
+  uploadLimiter,
+  evidencePhotos(),
+  (req, res, next) => {
+    req.body.id = req.params.id;
+    next();
+  },
+  support.replyAsAdmin,
+);
 
 router.get('/notifications', notifications.monitor);
 router.post('/notifications/manage', formFields(), notifications.manage);
@@ -234,4 +243,14 @@ router.post('/privacy/review', formFields(), admin.startPrivacy);
 
 router.get('/operations', admin.operations);
 
+router.get('/support/:id/attachments/:attachmentId', support.attachment);
+router.post(
+  '/support/:id/manage',
+  formFields(),
+  (req, res, next) => {
+    req.body.id = req.params.id;
+    next();
+  },
+  support.manage,
+);
 export default router;

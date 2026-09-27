@@ -5,8 +5,8 @@ import * as reviews from '@/controllers/reviews.controller.js';
 import * as support from '@/controllers/support.controller.js';
 import * as notifications from '@/controllers/notifications.controller.js';
 import { requireRole } from '@/middlewares/auth.middleware.js';
-import { authLimiter } from '@/middlewares/rateLimit.middleware.js';
-import { formFields, singleFile } from '@/middlewares/upload.middleware.js';
+import { authLimiter, uploadLimiter } from '@/middlewares/rateLimit.middleware.js';
+import { formFields, singleFile, evidencePhotos } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
 import { recordIdParam, historyQuery } from '@/validations/records.validation.js';
 import { supportIdParam, supportListQuery } from '@/validations/support.validation.js';
@@ -71,7 +71,17 @@ router.get('/support', customer, validate({ query: supportListQuery }), support.
 router.post('/support', customer, formFields(), support.open);
 router.get('/support/:id', customer, validate({ params: supportIdParam }), support.detail);
 router.get('/support/:id/thread', customer, validate({ params: supportIdParam }), support.thread);
-router.post('/support/:id/reply', customer, formFields(), support.replyAsCustomer);
+router.post(
+  '/support/:id/reply',
+  customer,
+  uploadLimiter,
+  evidencePhotos(),
+  (req, res, next) => {
+    req.body.id = req.params.id;
+    next();
+  },
+  support.replyAsCustomer,
+);
 
 /* ---------------------------------------------------------------- *
  * Notifications
@@ -79,4 +89,5 @@ router.post('/support/:id/reply', customer, formFields(), support.replyAsCustome
 router.get('/notifications', customer, notifications.list);
 router.post('/notifications/read', customer, formFields(), notifications.markRead);
 
+router.get('/support/:id/attachments/:attachmentId', customer, support.attachment);
 export default router;

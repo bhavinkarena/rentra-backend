@@ -1789,7 +1789,12 @@ export const reviewReport = pgTable('review_report', {
 export const supportRequest = pgTable('support_request', {
   id: uuid('id').primaryKey().defaultRandom(),
   reference: varchar('reference', { length: 40 }).notNull().unique(),
-  customerId: uuid('customer_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  customerId: uuid('customer_id').references(() => users.id, { onDelete: 'restrict' }),
+  clientId: uuid('client_id').references(() => users.id, { onDelete: 'restrict' }),
+  propertyId: uuid('property_id').references(() => rentable.id, { onDelete: 'restrict' }),
+  assignedTo: uuid('assigned_to').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  priority: varchar('priority', { length: 16 }).notNull().default('normal'),
+  relatedRequestId: uuid('related_request_id').references(() => supportRequest.id, { onDelete: 'restrict' }),
   orderId: uuid('order_id').references(() => bookingOrder.id, { onDelete: 'restrict' }),
   privacyRequestId: uuid('privacy_request_id').references(() => customerPrivacyRequest.id, { onDelete: 'restrict' }),
   category: varchar('category', { length: 24 }).notNull(),
@@ -1802,7 +1807,9 @@ export const supportRequest = pgTable('support_request', {
   requestHash: varchar('request_hash', { length: 64 }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-}, t => [uniqueIndex('support_request_replay_idx').on(t.customerId, t.requestKey),
+}, t => [uniqueIndex('support_request_client_replay_idx').on(t.clientId, t.requestKey),
+  check('support_participant_chk', sql`num_nonnulls(${t.customerId},${t.clientId})=1 AND (${t.clientId} IS NULL OR ${t.privacyRequestId} IS NULL) AND ${t.priority} IN ('normal','urgent') AND (${t.relatedRequestId} IS NULL OR ${t.relatedRequestId}<>${t.id})`),
+  uniqueIndex('support_request_replay_idx').on(t.customerId, t.requestKey),
   index('support_request_inbox_idx').on(t.state, t.updatedAt), index('support_request_customer_idx').on(t.customerId, t.createdAt),
   check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other')
     AND ${t.state} IN ('open','in_progress','waiting_customer','resolved') AND ${t.version}>=0
@@ -1815,6 +1822,7 @@ export const supportMessage = pgTable('support_message', {
   requestId: uuid('request_id').notNull().references(() => supportRequest.id, { onDelete: 'restrict' }),
   actorKind: varchar('actor_kind', { length: 16 }).notNull(),
   actorId: uuid('actor_id').notNull(),
+  internal: boolean('internal').notNull().default(false),
   body: text('body').notNull(),
   stateAfter: varchar('state_after', { length: 20 }).notNull(),
   requestKey: uuid('request_key').notNull(),
@@ -1822,5 +1830,16 @@ export const supportMessage = pgTable('support_message', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [uniqueIndex('support_message_replay_idx').on(t.actorKind, t.actorId, t.requestKey),
   index('support_message_thread_idx').on(t.requestId, t.createdAt),
-  check('support_message_valid_chk', sql`${t.actorKind} IN ('customer','admin') AND length(trim(${t.body})) BETWEEN 2 AND 5000
+  check('support_message_valid_chk', sql`${t.actorKind} IN ('customer','owner','admin') AND (NOT ${t.internal} OR ${t.actorKind}='admin') AND length(trim(${t.body})) BETWEEN 2 AND 5000
     AND ${t.stateAfter} IN ('open','in_progress','waiting_customer','resolved') AND ${t.requestHash} ~ '^[a-f0-9]{64}$'`)]);
+
+export const supportAttachment = pgTable('support_attachment', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  messageId: uuid('message_id').notNull().references(() => supportMessage.id, { onDelete: 'restrict' }),
+  storageKey: text('storage_key').notNull(),
+  mimeType: varchar('mime_type', { length: 32 }).notNull(),
+  bytes: integer('bytes').notNull(),
+  sha256: varchar('sha256', { length: 64 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [uniqueIndex('support_attachment_message_hash_idx').on(t.messageId,t.sha256),
+  check('support_attachment_valid_chk',sql`${t.mimeType} IN ('image/jpeg','image/png','image/webp') AND ${t.bytes} BETWEEN 1 AND 2097152 AND ${t.sha256} ~ '^[a-f0-9]{64}$'`)]);

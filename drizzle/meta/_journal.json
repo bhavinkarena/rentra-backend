@@ -225,6 +225,13 @@
       "when": 1790453982288,
       "tag": "0031_caretaker_access",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790482537468,
+      "tag": "0032_support_cases",
+      "breakpoints": true
     }
   ]
 }
