@@ -1892,3 +1892,45 @@ export const supportAttachment = pgTable('support_attachment', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [uniqueIndex('support_attachment_message_hash_idx').on(t.messageId,t.sha256),
   check('support_attachment_valid_chk',sql`${t.mimeType} IN ('image/jpeg','image/png','image/webp') AND ${t.bytes} BETWEEN 1 AND 2097152 AND ${t.sha256} ~ '^[a-f0-9]{64}$'`)]);
+
+/** CP23: adjudication records; monetary execution stays in the payment/refund ledger. */
+export const disputeCase = pgTable('dispute_case', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orderId: uuid('order_id').notNull().references(() => bookingOrder.id, {onDelete:'restrict'}),
+  visitId: uuid('visit_id').notNull().references(() => booking.id, {onDelete:'restrict'}),
+  ownerId: uuid('owner_id').notNull().references(() => users.id, {onDelete:'restrict'}),
+  customerId: uuid('customer_id').notNull().references(() => users.id, {onDelete:'restrict'}),
+  kind: varchar('kind',{length:16}).notNull(),
+  subject: varchar('subject',{length:160}).notNull(),
+  claimedMinor: bigint('claimed_minor',{mode:'number'}).notNull().default(0),
+  state: varchar('state',{length:16}).notNull().default('open'),
+  assigneeId: uuid('assignee_id').references(() => adminUsers.id,{onDelete:'restrict'}),
+  requestedParty: varchar('requested_party',{length:16}),
+  responseDue: timestamp('response_due',{withTimezone:true}),
+  outcome: varchar('outcome',{length:24}),
+  resolution: text('resolution'),
+  resolvedBy: uuid('resolved_by').references(() => adminUsers.id,{onDelete:'restrict'}),
+  resolvedAt: timestamp('resolved_at',{withTimezone:true}),
+  version: integer('version').notNull().default(1),
+  createdByKind: varchar('created_by_kind',{length:16}).notNull(),
+  createdById: uuid('created_by_id').notNull(),
+  requestKey: uuid('request_key').notNull(),
+  requestHash: varchar('request_hash',{length:64}).notNull(),
+  createdAt: timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at',{withTimezone:true}).notNull().defaultNow(),
+},t=>[uniqueIndex('dispute_case_request_idx').on(t.createdByKind,t.createdById,t.requestKey),index('dispute_case_queue_idx').on(t.state,t.createdAt),index('dispute_case_owner_idx').on(t.ownerId,t.createdAt),index('dispute_case_customer_idx').on(t.customerId,t.createdAt),
+  check('dispute_case_valid_chk',sql`${t.kind} IN ('service','deposit','provider') AND length(trim(${t.subject})) BETWEEN 5 AND 160 AND ${t.claimedMinor} BETWEEN 0 AND 100000000
+    AND ${t.state} IN ('open','resolved') AND ${t.version} >= 1 AND ${t.createdByKind} IN ('owner','customer','admin') AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
+    AND ((${t.requestedParty} IS NULL AND ${t.responseDue} IS NULL) OR (${t.requestedParty} IN ('owner','customer') AND ${t.responseDue} IS NOT NULL))
+    AND ((${t.state}='open' AND ${t.outcome} IS NULL AND ${t.resolution} IS NULL AND ${t.resolvedBy} IS NULL AND ${t.resolvedAt} IS NULL)
+      OR (${t.state}='resolved' AND ${t.outcome} IN ('no_action','refund_review','support_escalation') AND length(trim(${t.resolution})) BETWEEN 10 AND 2000 AND ${t.resolvedBy} IS NOT NULL AND ${t.resolvedAt} IS NOT NULL AND ${t.requestedParty} IS NULL))`)]);
+export const disputeMessage = pgTable('dispute_message',{
+  id:uuid('id').primaryKey().defaultRandom(),caseId:uuid('case_id').notNull().references(()=>disputeCase.id,{onDelete:'restrict'}),
+  actorKind:varchar('actor_kind',{length:16}).notNull(),actorId:uuid('actor_id').notNull(),kind:varchar('kind',{length:16}).notNull(),
+  audience:varchar('audience',{length:16}).notNull(),body:text('body').notNull(),
+  requestKey:uuid('request_key').notNull(),requestHash:varchar('request_hash',{length:64}).notNull(),
+  createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+},t=>[uniqueIndex('dispute_message_request_idx').on(t.caseId,t.actorKind,t.actorId,t.requestKey),index('dispute_message_case_idx').on(t.caseId,t.createdAt),check('dispute_message_valid_chk',sql`${t.actorKind} IN ('owner','customer','admin') AND ${t.kind} IN ('created','reply','assigned','requested','resolved') AND ${t.audience} IN ('owner','customer','everyone','internal') AND (${t.actorKind}='admin' OR ${t.audience}=${t.actorKind}) AND length(trim(${t.body})) BETWEEN 2 AND 2000 AND ${t.requestHash} ~ '^[a-f0-9]{64}$'`)]);
+export const disputeAttachment = pgTable('dispute_attachment',{
+  id:uuid('id').primaryKey().defaultRandom(),messageId:uuid('message_id').notNull().references(()=>disputeMessage.id,{onDelete:'restrict'}),storageKey:text('storage_key').notNull(),mimeType:varchar('mime_type',{length:32}).notNull(),bytes:integer('bytes').notNull(),sha256:varchar('sha256',{length:64}).notNull(),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+},t=>[uniqueIndex('dispute_attachment_hash_idx').on(t.messageId,t.sha256),check('dispute_attachment_valid_chk',sql`${t.mimeType} IN ('image/jpeg','image/png','image/webp') AND ${t.bytes} BETWEEN 1 AND 2097152 AND ${t.sha256} ~ '^[a-f0-9]{64}$'`)]);

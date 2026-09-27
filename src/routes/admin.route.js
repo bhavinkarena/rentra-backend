@@ -1,3 +1,4 @@
+import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
 import { Router } from 'express';
 import * as admin from '@/controllers/admin.controller.js';
@@ -280,4 +281,15 @@ router.get('/payments/finance/allocations/:id', finance.allocation);
 router.get('/payments/finance/payouts/:id', finance.payout);
 router.get('/payments/finance/payouts', finance.payouts);
 router.get('/payments/finance', finance.statement);
+router.use('/payments/disputes', (_req, res, next) => {
+  res.set('Cache-Control', 'private, no-store');
+  next();
+});
+router.get('/payments/disputes/context/:orderId', disputes.context);
+router.get('/payments/disputes/:id/attachments/:fileId', disputes.attachment);
+router.get('/payments/disputes/:id', disputes.detail);
+router.get('/payments/disputes', disputes.list);
+router.post('/payments/disputes', formFields(), disputes.create);
+router.post('/payments/disputes/:id/reply', uploadLimiter, evidencePhotos(), disputes.reply);
+router.post('/payments/disputes/:id/manage', formFields(), disputes.manage);
 export default router;

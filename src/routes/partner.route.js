@@ -1,3 +1,4 @@
+import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
 import * as support from '@/controllers/support.controller.js';
 import { supportListQuery } from '@/validations/support.validation.js';
@@ -282,4 +283,20 @@ router.get('/finance/allocations/:id', requireActiveClient, finance.allocation);
 router.get('/finance/payouts/:id', requireActiveClient, finance.payout);
 router.get('/finance/payouts', requireActiveClient, finance.payouts);
 router.get('/finance', requireActiveClient, finance.statement);
+router.use('/disputes', (_req, res, next) => {
+  res.set('Cache-Control', 'private, no-store');
+  next();
+});
+router.get('/disputes/context/:orderId', requireActiveClient, disputes.context);
+router.get('/disputes/:id/attachments/:fileId', requireActiveClient, disputes.attachment);
+router.get('/disputes/:id', requireActiveClient, disputes.detail);
+router.get('/disputes', requireActiveClient, disputes.list);
+router.post('/disputes', requireActiveClient, formFields(), disputes.create);
+router.post(
+  '/disputes/:id/reply',
+  requireActiveClient,
+  uploadLimiter,
+  evidencePhotos(),
+  disputes.reply,
+);
 export default router;

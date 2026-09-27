@@ -1,3 +1,4 @@
+import * as disputes from '@/controllers/disputes.controller.js';
 import { Router } from 'express';
 import * as account from '@/controllers/account.controller.js';
 import * as records from '@/controllers/records.controller.js';
@@ -90,4 +91,14 @@ router.get('/notifications', customer, notifications.list);
 router.post('/notifications/read', customer, formFields(), notifications.markRead);
 
 router.get('/support/:id/attachments/:attachmentId', customer, support.attachment);
+router.use('/disputes', (_req, res, next) => {
+  res.set('Cache-Control', 'private, no-store');
+  next();
+});
+router.get('/disputes/context/:orderId', customer, disputes.context);
+router.get('/disputes/:id/attachments/:fileId', customer, disputes.attachment);
+router.get('/disputes/:id', customer, disputes.detail);
+router.get('/disputes', customer, disputes.list);
+router.post('/disputes', customer, formFields(), disputes.create);
+router.post('/disputes/:id/reply', customer, uploadLimiter, evidencePhotos(), disputes.reply);
 export default router;
