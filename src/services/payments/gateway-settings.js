@@ -84,7 +84,7 @@ export async function setPaymentGatewayConfiguration(database, input, variables 
     await transaction`
       INSERT INTO audit_log (actor_type, actor_id, entity, entity_id, action, "before", "after")
       VALUES ('admin', ${change.actorId}, 'payment_gateway_config', ${String(after.version)},
-        'payment_gateway_changed', ${JSON.stringify(before)}::jsonb, ${JSON.stringify(after)}::jsonb)`;
+        'payment_gateway_changed', ${JSON.stringify(before)}::text::jsonb, ${JSON.stringify(after)}::text::jsonb)`;
     return after;
   });
 }

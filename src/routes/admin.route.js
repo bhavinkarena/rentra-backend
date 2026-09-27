@@ -189,6 +189,9 @@ router.post('/documents/review', formFields(), admin.decideDocument);
  * ---------------------------------------------------------------- */
 router.get('/payments/configuration', payments.configuration);
 router.post('/payments/configuration', formFields(), payments.saveConfiguration);
+router.get('/payments/orders', payments.orders);
+router.get('/payments/orders/:id', validate({ params: recordIdParam }), payments.order);
+router.post('/payments/orders/reconcile', formFields(), payments.reconcile);
 
 /* ---------------------------------------------------------------- *
  * Bookings, reviews, support, notifications — the admin view of each

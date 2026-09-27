@@ -27,7 +27,7 @@ export async function ingestRazorpayEvent(database, raw, signature, eventId, env
   const hash=createHash('sha256').update(raw).digest('hex');
   return database.begin(async tx=>{
     const [inserted]=await tx`INSERT INTO payment_event(provider,environment,external_event_id,payload_hash,redacted_payload,signature_verified_at)
-      VALUES('razorpay','test',${eventId},${hash},${JSON.stringify(normalized)}::jsonb,clock_timestamp())
+      VALUES('razorpay','test',${eventId},${hash},${JSON.stringify(normalized)}::text::jsonb,clock_timestamp())
       ON CONFLICT(provider,environment,external_event_id) DO NOTHING RETURNING id`;
     const [event]=inserted?[inserted]:await tx`SELECT id,payload_hash FROM payment_event WHERE provider='razorpay' AND environment='test' AND external_event_id=${eventId}`;
     if (!inserted && event.payload_hash!==hash) throw new ProviderError('EVENT_ID_CONFLICT');

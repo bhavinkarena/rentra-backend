@@ -4,6 +4,12 @@ import { getPaymentConfiguration } from '@/services/payments/gateway-settings.js
 import { REGISTERED_PAYMENT_PROVIDERS } from '@/services/payments/provider-registry.js';
 import { paymentCredentialStatus } from '@/services/payments/provider-credentials.js';
 import { runAction } from '@/utils/runAction.js';
+import {
+  adminPaymentDetail,
+  adminPaymentList,
+  reconcileAdminPayment,
+} from '@/services/payments/investigation-actions.js';
+import { notFound } from '@/utils/apiError.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 
@@ -34,3 +40,12 @@ export const configuration = asyncHandler(async (_req, res) => {
 });
 
 export const saveConfiguration = runAction(savePaymentGatewaySettings);
+
+/** CP19: payment investigation, separate from gateway settings. */
+export const orders = asyncHandler(async (req, res) => ok(res, await adminPaymentList(req.query)));
+export const order = asyncHandler(async (req, res) => {
+  const found = await adminPaymentDetail(req.params.id);
+  if (!found) throw notFound('PAYMENT_NOT_FOUND', 'Not found.');
+  return ok(res, found);
+});
+export const reconcile = runAction(reconcileAdminPayment);

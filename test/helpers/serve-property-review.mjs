@@ -14,6 +14,11 @@ globalThis.__rentraSql = fixture.sql;
 globalThis.__rentraEvidenceStore = (
   await import('@/services/uploads/evidence-store.js')
 ).memoryEvidenceStore();
+// CP19: a file-backed fake Razorpay when a gate asks for one; honoured only because NODE_ENV=test.
+if (process.env.FAKE_RAZORPAY_STATE)
+  globalThis.__rentraPaymentFetcher = (await import('./fake-razorpay.mjs')).fileBackedRazorpay(
+    process.env.FAKE_RAZORPAY_STATE,
+  );
 Object.assign(process.env, {
   DATABASE_URL: fixture.url,
   NODE_ENV: 'test',
