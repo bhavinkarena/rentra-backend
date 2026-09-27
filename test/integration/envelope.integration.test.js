@@ -10,6 +10,7 @@ let server;
 let base;
 
 before(async () => {
+  process.env.CORS_ALLOWED_ORIGINS = 'http://localhost:3000,https://rentrafarm.vercel.app';
   const { createApp } = await import('@/app.js');
   const { config } = await import('@/config/env.js');
   server = createApp().listen(0);
@@ -85,12 +86,8 @@ test('malformed JSON is a 400, not a 500', async () => {
   assert.equal((await response.json()).code, 'MALFORMED_JSON');
 });
 
-test('CORS accepts arbitrary origins with cookie credentials', async () => {
-  for (const origin of [
-    'http://localhost:3000',
-    'https://rentrafarm.vercel.app',
-    'https://other.example',
-  ]) {
+test('CORS accepts configured origins with cookie credentials', async () => {
+  for (const origin of ['http://localhost:3000', 'https://rentrafarm.vercel.app']) {
     const response = await fetch(`${base}/health/live`, { headers: { Origin: origin } });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('access-control-allow-origin'), origin);
@@ -99,18 +96,33 @@ test('CORS accepts arbitrary origins with cookie credentials', async () => {
   }
 });
 
-test('CORS preflight permits requests from any origin', async () => {
+test('CORS preflight permits configured origins', async () => {
   const response = await fetch(`${base}/bookings/quote`, {
     method: 'OPTIONS',
     headers: {
-      Origin: 'https://other.example',
+      Origin: 'https://rentrafarm.vercel.app',
       'Access-Control-Request-Method': 'POST',
       'Access-Control-Request-Headers': 'Content-Type',
     },
   });
   assert.equal(response.status, 204);
-  assert.equal(response.headers.get('access-control-allow-origin'), 'https://other.example');
+  assert.equal(
+    response.headers.get('access-control-allow-origin'),
+    'https://rentrafarm.vercel.app',
+  );
   assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
   assert.match(response.headers.get('access-control-allow-methods'), /POST/);
   assert.match(response.headers.get('access-control-allow-headers'), /Content-Type/);
+});
+
+test('untrusted origins are rejected before reads or writes execute', async () => {
+  for (const method of ['GET', 'POST', 'OPTIONS']) {
+    const response = await fetch(`${base}/health/live`, {
+      method,
+      headers: { Origin: 'https://other.example' },
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, 'ORIGIN_DENIED');
+    assert.equal(response.headers.get('access-control-allow-origin'), null);
+  }
 });

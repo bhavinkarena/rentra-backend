@@ -1,4 +1,5 @@
 import express from 'express';
+import { forbidden } from './utils/apiError.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -68,6 +69,17 @@ export function createApp() {
 
   app.use(cookieParser());
   app.use(requestContext);
+  app.use((req, _res, next) => {
+    if (
+      !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
+      req.headers.cookie &&
+      req.headers['sec-fetch-site'] === 'cross-site' &&
+      !req.headers.origin
+    ) {
+      return next(forbidden('CSRF_ORIGIN_REQUIRED', 'A browser origin is required.'));
+    }
+    next();
+  });
 
   /* Raw-body routes — see the ordering note above. */
   app.use('/webhooks', webhookRoutes);

@@ -1,3 +1,4 @@
+import { portalCacheScope } from '@/services/auth/cache-scope.js';
 import {
   requestClientOtp,
   verifyClientOtp,
@@ -28,7 +29,10 @@ export const signOut = runAction(logout, { style: 'none' });
  * partner screen needs both and two round trips for one header is wasteful.
  */
 export const me = asyncHandler(async (req, res) => {
-  const user = req.user ?? null;
+  const actor = req.user ?? null;
+  // Public cache generation, never an authentication credential. Includes live
+  // capabilities so a reused layout cannot retain data across access changes.
+  const user = actor ? { ...actor, cacheScope: portalCacheScope(actor, req.session) } : null;
   if (!user) return ok(res, { user: null, sessionState: req.session ? 'ended' : 'signed_out' });
 
   if (user.role !== 'client') return ok(res, { user, completion: null });
