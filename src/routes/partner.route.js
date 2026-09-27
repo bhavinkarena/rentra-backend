@@ -75,7 +75,9 @@ router.delete('/documents', client, formFields(), documents.remove);
  * Account settings — reachable before approval, deliberately
  * ---------------------------------------------------------------- */
 router.post('/settings/account', client, formFields(), settings.account);
+router.get('/settings/payout', client, settings.payoutPage);
 router.post('/settings/payout', client, formFields(), settings.payout);
+router.post('/settings/payout/draft', client, formFields(), settings.payoutDraft);
 
 /* ---------------------------------------------------------------- *
  * Wizard reference data

@@ -96,6 +96,12 @@ export const getCurrentAdmin = cache(async () => {
   return { ...publicAdmin, capabilities: capabilitiesFor(admin, 'admin'), hasTotp: Boolean(admin.hasTotp) };
 });
 
+/** CP21: the signed-in admin's session, for recent-authentication checks. */
+export async function currentAdminSession() {
+  const payload = await readAdminToken();
+  return payload?.adminId && payload?.sessionId ? { adminId: payload.adminId, sessionId: payload.sessionId } : null;
+}
+
 export async function requireAdmin() {
   const admin = await getCurrentAdmin();
   if (!admin) redirect('/admin/login');

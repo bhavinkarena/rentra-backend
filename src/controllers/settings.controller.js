@@ -1,5 +1,12 @@
-import { saveAccountSettings, savePayoutDestination } from '@/services/auth/settings.js';
+import { saveAccountSettings } from '@/services/auth/settings.js';
+import {
+  changePayoutDestination,
+  payoutDestinationPage,
+  submitPayoutDraft,
+} from '@/services/payouts/destination-actions.js';
 import { runAction } from '@/utils/runAction.js';
+import { asyncHandler } from '@/utils/asyncHandler.js';
+import { ok } from '@/utils/respond.js';
 
 /**
  * Reachable by any signed-in Client, approved or not — deliberately.
@@ -9,4 +16,7 @@ import { runAction } from '@/utils/runAction.js';
  * would make the one problem it exists to solve unfixable.
  */
 export const account = runAction(saveAccountSettings);
-export const payout = runAction(savePayoutDestination);
+/** CP21: versioned payout destinations (preview → submit; a stale sign-in saves a draft). */
+export const payoutPage = asyncHandler(async (_req, res) => ok(res, await payoutDestinationPage()));
+export const payout = runAction(changePayoutDestination);
+export const payoutDraft = runAction(submitPayoutDraft);

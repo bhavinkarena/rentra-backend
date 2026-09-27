@@ -1,3 +1,5 @@
+import { failPayoutDestination } from '@/services/payouts/destination-actions.js';
+import { runAction } from '@/utils/runAction.js';
 import { sql } from '@/config/database.js';
 import {
   changeLifecycle,
@@ -37,3 +39,6 @@ const command = (action) =>
 
 export const suspend = command('suspend');
 export const reinstate = command('reinstate');
+
+/** CP21: mark a payout destination version failed (preview → apply; recent sign-in). */
+export const failDestination = runAction(failPayoutDestination);

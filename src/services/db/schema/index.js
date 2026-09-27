@@ -1165,6 +1165,53 @@ export const inventoryReservation = pgTable('inventory_reservation', {
  * threshold, and retrofitting deduction + certificates + quarterly returns
  * onto a live payout pipeline is genuinely painful. Confirm rates with a CA.
  */
+/**
+ * CP21: versioned payout destinations. Versions are append-only; only state
+ * moves. Rentra never stores a full bank account number — a provider-backed
+ * verification must collect it into the provider's vault. "verified" is
+ * reachable only with provider evidence; a name or last-four comparison is not
+ * verification.
+ */
+export const payoutDestination = pgTable('payout_destination', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  clientId: uuid('client_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  version: integer('version').notNull(),
+  method: varchar('method', { length: 8 }).notNull(),
+  holderName: varchar('holder_name', { length: 160 }).notNull(),
+  accountLast4: varchar('account_last4', { length: 4 }),
+  ifsc: varchar('ifsc', { length: 11 }),
+  upiId: varchar('upi_id', { length: 100 }),
+  nameCheck: varchar('name_check', { length: 12 }).notNull(),
+  state: varchar('state', { length: 12 }).notNull().default('draft'),
+  source: varchar('source', { length: 16 }).notNull(),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  decidedBy: uuid('decided_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  failureReason: text('failure_reason'),
+  verificationProvider: varchar('verification_provider', { length: 32 }),
+  verificationReference: varchar('verification_reference', { length: 160 }),
+  verificationEvidenceHash: varchar('verification_evidence_hash', { length: 64 }),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  requestKey: uuid('request_key'),
+  requestHash: varchar('request_hash', { length: 64 }),
+}, t => [uniqueIndex('payout_destination_version_idx').on(t.clientId, t.version),
+  uniqueIndex('payout_destination_request_idx').on(t.clientId, t.requestKey).where(sql`${t.requestKey} IS NOT NULL`),
+  uniqueIndex('payout_destination_draft_idx').on(t.clientId).where(sql`${t.state} = 'draft'`),
+  uniqueIndex('payout_destination_current_idx').on(t.clientId).where(sql`${t.state} IN ('submitted','verified')`),
+  check('payout_destination_valid_chk', sql`${t.version} >= 1 AND length(trim(${t.holderName})) BETWEEN 3 AND 160
+    AND ${t.nameCheck} IN ('same','different','unknown') AND ${t.source} IN ('onboarding','settings','migration')
+    AND ${t.state} IN ('draft','submitted','verified','failed','superseded')
+    AND ((${t.method}='bank' AND ${t.accountLast4} ~ '^[0-9]{4}$' AND ${t.ifsc} ~ '^[A-Z]{4}0[A-Z0-9]{6}$' AND ${t.upiId} IS NULL)
+      OR (${t.method}='upi' AND ${t.upiId} ~ '^[a-z0-9._-]{2,64}@[a-z][a-z0-9.-]{1,32}$' AND ${t.accountLast4} IS NULL AND ${t.ifsc} IS NULL))
+    AND ((${t.state}='draft') = (${t.submittedAt} IS NULL))
+    AND (${t.state}<>'failed' OR (${t.decidedAt} IS NOT NULL AND length(trim(${t.failureReason})) BETWEEN 10 AND 500))
+    AND (${t.state}<>'verified' OR (${t.verificationProvider} IS NOT NULL AND ${t.verificationReference} IS NOT NULL
+      AND ${t.verificationEvidenceHash} ~ '^[a-f0-9]{64}$' AND ${t.verifiedAt} IS NOT NULL))
+    AND ((${t.requestKey} IS NULL) = (${t.requestHash} IS NULL))
+    AND (${t.requestHash} IS NULL OR ${t.requestHash} ~ '^[a-f0-9]{64}$')`)]);
+
 export const payout = pgTable(
   'payout',
   {
@@ -1179,6 +1226,8 @@ export const payout = pgTable(
     gstTcs: integer('gst_tcs').notNull().default(0),
     net: integer('net').notNull(),
     status: payoutStatus('status').notNull().default('pending'),
+    /** CP21: the destination version this obligation is pinned to; never redirected. */
+    destinationId: uuid('destination_id').references(() => payoutDestination.id, { onDelete: 'restrict' }),
     utr: varchar('utr', { length: 64 }),
     settledAt: timestamp('settled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

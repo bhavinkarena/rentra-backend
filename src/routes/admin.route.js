@@ -128,6 +128,12 @@ router.post('/applications/reject', formFields(), admin.reject);
  * ---------------------------------------------------------------- */
 router.get('/clients', validate({ query: clientListQuery }), clients.list);
 router.get('/clients/:id', validate({ params: clientIdParam }), clients.detail);
+router.post(
+  '/clients/:id/payout-destinations/fail',
+  validate({ params: clientIdParam }),
+  formFields(),
+  clients.failDestination,
+);
 router.get(
   '/clients/:id/lifecycle-preview',
   validate({ params: clientIdParam, query: lifecyclePreviewQuery }),

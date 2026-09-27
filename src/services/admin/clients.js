@@ -3,6 +3,7 @@ import 'server-only';
 import { z } from 'zod';
 import { revalidateListing } from '@/services/cache/listing-cache.js';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
+import { adminClientDestinations } from '@/services/payouts/destinations.js';
 
 /**
  * Admin client directory and account lifecycle (CP03).
@@ -205,8 +206,10 @@ export async function readClient(database, clientId) {
        OR (l.entity='client_application' AND l.entity_id=${application?.id ?? ''})
     ORDER BY l.at DESC LIMIT 50`;
   const lifecycleAction = client.account_status === 'suspended' ? 'reinstate' : 'suspend';
+  const payoutDestinations = await adminClientDestinations(database, client.id);
 
   return {
+    payoutDestinations,
     client: {
       id: client.id,
       name: client.name,

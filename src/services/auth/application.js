@@ -13,6 +13,8 @@ import {
 import { getCurrentUser } from './dal';
 import { profileCompletion } from './profile';
 import { listDocuments } from './documents';
+import { recordOnboardingDestination } from '../payouts/destinations.js';
+import { sql as database } from '@/services/db';
 
 /**
  * Gate 1 — the onboarding application, one Server Action per step.
@@ -166,6 +168,10 @@ export async function savePayout(_prev, formData) {
     actorType: 'client', actorId: user.id, entity: 'client_application',
     entityId: app.id, action: 'payout_saved',
     after: { method: d.method, nameMatch }, ip: await clientIp(),
+  });
+  // CP21: the onboarding destination is also version-recorded (submitted, unverified).
+  await recordOnboardingDestination(database, user.id, {
+    method: d.method, upiId: d.upiId, accountNumber: d.accountNumber, ifsc: d.ifsc, holderName: d.holderName,
   });
 
   redirect('/partner');
