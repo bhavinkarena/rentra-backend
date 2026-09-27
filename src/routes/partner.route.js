@@ -1,3 +1,4 @@
+import * as finance from '@/controllers/finance.controller.js';
 import * as support from '@/controllers/support.controller.js';
 import { supportListQuery } from '@/validations/support.validation.js';
 import { Router } from 'express';
@@ -271,4 +272,14 @@ router.post(
   support.replyAsOwner,
 );
 router.get('/support/:id/attachments/:attachmentId', requireActiveClient, support.attachment);
+router.use('/finance', (_req, res, next) => {
+  res.set('Cache-Control', 'private, no-store');
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  next();
+});
+router.get('/finance/statement.csv', requireActiveClient, finance.csv);
+router.get('/finance/allocations/:id', requireActiveClient, finance.allocation);
+router.get('/finance/payouts/:id', requireActiveClient, finance.payout);
+router.get('/finance/payouts', requireActiveClient, finance.payouts);
+router.get('/finance', requireActiveClient, finance.statement);
 export default router;

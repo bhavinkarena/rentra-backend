@@ -1,3 +1,4 @@
+import * as finance from '@/controllers/finance.controller.js';
 import { Router } from 'express';
 import * as admin from '@/controllers/admin.controller.js';
 import * as clients from '@/controllers/clients.controller.js';
@@ -274,4 +275,9 @@ router.post(
   },
   support.manage,
 );
+router.get('/payments/finance/statement.csv', finance.csv);
+router.get('/payments/finance/allocations/:id', finance.allocation);
+router.get('/payments/finance/payouts/:id', finance.payout);
+router.get('/payments/finance/payouts', finance.payouts);
+router.get('/payments/finance', finance.statement);
 export default router;
