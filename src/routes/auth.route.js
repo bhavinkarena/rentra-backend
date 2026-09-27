@@ -35,6 +35,7 @@ router.post('/logout', auth.signOut);
 
 /** Public: returns `{ user: null }` rather than 401 when signed out. */
 router.get('/me', attachUser, auth.me);
+router.get('/identity', attachUser, auth.identity);
 
 router.post('/locked-cta', auth.lockedCta);
 

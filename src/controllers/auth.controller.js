@@ -51,3 +51,17 @@ export const me = asyncHandler(async (req, res) => {
 export const lockedCta = asyncHandler(async (req, res) =>
   ok(res, await recordLockedCtaClick(Number(req.body?.count ?? 1))),
 );
+
+/** Same live DAL checks as /me, without onboarding/document reads. */
+export const identity = asyncHandler(async (req, res) => {
+  const actor = req.user ?? null;
+  return ok(res, {
+    user: actor
+      ? {
+          role: actor.role,
+          accountStatus: actor.accountStatus,
+          cacheScope: portalCacheScope(actor, req.session),
+        }
+      : null,
+  });
+});
