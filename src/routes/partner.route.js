@@ -248,6 +248,7 @@ router.post('/records/cases/update', requireActiveClient, formFields(), records.
 /* ---------------------------------------------------------------- *
  * Reviews on the owner's places
  * ---------------------------------------------------------------- */
+router.get('/reviews/:reviewId', requireActiveClient, reviews.operationalDetail);
 router.get('/reviews', requireActiveClient, reviews.queue);
 router.post('/reviews/reply', requireActiveClient, formFields(), reviews.reply);
 router.post('/reviews/report', requireActiveClient, formFields(), reviews.reportByOwner);

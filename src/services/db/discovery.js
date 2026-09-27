@@ -42,7 +42,7 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
   const cards = [];
   while (true) {
     const rows = await database`
-      SELECT r.id,r.slug,r.public_code,r.title,r.capacity,r.bedrooms,r.highlight,r.photos,r.created_at,
+      SELECT r.id,r.slug,r.public_code,r.title,r.capacity,r.bedrooms,r.highlight,r.photos,r.created_at,r.rating_avg,r.review_count,
         (r.verified_at IS NOT NULL AND EXISTS (SELECT 1 FROM verification_visit vv WHERE vv.rentable_id=r.id AND vv.mode='physical' AND vv.outcome='passed' AND vv.completed_at IS NOT NULL)) AS physically_verified,
         a.name AS area_name,c.name AS city_name,p.weekday,p.weekend
       FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id
@@ -77,7 +77,7 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
           title: row.title, area: `${row.area_name}, ${row.city_name}`, capacity: row.capacity, bedrooms: row.bedrooms,
           highlight: row.highlight, price, priceMinor: totals?.totalMinor ?? null, isFromPrice: !totals, unit: totals ? `${filters.dates.length} visit${filters.dates.length === 1 ? '' : 's'}` : filters.slot.replace('_', ' '),
           priceNote: totals ? `Includes platform fee. Refundable deposit ₹${(totals.depositMinor / 100).toLocaleString('en-IN')} separate. Availability can change.` : 'Base rent; guest charges, platform fee and refundable deposit extra. Select dates for a total.',
-          rating: null, reviewCount: 0, badge: row.physically_verified ? 'verified' : null, photo: photos[0] ?? null, photoCount: photos.length,
+          rating: row.rating_avg == null ? null : Number(row.rating_avg), reviewCount: Number(row.review_count), badge: row.physically_verified ? 'verified' : null, photo: photos[0] ?? null, photoCount: photos.length,
           createdAt: new Date(row.created_at).toISOString() };
       }));
       cards.push(...batch.filter(Boolean));

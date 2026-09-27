@@ -7,7 +7,12 @@ import {
   ownerReviewReport,
   resolveReviewReport,
 } from '@/services/reviews/actions.js';
-import { reviewOrder, reviewQueue, publicReview } from '@/services/reviews/service.js';
+import {
+  reviewOrder,
+  reviewQueue,
+  publicReview,
+  reviewDetail,
+} from '@/services/reviews/service.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import { recordKindFromBaseUrl } from '@/services/booking/record-scope.js';
 import { getSession } from '@/services/auth/dal.js';
@@ -41,3 +46,14 @@ export const reply = runAction(ownerReviewReply);
 export const reportByCustomer = runAction(customerReviewReport);
 export const reportByOwner = runAction(ownerReviewReport);
 export const resolveReport = runAction(resolveReviewReport);
+
+export const operationalDetail = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await reviewDetail(
+      sql,
+      await bookingActor(recordKindFromBaseUrl(req.baseUrl)),
+      req.params.reviewId,
+    ),
+  ),
+);
