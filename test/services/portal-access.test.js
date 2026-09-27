@@ -179,3 +179,27 @@ test('caretakers get only the two assigned-visit capabilities; team admin stays 
     'owner team permission is not platform administration',
   );
 });
+
+test('refund operations need admin.payments; records-only operators cannot request or send refunds', () => {
+  const reader = { isActive: true, permissions: ['admin.payments.read'] };
+  const records = { isActive: true, permissions: ['admin.records.read', 'admin.records.write'] };
+  assert.equal(canAccessRoute(reader, 'admin', 'GET', '/payments/refunds'), true);
+  for (const path of [
+    '/payments/refunds/preview',
+    '/payments/refunds/request',
+    '/payments/refunds/reconcile',
+  ]) {
+    assert.equal(canAccessRoute(reader, 'admin', 'POST', path), false);
+    assert.equal(canAccessRoute(records, 'admin', 'POST', path), false);
+    assert.equal(
+      canAccessRoute(
+        { isActive: true, permissions: ['admin.payments.write'] },
+        'admin',
+        'POST',
+        path,
+      ),
+      true,
+    );
+  }
+  assert.equal(canAccessRoute(records, 'admin', 'GET', '/payments/refunds'), false);
+});

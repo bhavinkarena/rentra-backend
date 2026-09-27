@@ -9,6 +9,14 @@ import {
   adminPaymentList,
   reconcileAdminPayment,
 } from '@/services/payments/investigation-actions.js';
+import {
+  adminRefundDetail,
+  adminRefundList,
+  adminRefundableVisits,
+  previewAdminRefund,
+  reconcileAdminRefund,
+  requestAdminRefund,
+} from '@/services/payments/refund-actions.js';
 import { notFound } from '@/utils/apiError.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -49,3 +57,19 @@ export const order = asyncHandler(async (req, res) => {
   return ok(res, found);
 });
 export const reconcile = runAction(reconcileAdminPayment);
+
+/** CP20: refund operations queue, detail and guarded commands. */
+export const refunds = asyncHandler(async (req, res) => ok(res, await adminRefundList(req.query)));
+export const refundDetail = asyncHandler(async (req, res) => {
+  const found = await adminRefundDetail(req.params.id);
+  if (!found) throw notFound('REFUND_NOT_FOUND', 'Not found.');
+  return ok(res, found);
+});
+export const refundableVisits = asyncHandler(async (req, res) => {
+  const found = await adminRefundableVisits(req.params.id);
+  if (!found) throw notFound('ORDER_NOT_FOUND', 'Not found.');
+  return ok(res, found);
+});
+export const refundPreview = runAction(previewAdminRefund);
+export const refundRequest = runAction(requestAdminRefund);
+export const refundReconcile = runAction(reconcileAdminRefund);

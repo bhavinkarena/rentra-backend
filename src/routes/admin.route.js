@@ -192,6 +192,17 @@ router.post('/payments/configuration', formFields(), payments.saveConfiguration)
 router.get('/payments/orders', payments.orders);
 router.get('/payments/orders/:id', validate({ params: recordIdParam }), payments.order);
 router.post('/payments/orders/reconcile', formFields(), payments.reconcile);
+// CP20: refund operations (admin.payments.*). Commands are previewed, request-keyed and audited.
+router.get('/payments/refunds', payments.refunds);
+router.post('/payments/refunds/preview', formFields(), payments.refundPreview);
+router.post('/payments/refunds/request', formFields(), payments.refundRequest);
+router.post('/payments/refunds/reconcile', formFields(), payments.refundReconcile);
+router.get(
+  '/payments/refunds/order/:id',
+  validate({ params: recordIdParam }),
+  payments.refundableVisits,
+);
+router.get('/payments/refunds/:id', validate({ params: recordIdParam }), payments.refundDetail);
 
 /* ---------------------------------------------------------------- *
  * Bookings, reviews, support, notifications — the admin view of each

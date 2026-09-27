@@ -32,6 +32,30 @@ export function fileBackedRazorpay(path) {
       reply = {
         items: Object.values(state.payments).filter((p) => p.order_id === route.split('/')[1]),
       };
+    } else if (/^payments\/[^/]+\/refund$/.test(route) && body) {
+      // CP20: a refund POST. The provider stores it even when the gate drops the response.
+      const refund = {
+        id: `rfnd_FAKE${++state.counter}`,
+        payment_id: route.split('/')[1],
+        amount: body.amount,
+        currency: 'INR',
+        receipt: body.receipt,
+        status: 'pending',
+      };
+      state.refunds = { ...(state.refunds ?? {}), [refund.id]: refund };
+      state.refundPosts = [...(state.refundPosts ?? []), body.receipt];
+      const drop = (state.dropRefundResponses ?? 0) > 0;
+      if (drop) state.dropRefundResponses -= 1;
+      writeFileSync(path, JSON.stringify(state));
+      reply = drop ? null : refund;
+    } else if (/^payments\/[^/]+\/refunds$/.test(route)) {
+      reply = {
+        items: Object.values(state.refunds ?? {}).filter(
+          (r) => r.payment_id === route.split('/')[1],
+        ),
+      };
+    } else if (route.startsWith('refunds/')) {
+      reply = state.refunds?.[route.split('/')[1]] ?? null;
     } else if (route.startsWith('payments/')) {
       reply = state.payments[route.split('/')[1]] ?? null;
     }
