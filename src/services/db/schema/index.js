@@ -26,6 +26,34 @@ export const serviceHealth = pgTable('service_health', {
   lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
 }, t => [check('service_health_name_chk', sql`${t.service} IN ('payments','notifications')`)]);
 
+export const operationalIncident = pgTable('operational_incident', {
+  code: varchar('code', { length: 48 }).primaryKey(),
+  status: varchar('status', { length: 16 }).notNull().default('open'),
+  assigneeId: uuid('assignee_id').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  snoozedUntil: timestamp('snoozed_until', { withTimezone: true }),
+  version: integer('version').notNull().default(1),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [check('operational_incident_status_chk', sql`${t.status} IN ('open','acknowledged','escalated','resolved') AND ${t.version}>0`)]);
+
+export const operationalIncidentEvent = pgTable('operational_incident_event', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  code: varchar('code', { length: 48 }).notNull().references(() => operationalIncident.code, { onDelete: 'restrict' }),
+  actorId: uuid('actor_id').notNull().references(() => adminUsers.id, { onDelete: 'restrict' }),
+  requestKey: uuid('request_key').notNull(),
+  payloadHash: varchar('payload_hash', { length: 64 }).notNull(),
+  action: varchar('action', { length: 16 }).notNull(),
+  note: text('note').notNull(),
+  details: jsonb('details').notNull().default({}),
+  signalCount: integer('signal_count').notNull(),
+  sampledAt: timestamp('sampled_at', { withTimezone: true }).notNull(),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  index('operational_incident_event_code_idx').on(t.code, t.at),
+  uniqueIndex('operational_incident_event_request_key_idx').on(t.requestKey),
+  check('operational_incident_event_chk', sql`${t.action} IN ('open','reopen','assign','note','acknowledge','snooze','escalate','resolve') AND char_length(${t.note}) BETWEEN 8 AND 2000 AND ${t.signalCount}>=0 AND ${t.payloadHash} ~ '^[a-f0-9]{64}$' AND jsonb_typeof(${t.details})='object'`),
+]);
+
 /**
  * Money in the customer booking tables is stored in integer MINOR UNITS
  * (paise) on columns whose names end in `Minor`. The legacy whole-rupee

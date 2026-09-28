@@ -22,6 +22,7 @@ import { readDocumentFile } from '@/services/auth/document-file.js';
 import { readPrivacyQueue } from '@/services/customer/privacy-admin.js';
 import { startPrivacyReview } from '@/services/customer/privacy-actions.js';
 import { readOperations } from '@/services/operations/overview.js';
+import { readIncident, commandIncident } from '@/services/operations/incidents.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -116,4 +117,12 @@ export const operations = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'private, no-store');
   res.set('X-Robots-Tag', 'noindex, nofollow');
   return ok(res, await readOperations(sql, req.admin.id));
+});
+export const incident = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  return ok(res, await readIncident(sql, req.admin.id, req.params.code));
+});
+export const incidentCommand = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  return ok(res, await commandIncident(sql, req.admin.id, { ...req.body, code: req.params.code }));
 });

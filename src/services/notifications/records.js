@@ -39,6 +39,21 @@ export async function notificationMonitor(database, adminId, page = 1) {
     return { counts, rows, page: selected, hasNext: counts.reduce((n, r) => n + r.count, 0) > selected * 30 };
   });
 }
+export async function notificationDetail(database, adminId, id) {
+  z.string().uuid().parse(id);
+  return database.begin(async tx => {
+    await admin(tx, adminId);
+    const [row] = await tx`SELECT n.id,n.order_id,n.booking_id,n.event_key,n.template,n.channel,n.state,
+      n.attempts,n.failure_code,n.provider_id,n.scheduled_at,n.next_attempt_at,n.delivered_at,
+      n.created_at,n.recipient,o.reference FROM notification_outbox n
+      JOIN booking_order o ON o.id=n.order_id WHERE n.id=${id}`;
+    if (!row) throw new Error('Notification not found.');
+    const history = await tx`SELECT action,at FROM audit_log WHERE entity='notification_outbox'
+      AND entity_id=${id} ORDER BY at DESC LIMIT 25`;
+    return { ...row, recipient: row.recipient ? `••••${row.recipient.slice(-4)}` : null,
+      templateVersion: null, history };
+  });
+}
 export async function retryNotification(database, adminId, id) {
   z.string().uuid().parse(id);
   return database.begin(async tx => {

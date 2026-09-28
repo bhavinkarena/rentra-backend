@@ -44,7 +44,11 @@ export const configuration = asyncHandler(async (_req, res) => {
     ...paymentCredentialStatus(id, 'test'),
   }));
 
-  return ok(res, { configuration: await getPaymentConfiguration(sql), providers });
+  const history =
+    await sql`SELECT g.version,g.provider,g.environment,g.enabled,g.collection_purpose,
+    g.created_at,a.name changed_by_name FROM payment_gateway_config g
+    JOIN admin_user a ON a.id=g.changed_by ORDER BY g.version DESC LIMIT 20`;
+  return ok(res, { configuration: await getPaymentConfiguration(sql), providers, history });
 });
 
 export const saveConfiguration = runAction(savePaymentGatewaySettings);

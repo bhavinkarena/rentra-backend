@@ -273,6 +273,7 @@ router.post(
 );
 
 router.get('/notifications', notifications.monitor);
+router.get('/notifications/:id', notifications.detail);
 router.post('/notifications/manage', formFields(), notifications.manage);
 
 /* ---------------------------------------------------------------- *
@@ -295,6 +296,8 @@ router.post('/audit/exports/:id/retry', formFields(), auditBrowser.retry);
 router.get('/audit/exports/:id/download', auditBrowser.download);
 router.get('/audit/exports/:id/receipt', auditBrowser.receipt);
 router.get('/operations', admin.operations);
+router.get('/operations/incidents/:code', admin.incident);
+router.post('/operations/incidents/:code', formFields(), admin.incidentCommand);
 
 router.get('/support/:id/attachments/:attachmentId', support.attachment);
 router.post(

@@ -1,6 +1,10 @@
 import { sql } from '@/config/database.js';
 import { readNotification, manageNotification } from '@/services/notifications/actions.js';
-import { customerNotifications, notificationMonitor } from '@/services/notifications/records.js';
+import {
+  customerNotifications,
+  notificationMonitor,
+  notificationDetail,
+} from '@/services/notifications/records.js';
 import { getSession } from '@/services/auth/dal.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
@@ -20,5 +24,9 @@ export const markRead = runAction(readNotification, { style: 'form' });
 export const monitor = asyncHandler(async (req, res) =>
   ok(res, await notificationMonitor(sql, req.admin.id, Number(req.query.page ?? 1))),
 );
+export const detail = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  return ok(res, await notificationDetail(sql, req.admin.id, req.params.id));
+});
 
 export const manage = runAction(manageNotification);
