@@ -1,3 +1,4 @@
+import { currentPolicyReferences } from '../content/service.js';
 import 'server-only';
 import { createHash } from 'node:crypto';
 import { bookingSelectionSchema, localDateSchema } from '../schemas/zod/booking.js';
@@ -30,7 +31,7 @@ function listingConfiguration(listing) {
 }
 
 /** The same immutable inputs drive a persisted quote and each calendar price. */
-export function prepareQuote(selection, listing, rates, overrides, payment, now) {
+export function prepareQuote(selection, listing, rates, overrides, payment, now, publications) {
   if (listing.status !== 'live' || listing.total_units !== 1) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   const config = listingConfiguration(listing);
   const schedule = config.slots[selection.slot];
@@ -49,6 +50,7 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now)
     overridesByDate: byDate,
   });
   const policy = {
+    ...(publications ? {publications} : {}),
     version: BOOKING_POLICY.version, listingConfigVersion: listing.booking_config_version,
     cancellationTier: listing.cancellation_tier, houseRules: listing.house_rules,
     cancellation: { bands: CANCELLATION_TIERS[listing.cancellation_tier].bands.map(band=>[...band]), noShow: CANCELLATION_TIERS[listing.cancellation_tier].noShow, feeOnFullRefund: listing.cancellation_tier === 'flexible' },
@@ -86,12 +88,12 @@ async function currentInputs(tx, listing, selection, variables) {
   const legacy = await tx`SELECT day::text AS day,slot,price_override FROM availability WHERE rentable_id=${listing.id} AND day BETWEEN ${first} AND ${last} AND price_override IS NOT NULL ORDER BY day,slot`;
   const explicit = await tx`SELECT day::text AS day,slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} AND day BETWEEN ${first} AND ${last} ORDER BY day,slot`;
   const payment = await getPaymentConfiguration(tx, variables);
-  return { now: clock.now, rates, overrides: [...legacy, ...explicit], payment };
+  return { now: clock.now, rates, overrides: [...legacy, ...explicit], payment, publications: await currentPolicyReferences(tx) };
 }
 
 async function checkedQuote(tx, listing, selection, variables) {
   const inputs = await currentInputs(tx, listing, selection, variables);
-  const quote = prepareQuote(selection, listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now);
+  const quote = prepareQuote(selection, listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now, inputs.publications);
   const conflicts = await findInventoryConflicts(tx, listing, quote.visits);
   if (conflicts.length) throw new BookingQuoteError('AVAILABILITY_CONFLICT', 'Some visit dates are unavailable. Your selection has been preserved.', conflicts);
   return { ...quote, createdAt: new Date(inputs.now).toISOString(), expiresAt: new Date(new Date(inputs.now).getTime() + BOOKING_POLICY.quoteMinutes * 60_000).toISOString() };
@@ -141,7 +143,7 @@ export async function revalidateHeldQuoteTerms(tx, listing, order, variables = p
   if (!saved) throw new BookingQuoteError('QUOTE_NOT_FOUND', 'Request a fresh quote.');
   const inputs = await currentInputs(tx, listing, bookingSelectionSchema.parse(saved.selection), variables);
   if (new Date(saved.expires_at) <= new Date(inputs.now)) throw new BookingQuoteError('QUOTE_EXPIRED', 'Request and accept a fresh quote.');
-  const quote = prepareQuote(bookingSelectionSchema.parse(saved.selection), listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now);
+  const quote = prepareQuote(bookingSelectionSchema.parse(saved.selection), listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now, order.policy_snapshot?.publications);
   if (quote.hash !== order.quote_hash || saved.version !== order.quote_version) throw new BookingQuoteError('QUOTE_CHANGED', 'Review the changed terms.');
   return quote;
 }

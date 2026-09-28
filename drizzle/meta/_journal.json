@@ -253,6 +253,13 @@
       "when": 1790577726668,
       "tag": "0035_catalogue_operations",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1790580608548,
+      "tag": "0036_content_publication",
+      "breakpoints": true
     }
   ]
 }

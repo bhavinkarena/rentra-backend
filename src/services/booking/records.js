@@ -139,7 +139,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     return { ...orderDTO(order), ...(relationships ? {relationships} : {}), visits, arrival, cases,
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
-      policy: { version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,
+      policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,
         houseRules: Array.isArray(order.policy_snapshot?.houseRules) ? order.policy_snapshot.houseRules.filter(x => typeof x === 'string') : [] },
       events: events.map(row => ({ kind: /^cancel_[a-f0-9]{32}$/.test(row.kind) ? 'visits_cancelled' : /^refund_[a-f0-9]{32}$/.test(row.kind) ? 'test_refund_processed'
         : /^visit_[a-f0-9]{32}$/.test(row.kind) ? (['handover','return','complete'].includes(row.phase) ? `visit_${row.phase}_recorded` : 'visit_evidence_recorded') : row.kind, at: instant(row.created_at) })),

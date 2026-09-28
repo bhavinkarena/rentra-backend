@@ -1942,3 +1942,34 @@ export const disputeMessage = pgTable('dispute_message',{
 export const disputeAttachment = pgTable('dispute_attachment',{
   id:uuid('id').primaryKey().defaultRandom(),messageId:uuid('message_id').notNull().references(()=>disputeMessage.id,{onDelete:'restrict'}),storageKey:text('storage_key').notNull(),mimeType:varchar('mime_type',{length:32}).notNull(),bytes:integer('bytes').notNull(),sha256:varchar('sha256',{length:64}).notNull(),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
 },t=>[uniqueIndex('dispute_attachment_hash_idx').on(t.messageId,t.sha256),check('dispute_attachment_valid_chk',sql`${t.mimeType} IN ('image/jpeg','image/png','image/webp') AND ${t.bytes} BETWEEN 1 AND 2097152 AND ${t.sha256} ~ '^[a-f0-9]{64}$'`)]);
+
+/** CP25: editable working copies; published documents are append-only. */
+export const contentDraft = pgTable('content_draft', {
+  kind: varchar('kind', { length: 20 }).primaryKey(),
+  version: integer('version').notNull().default(1),
+  body: jsonb('body').notNull(),
+  state: varchar('state', { length: 16 }).notNull().default('draft'),
+  updatedBy: uuid('updated_by').notNull().references(() => adminUsers.id, { onDelete: 'restrict' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  basedOnVersion: varchar('based_on_version', { length: 32 }),
+}, t => [check('content_draft_kind_chk', sql`${t.kind} IN ('terms','privacy','cancellation','help','contact')`),
+  check('content_draft_state_chk', sql`${t.state} IN ('draft','reviewed','published') AND ${t.version}>0`)]);
+
+export const contentPublication = pgTable('content_publication', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  kind: varchar('kind', { length: 20 }).notNull(),
+  version: varchar('version', { length: 32 }).notNull(),
+  body: jsonb('body').notNull(),
+  contentHash: varchar('content_hash', { length: 64 }).notNull(),
+  publishedBy: uuid('published_by').notNull().references(() => adminUsers.id, { onDelete: 'restrict' }),
+  isBaseline: boolean('is_baseline').notNull().default(false),
+  reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  reason: text('reason').notNull(),
+  basedOnVersion: varchar('based_on_version', { length: 32 }),
+  effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [uniqueIndex('content_publication_version_idx').on(t.kind,t.version),
+  index('content_publication_current_idx').on(t.kind,t.effectiveAt),
+  check('content_publication_review_chk', sql`(${t.isBaseline}=false AND ${t.reviewedBy} IS NOT NULL) OR (${t.isBaseline}=true AND ${t.kind}='contact' AND ${t.version}='2026-09-21')`),
+  check('content_publication_kind_chk', sql`${t.kind} IN ('terms','privacy','cancellation','help','contact')`)]);

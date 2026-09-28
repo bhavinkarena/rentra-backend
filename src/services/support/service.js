@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { lockCustomerAccount } from '../auth/customer-access.js';
 import { quoteDigest } from '../booking/quotes.js';
-import { POLICY_VERSION } from '../domain/help.js';
+import { publicContent } from '../content/service.js';
 import { preparePhotos } from '../booking/visit-evidence.js';
 import { evidenceStore } from '../uploads/evidence-store.js';
 
@@ -142,10 +142,11 @@ export async function createSupportRequest(database, actor, input, env = process
     const [{ count }] =
       await tx`SELECT count(*)::int count FROM support_request WHERE ${scope(tx, actor, actorId)} AND created_at>clock_timestamp()-interval '1 day'`;
     if (count >= 5) throw new SupportError('RATE_LIMIT', 'Please try again tomorrow.', 429);
+    const termsVersion = (await publicContent(tx,'terms')).version;
     const id = randomUUID(),
       reference = 'SUP-' + id.replaceAll('-', '').slice(0, 16).toUpperCase();
     await tx`INSERT INTO support_request(id,reference,customer_id,client_id,property_id,order_id,privacy_request_id,category,subject,context,policy_version,request_key,request_hash)
-      VALUES(${id},${reference},${actor.kind === 'customer' ? actorId : null},${actor.kind === 'owner' ? actorId : null},${value.propertyId},${value.orderId},${value.privacyRequestId},${value.category},${value.subject},${JSON.stringify(context)}::text::jsonb,${POLICY_VERSION},${value.requestKey},${hash})`;
+      VALUES(${id},${reference},${actor.kind === 'customer' ? actorId : null},${actor.kind === 'owner' ? actorId : null},${value.propertyId},${value.orderId},${value.privacyRequestId},${value.category},${value.subject},${JSON.stringify(context)}::text::jsonb,${termsVersion},${value.requestKey},${hash})`;
     await tx`INSERT INTO support_message(request_id,actor_kind,actor_id,body,state_after,request_key,request_hash) VALUES(${id},${actor.kind},${actorId},${value.body},'open',${value.requestKey},${hash})`;
     return { id };
   });

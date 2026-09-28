@@ -1,3 +1,4 @@
+import { published } from '@/controllers/content.controller.js';
 import { Router } from 'express';
 import * as discovery from '@/controllers/discovery.controller.js';
 import { validate } from '@/middlewares/validate.middleware.js';
@@ -20,6 +21,7 @@ import { z } from 'zod';
  */
 const router = Router();
 
+router.get('/content/:kind/:version?', published);
 router.get('/listings', validate({ query: liveListingsQuery }), discovery.listings);
 router.get('/listings/nearby', validate({ query: nearbyQuery }), discovery.nearby);
 router.get('/search', validate({ query: searchQuery }), discovery.search);

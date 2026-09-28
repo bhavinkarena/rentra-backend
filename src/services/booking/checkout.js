@@ -84,7 +84,7 @@ export async function createCheckoutHold(database, session, input, env = process
       VALUES(${paymentId},${orderId},'razorpay','test','real','INR',${quote.payment.collectionPurpose},${quote.payment.expectedMinor},${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
     await tx`INSERT INTO payment_execution(payment_order_id,config_version,credential_key_id,snapshot)
       VALUES(${paymentId},${quote.payment.version},${credentials.keyId},${JSON.stringify(quote.payment)}::text::jsonb)`;
-    await lifecycle(tx, orderId, 'held', { environment: 'test', actualCollectedMinor: 0 });
+    await lifecycle(tx, orderId, 'held', { environment: 'test', actualCollectedMinor: 0, acceptedPublicPolicies: quote.policy.publications, accepted: true });
     return checkoutStatus(tx, orderId);
   });
 }

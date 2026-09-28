@@ -1,3 +1,4 @@
+import * as content from '@/controllers/content.controller.js';
 import * as catalogues from '@/controllers/catalogues.controller.js';
 import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
@@ -55,6 +56,10 @@ router.use((_req, res, next) => {
   res.set('X-Robots-Tag', 'noindex, nofollow');
   next();
 });
+
+router.get('/content', content.list);
+router.get('/content/:kind', content.detail);
+router.post('/content/:kind', content.command);
 
 router.get('/catalogues/:type', catalogues.list);
 router.get('/catalogues/:type/:id', catalogues.detail);
