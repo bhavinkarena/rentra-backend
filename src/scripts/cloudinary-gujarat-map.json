@@ -1,0 +1,56 @@
+{
+  "pools": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603623/seed/gujarat/gujarat_pools_1.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603624/seed/gujarat/gujarat_pools_2.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603625/seed/gujarat/gujarat_pools_3.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603626/seed/gujarat/gujarat_pools_4.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603626/seed/gujarat/gujarat_pools_5.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603627/seed/gujarat/gujarat_pools_6.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603628/seed/gujarat/gujarat_pools_7.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603629/seed/gujarat/gujarat_pools_8.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603629/seed/gujarat/gujarat_pools_9.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603630/seed/gujarat/gujarat_pools_10.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603631/seed/gujarat/gujarat_pools_11.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603632/seed/gujarat/gujarat_pools_12.jpg"
+  ],
+  "villas": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603633/seed/gujarat/gujarat_villas_1.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603633/seed/gujarat/gujarat_villas_2.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603634/seed/gujarat/gujarat_villas_3.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603635/seed/gujarat/gujarat_villas_4.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603636/seed/gujarat/gujarat_villas_5.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603637/seed/gujarat/gujarat_villas_6.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603637/seed/gujarat/gujarat_villas_7.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603638/seed/gujarat/gujarat_villas_8.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603639/seed/gujarat/gujarat_villas_9.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603640/seed/gujarat/gujarat_villas_10.jpg"
+  ],
+  "lawns": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/seed/gujarat/gujarat_lawns_1.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/seed/gujarat/gujarat_lawns_2.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603641/seed/gujarat/gujarat_lawns_3.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603642/seed/gujarat/gujarat_lawns_4.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603643/seed/gujarat/gujarat_lawns_5.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603644/seed/gujarat/gujarat_lawns_6.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603645/seed/gujarat/gujarat_lawns_7.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603645/seed/gujarat/gujarat_lawns_8.jpg"
+  ],
+  "rooms": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603646/seed/gujarat/gujarat_rooms_1.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603647/seed/gujarat/gujarat_rooms_2.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603647/seed/gujarat/gujarat_rooms_3.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603648/seed/gujarat/gujarat_rooms_4.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603649/seed/gujarat/gujarat_rooms_5.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603650/seed/gujarat/gujarat_rooms_6.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603650/seed/gujarat/gujarat_rooms_7.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603651/seed/gujarat/gujarat_rooms_8.jpg"
+  ],
+  "grounds": [
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603652/seed/gujarat/gujarat_grounds_1.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603652/seed/gujarat/gujarat_grounds_2.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603653/seed/gujarat/gujarat_grounds_3.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603654/seed/gujarat/gujarat_grounds_4.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603654/seed/gujarat/gujarat_grounds_5.jpg",
+    "https://res.cloudinary.com/dqmdurkd0/image/upload/v1790603655/seed/gujarat/gujarat_grounds_6.jpg"
+  ]
+}
