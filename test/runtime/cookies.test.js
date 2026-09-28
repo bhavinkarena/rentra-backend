@@ -77,3 +77,42 @@ test('writing a cookie outside a request fails loudly instead of silently', asyn
   const jar = await cookies();
   assert.throws(() => jar.set('x', 'y'), /Cookies can only be written/);
 });
+
+test('configured cookie domain is shared by issuance and logout without relaxing admin SameSite', async () => {
+  const previous = process.env.COOKIE_DOMAIN;
+  process.env.COOKIE_DOMAIN = '.rentra.example';
+  try {
+    const res = fakeRes();
+    await runWithContext({ req: fakeReq(), res }, async () => {
+      const jar = await cookies();
+      jar.set('rentra_admin', 'token', { sameSite: 'strict', secure: true });
+      jar.delete('rentra_admin');
+    });
+    assert.equal(res.set[0].options.domain, '.rentra.example');
+    assert.equal(res.set[0].options.sameSite, 'strict');
+    assert.equal(res.set[0].options.secure, true);
+    assert.equal(res.cleared[0].options.domain, res.set[0].options.domain);
+  } finally {
+    if (previous === undefined) delete process.env.COOKIE_DOMAIN;
+    else process.env.COOKIE_DOMAIN = previous;
+  }
+});
+
+test('explicit cookie domain overrides configuration and object deletion clears the request view', async () => {
+  const previous = process.env.COOKIE_DOMAIN;
+  process.env.COOKIE_DOMAIN = '.rentra.example';
+  try {
+    const res = fakeRes();
+    await runWithContext({ req: fakeReq(), res }, async () => {
+      const jar = await cookies();
+      jar.set('rentra_session', 'token', { domain: 'app.rentra.example' });
+      jar.delete({ name: 'rentra_session', domain: 'app.rentra.example' });
+      assert.equal(jar.get('rentra_session'), undefined);
+    });
+    assert.equal(res.set[0].options.domain, 'app.rentra.example');
+    assert.equal(res.cleared[0].options.domain, 'app.rentra.example');
+  } finally {
+    if (previous === undefined) delete process.env.COOKIE_DOMAIN;
+    else process.env.COOKIE_DOMAIN = previous;
+  }
+});

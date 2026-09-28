@@ -64,9 +64,10 @@ export async function cookies() {
     },
 
     delete(name) {
-      overrides.set(name, null);
+      const cookieName = typeof name === 'object' ? name.name : name;
+      overrides.set(cookieName, null);
       const { path = '/', domain } = typeof name === 'object' ? name : {};
-      requireResponse().clearCookie(typeof name === 'object' ? name.name : name, { path, domain });
+      requireResponse().clearCookie(cookieName, { path, domain: cookieDomain(domain) });
     },
   };
 }
@@ -77,6 +78,7 @@ export async function cookies() {
  * conversion lives here rather than at each call site.
  */
 function toExpressOptions({ maxAge, expires, httpOnly, secure, sameSite, path = '/', domain }) {
+  domain = cookieDomain(domain);
   return {
     ...(maxAge === undefined ? {} : { maxAge: maxAge * 1000 }),
     ...(expires === undefined ? {} : { expires }),
@@ -86,6 +88,13 @@ function toExpressOptions({ maxAge, expires, httpOnly, secure, sameSite, path = 
     sameSite: sameSite ?? 'lax',
     path,
   };
+}
+
+// Shared sibling-domain deployments need the same scope on issue and logout.
+// An explicit per-cookie domain takes precedence; an empty configured value
+// keeps the existing host-only behavior. SameSite remains the role's policy.
+function cookieDomain(domain) {
+  return domain ?? (process.env.COOKIE_DOMAIN?.trim() || undefined);
 }
 
 /** Present for API parity; the service layer does not use it. */
