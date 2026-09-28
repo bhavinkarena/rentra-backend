@@ -50,7 +50,7 @@ export async function adminLogin(_prev, formData) {
    */
   const generic = { errors: { password: 'Those details are not right.' } };
 
-  if (!admin || !admin.isActive) {
+  if (!admin || !admin.isActive || admin.enrollmentHash) {
     await audit({
       actorType: 'system', entity: 'admin_user', entityId: email,
       action: 'admin_login_failed', after: { reason: 'unknown_or_inactive' }, ip,
@@ -100,7 +100,7 @@ export async function adminLogin(_prev, formData) {
     return {
       errors: {
         password: 'This account needs two-factor authentication set up before it '
-          + 'can be used in production. Run the admin seed script to enrol it.',
+          + 'can be used in production. Ask an authorized administrator for an enrollment link.',
       },
     };
   }
@@ -109,6 +109,11 @@ export async function adminLogin(_prev, formData) {
   if (admin.totpSecret) {
     if (!totp) return { errors: { totp: 'Enter your 6-digit authenticator code.' }, needsTotp: true };
     if (!verifyTotp({ secret: admin.totpSecret, token: totp })) {
+      const attempts = admin.failedAttempts + 1;
+      await db.update(adminUsers).set({
+        failedAttempts: attempts,
+        lockedUntil: attempts >= LOCKOUT.maxAttempts ? new Date(Date.now() + LOCKOUT.lockMinutes * 60_000) : null,
+      }).where(eq(adminUsers.id, admin.id));
       await audit({
         actorType: 'system', entity: 'admin_user', entityId: admin.id,
         action: 'admin_login_failed', after: { reason: 'bad_totp' }, ip,

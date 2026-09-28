@@ -1,4 +1,5 @@
 import * as content from '@/controllers/content.controller.js';
+import * as operators from '@/controllers/operators.controller.js';
 import * as catalogues from '@/controllers/catalogues.controller.js';
 import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
@@ -58,6 +59,10 @@ router.use((_req, res, next) => {
 });
 
 router.get('/content', content.list);
+router.get('/security', operators.list);
+router.post('/security', operators.command);
+router.get('/security/:id', operators.detail);
+router.post('/security/:id', operators.command);
 router.get('/content/:kind', content.detail);
 router.post('/content/:kind', content.command);
 
