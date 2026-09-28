@@ -12,6 +12,7 @@ import {
 import { createBookingQuote, revalidateHeldQuoteTerms } from '../../src/services/booking/quotes.js';
 import { createCheckoutHold } from '../../src/services/booking/checkout.js';
 import { openBookingDates } from '../../src/services/booking/owner-settings.js';
+import { withListingInventory } from '../../src/services/booking/inventory.js';
 import { setPaymentGatewayConfiguration } from '../../src/services/payments/gateway-settings.js';
 import { propertyToday, addLocalDays } from '../../src/services/domain/booking-dates.js';
 
@@ -33,6 +34,13 @@ test(
     try {
       const f = await seedReviewFixture(sql),
         booked = await seedConfirmedBooking(sql, f.listing);
+      // This legacy confirmed visit predates reservation-backed inventory. Make
+      // the fixture internally consistent before enabling inventoryReady.
+      const [legacyVisit] = await sql`UPDATE booking SET hours_known=true,
+        blocked_start_at=starts_at,blocked_end_at=ends_at
+        WHERE order_id=${booked.order} RETURNING id,blocked_start_at,blocked_end_at`;
+      await sql`INSERT INTO inventory_reservation(rentable_id,booking_id,source,state,blocked_start_at,blocked_end_at)
+        VALUES(${f.listing},${legacyVisit.id},'booking','committed',${legacyVisit.blocked_start_at},${legacyVisit.blocked_end_at})`;
       const admin = { kind: 'admin', id: f.admin },
         second = { kind: 'admin', id: f.second };
       const legacy = await publicContent(sql, 'terms', '2026-09-20'),
@@ -182,8 +190,7 @@ test(
           .policy_snapshot,
         order.policy_snapshot,
       );
-      await sql.begin(async (tx) => {
-        const [listing] = await tx`SELECT * FROM rentable WHERE id=${f.listing}`;
+      await withListingInventory(sql, f.listing, async (tx, listing) => {
         assert.equal(
           (await revalidateHeldQuoteTerms(tx, listing, order, env)).policy.publications.terms
             .version,
