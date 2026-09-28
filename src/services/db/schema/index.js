@@ -193,6 +193,8 @@ export const users = pgTable(
      * profile edit never makes an admin's reviewed impact preview stale.
      */
     lifecycleVersion: integer('lifecycle_version').notNull().default(1),
+    privacyErasurePending: boolean('privacy_erasure_pending').notNull().default(false),
+    privacyErasedAt: timestamp('privacy_erased_at', { withTimezone: true }),
     preferredLocale: varchar('preferred_locale', { length: 5 }).notNull().default('en'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
 
@@ -299,6 +301,9 @@ export const customerPrivacyRequest = pgTable('customer_privacy_request', {
   customerId: uuid('customer_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
   kind: varchar('kind', { length: 16 }).notNull(),
   state: varchar('state', { length: 16 }).notNull().default('open'),
+  version: integer('version').notNull().default(1),
+  review: jsonb('review'),
+  receipt: jsonb('receipt'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -307,6 +312,21 @@ export const customerPrivacyRequest = pgTable('customer_privacy_request', {
   uniqueIndex('customer_privacy_active_idx').on(t.customerId, t.kind).where(sql`${t.state} <> 'closed'`),
   index('customer_privacy_queue_idx').on(t.state, t.createdAt),
 ]);
+
+export const privacyJob = pgTable('privacy_job', {
+  requestId: uuid('request_id').primaryKey().references(() => customerPrivacyRequest.id, { onDelete: 'restrict' }),
+  state: varchar('state', { length: 16 }).notNull().default('queued'),
+  stage: integer('stage').notNull().default(0),
+  attempts: integer('attempts').notNull().default(0),
+  results: jsonb('results').notNull().default([]),
+  errorCode: varchar('error_code', { length: 64 }),
+  artifactCiphertext: text('artifact_ciphertext'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  photoKey: text('photo_key'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [index('privacy_job_work_idx').on(t.state,t.updatedAt),
+  check('privacy_job_state_chk', sql`${t.state} IN ('queued','running','failed','completed') AND ${t.stage} BETWEEN 0 AND 4 AND ${t.attempts}>=0`)]);
 
 export const documentType = pgEnum('document_type', [
   // Identity — Gate 1
@@ -466,6 +486,7 @@ export const auditLog = pgTable(
     entity: varchar('entity', { length: 64 }).notNull(),
     entityId: varchar('entity_id', { length: 64 }),
     action: varchar('action', { length: 64 }).notNull(),
+    correlationId: uuid('correlation_id'),
     before: jsonb('before'),
     after: jsonb('after'),
     reason: text('reason'),
@@ -515,6 +536,28 @@ export const adminUsers = pgTable('admin_user', {
  * Phase 3. Without it the check-in photo requirement never gets complied with,
  * and the whole dispute process rests on those photos.
  */
+export const adminExportJob = pgTable('admin_export_job', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  creatorId: uuid('creator_id').notNull().references(() => adminUsers.id, { onDelete: 'restrict' }),
+  requestKey: uuid('request_key').notNull(),
+  dataset: varchar('dataset', { length: 32 }).notNull(),
+  scope: jsonb('scope').notNull(),
+  reason: text('reason').notNull(),
+  state: varchar('state', { length: 16 }).notNull().default('queued'),
+  version: integer('version').notNull().default(1),
+  attempts: integer('attempts').notNull().default(0),
+  errorCode: varchar('error_code', { length: 64 }),
+  artifactCiphertext: text('artifact_ciphertext'),
+  receipt: jsonb('receipt'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  uniqueIndex('admin_export_request_idx').on(t.creatorId, t.requestKey),
+  index('admin_export_work_idx').on(t.state, t.updatedAt),
+  check('admin_export_state_chk', sql`${t.state} IN ('queued','failed','completed') AND ${t.version}>0 AND ${t.attempts}>=0 AND ${t.dataset} IN ('audit_events','payment_orders','operation_receipts')`),
+]);
+
 export const clientStaff = pgTable(
   'client_staff',
   {

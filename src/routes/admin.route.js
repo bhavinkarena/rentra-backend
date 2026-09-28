@@ -1,4 +1,6 @@
 import * as content from '@/controllers/content.controller.js';
+import * as privacy from '@/controllers/privacy.controller.js';
+import * as auditBrowser from '@/controllers/audit-browser.controller.js';
 import * as operators from '@/controllers/operators.controller.js';
 import * as catalogues from '@/controllers/catalogues.controller.js';
 import * as disputes from '@/controllers/disputes.controller.js';
@@ -278,7 +280,20 @@ router.post('/notifications/manage', formFields(), notifications.manage);
  * ---------------------------------------------------------------- */
 router.get('/privacy', admin.privacyQueue);
 router.post('/privacy/review', formFields(), admin.startPrivacy);
+router.get('/privacy/requests', privacy.list);
+router.get('/privacy/requests/:id', privacy.detail);
+router.post('/privacy/requests/:id', formFields(), privacy.command);
+router.get('/privacy/requests/:id/export', privacy.adminExport);
+router.get('/privacy/requests/:id/receipt', privacy.adminReceipt);
 
+router.get('/audit/events', auditBrowser.list);
+router.get('/audit/events/:id', auditBrowser.detail);
+router.get('/audit/exports', auditBrowser.jobs);
+router.post('/audit/exports', formFields(), auditBrowser.create);
+router.get('/audit/exports/:id', auditBrowser.job);
+router.post('/audit/exports/:id/retry', formFields(), auditBrowser.retry);
+router.get('/audit/exports/:id/download', auditBrowser.download);
+router.get('/audit/exports/:id/receipt', auditBrowser.receipt);
 router.get('/operations', admin.operations);
 
 router.get('/support/:id/attachments/:attachmentId', support.attachment);

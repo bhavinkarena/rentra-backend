@@ -283,6 +283,7 @@ async function audit(tx, { adminId, customerId, action, before, after, reason: w
 }
 
 function stale(customer, expectedVersion) {
+  if (customer.privacy_erasure_pending || customer.privacy_erased_at) throw conflict('PRIVACY_ACCOUNT_LOCKED', 'This account is governed by its privacy closure job.');
   if (customer.lifecycle_version !== expectedVersion) {
     throw conflict(
       'ACCOUNT_CONFLICT',

@@ -1,4 +1,5 @@
 import * as disputes from '@/controllers/disputes.controller.js';
+import * as privacy from '@/controllers/privacy.controller.js';
 import { Router } from 'express';
 import * as account from '@/controllers/account.controller.js';
 import * as records from '@/controllers/records.controller.js';
@@ -40,6 +41,8 @@ router.post(
 );
 /** DPDP export or erasure. Queued for an admin, never instant. */
 router.post('/account/privacy', customer, formFields(), account.privacyRequest);
+router.get('/account/privacy/:id/export', customer, privacy.customerExport);
+router.get('/account/privacy/:id/receipt', customer, privacy.customerReceipt);
 
 /* ---------------------------------------------------------------- *
  * Bookings

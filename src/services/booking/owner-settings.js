@@ -61,7 +61,7 @@ export async function openBookingDates(database, ownerId, { rentableId, from, to
       FROM generate_series(${from}::date,${to}::date,interval '1 day') d CROSS JOIN unnest(ARRAY['day','night']) s
       ON CONFLICT (rentable_id,day,slot) DO NOTHING RETURNING day`;
     await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"after") VALUES
-      ('client',${ownerId},'rentable',${listing.id},'calendar_dates_added',${JSON.stringify({ from, to, endExclusive: addLocalDays(to, 1) })}::text::jsonb)`;
+      ('client',${ownerId},'rentable',${listing.id},'calendar_dates_added',${JSON.stringify({ from, to, endExclusive: addLocalDays(to, 1), attempted: count * 2, added: result.length, skipped: count * 2 - result.length })}::text::jsonb)`;
     return { added: result.length };
   });
 }

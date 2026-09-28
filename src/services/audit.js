@@ -2,6 +2,8 @@ import 'server-only';
 
 import { db } from '@/services/db';
 import { auditLog } from '@/services/db/schema/index.js';
+import { getContext } from '@/runtime/context.js';
+import { z } from 'zod';
 
 /**
  * Write an audit row. Fire-and-forget by design: an audit failure must never
@@ -30,6 +32,12 @@ export async function audit(e) {
       entity: e.entity,
       entityId: e.entityId ? String(e.entityId) : null,
       action: e.action,
+      correlationId: z
+        .string()
+        .uuid()
+        .safeParse(e.correlationId ?? getContext().requestId).success
+        ? (e.correlationId ?? getContext().requestId)
+        : null,
       before: e.before ?? null,
       after: e.after ?? null,
       reason: e.reason ?? null,

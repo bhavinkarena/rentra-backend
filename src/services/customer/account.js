@@ -15,13 +15,13 @@ export async function readCustomerAccount(database, session, env = process.env) 
   return database.begin(async tx => {
     const user = await lockCustomerAccount(tx, session, env);
     const [profile] = await tx`SELECT marketing_consent,version,photo_public_id FROM customer_profile WHERE user_id=${user.id}`;
-    const requests = await tx`SELECT id,kind,state,created_at FROM customer_privacy_request
-      WHERE customer_id=${user.id} ORDER BY created_at DESC LIMIT 20`;
+    const requests = await tx`SELECT r.id,r.kind,r.state,r.created_at,r.receipt,j.state job_state,j.stage,j.error_code,j.expires_at,j.artifact_ciphertext IS NOT NULL AND j.expires_at>clock_timestamp() export_available FROM customer_privacy_request r LEFT JOIN privacy_job j ON j.request_id=r.id
+      WHERE r.customer_id=${user.id} ORDER BY r.created_at DESC LIMIT 20`;
     return { photoUrl: profilePhotoUrl(profile?.photo_public_id, env), name: user.name ?? '', email: user.email ?? '', phone: user.phone,
       emailVerified: Boolean(user.email_verified_at), preferredLocale: user.preferred_locale,
       marketingConsent: profile?.marketing_consent ?? false, version: profile?.version ?? 0,
       complete: Boolean(profile && user.name?.trim()),
-      requests: requests.map(r => ({ id:r.id,kind:r.kind,state:r.state,createdAt:new Date(r.created_at).toISOString() })) };
+      requests: requests.map(r => ({ id:r.id,kind:r.kind,state:r.state,createdAt:new Date(r.created_at).toISOString(), jobState:r.job_state,stage:r.stage,errorCode:r.error_code,expiresAt:r.expires_at,exportAvailable:Boolean(r.export_available && r.job_state==='completed'),receipt:r.receipt })) };
   });
 }
 
