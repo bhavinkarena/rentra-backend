@@ -170,7 +170,7 @@ export async function createListingFromBasics(_prev, formData) {
     db
       .select({ id: area.id })
       .from(area)
-      .where(and(eq(area.id, d.areaId), eq(area.cityId, d.cityId)))
+      .where(and(eq(area.id, d.areaId), eq(area.cityId, d.cityId), eq(area.isActive, true)))
       .limit(1),
   ]);
 

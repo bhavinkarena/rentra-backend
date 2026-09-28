@@ -562,6 +562,8 @@ export const staffInvitation = pgTable('staff_invitation', {
    ========================================================================== */
 
 export const city = pgTable('city', {
+  version: integer('version').notNull().default(1),
+  sortOrder: integer('sort_order').notNull().default(0),
   id: uuid('id').primaryKey().defaultRandom(),
   slug: varchar('slug', { length: 80 }).notNull().unique(),
   name: varchar('name', { length: 120 }).notNull(),
@@ -588,6 +590,9 @@ export const portalSession = pgTable('portal_session', {
 export const area = pgTable(
   'area',
   {
+    version: integer('version').notNull().default(1),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
     id: uuid('id').primaryKey().defaultRandom(),
     cityId: uuid('city_id').notNull().references(() => city.id, { onDelete: 'cascade' }),
     slug: varchar('slug', { length: 80 }).notNull(),
@@ -601,6 +606,8 @@ export const area = pgTable(
 );
 
 export const category = pgTable('category', {
+  version: integer('version').notNull().default(1),
+  sortOrder: integer('sort_order').notNull().default(0),
   id: uuid('id').primaryKey().defaultRandom(),
   slug: varchar('slug', { length: 80 }).notNull().unique(),
   name: varchar('name', { length: 120 }).notNull(),
@@ -736,6 +743,7 @@ export const rentable = pgTable(
 export const amenity = pgTable(
   'amenity',
   {
+    version: integer('version').notNull().default(1),
     id: uuid('id').primaryKey().defaultRandom(),
     slug: varchar('slug', { length: 60 }).notNull().unique(),
     groupSlug: varchar('group_slug', { length: 40 }).notNull(),

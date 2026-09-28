@@ -1,3 +1,4 @@
+import * as catalogues from '@/controllers/catalogues.controller.js';
 import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
 import { Router } from 'express';
@@ -54,6 +55,10 @@ router.use((_req, res, next) => {
   res.set('X-Robots-Tag', 'noindex, nofollow');
   next();
 });
+
+router.get('/catalogues/:type', catalogues.list);
+router.get('/catalogues/:type/:id', catalogues.detail);
+router.post('/catalogues/:type/:id', catalogues.command);
 
 /* ---------------------------------------------------------------- *
  * Partner approval queue

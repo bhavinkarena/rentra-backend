@@ -7,7 +7,9 @@ export function allowedOrigins(env = process.env) {
     .filter(Boolean);
   if (configured.length) return new Set(configured.map((value) => new URL(value).origin));
   return new Set(
-    env.NODE_ENV === 'production' ? [] : ['http://localhost:3000', 'http://127.0.0.1:3000','https://rentrafarm.vercel.app'],
+    env.NODE_ENV === 'production'
+      ? []
+      : ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://rentrafarm.vercel.app'],
   );
 }
 export function corsOptions(env = process.env) {

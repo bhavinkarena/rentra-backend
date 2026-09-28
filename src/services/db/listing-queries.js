@@ -239,7 +239,7 @@ export async function getCategories() {
     .select({ id: category.id, slug: category.slug, name: category.name })
     .from(category)
     .where(eq(category.isActive, true))
-    .orderBy(asc(category.name));
+    .orderBy(asc(category.sortOrder), asc(category.name));
 }
 
 export async function getCitiesWithAreas() {
@@ -253,8 +253,8 @@ export async function getCitiesWithAreas() {
     })
     .from(city)
     .innerJoin(area, eq(area.cityId, city.id))
-    .where(eq(city.isActive, true))
-    .orderBy(asc(city.name), asc(area.name));
+    .where(and(eq(city.isActive, true), eq(area.isActive, true)))
+    .orderBy(asc(city.sortOrder), asc(city.name), asc(area.sortOrder), asc(area.name));
 
   const map = new Map();
   for (const r of rows) {

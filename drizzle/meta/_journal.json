@@ -246,6 +246,13 @@
       "when": 1790509727053,
       "tag": "0034_dispute_cases",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1790577726668,
+      "tag": "0035_catalogue_operations",
+      "breakpoints": true
     }
   ]
 }

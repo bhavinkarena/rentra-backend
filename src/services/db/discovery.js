@@ -8,9 +8,9 @@ import { normalizePublicPhotos } from '../domain/listing-content.js';
 
 export async function getDiscoveryRegistry(database = sql) {
   const [cities, areas, categories, amenities] = await Promise.all([
-    database`SELECT id,slug,name FROM city WHERE is_active=true ORDER BY name,id`,
-    database`SELECT a.id,a.city_id AS "cityId",a.slug,a.name FROM area a JOIN city c ON c.id=a.city_id WHERE c.is_active=true ORDER BY a.name,a.id`,
-    database`SELECT id,slug,name FROM category WHERE is_active=true ORDER BY name,id`,
+    database`SELECT id,slug,name FROM city WHERE is_active=true ORDER BY sort_order,name,id`,
+    database`SELECT a.id,a.city_id AS "cityId",a.slug,a.name FROM area a JOIN city c ON c.id=a.city_id WHERE c.is_active=true AND a.is_active=true ORDER BY a.sort_order,a.name,a.id`,
+    database`SELECT id,slug,name FROM category WHERE is_active=true ORDER BY sort_order,name,id`,
     database`SELECT slug,label_en AS name FROM amenity WHERE is_active=true AND is_filterable=true ORDER BY sort_order,slug`,
   ]);
   return { cities: cities.filter(r => validRouteSlug(r.slug)), areas: areas.filter(r => validRouteSlug(r.slug)), categories: categories.filter(r => validRouteSlug(r.slug)), amenities };
@@ -48,7 +48,7 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
       FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id
       JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
       LEFT JOIN rentable_price p ON p.rentable_id=r.id AND p.slot=${filters.slot}
-      WHERE r.status='live' AND u.role='client' AND u.account_status='active' AND c.is_active=true AND cat.is_active=true
+      WHERE r.status='live' AND u.role='client' AND u.account_status='active' AND c.is_active=true AND a.is_active=true AND cat.is_active=true
         AND r.id>${cursor}::uuid AND r.capacity>=${filters.guests}
         AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area}) AND (${!category} OR cat.slug=${category})
         AND (${!filters.q} OR a.name ILIKE ${term} OR c.name ILIKE ${term} OR r.title ILIKE ${term})
@@ -93,8 +93,8 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
 /** Undated landing pages need enough live places before they are indexable. */
 export async function countDiscoveryRoute(route, database = sql) {
   const [row] = await database`SELECT count(*)::int AS n FROM rentable r
-    JOIN city c ON c.id=r.city_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
-    WHERE r.status='live' AND c.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'
+    JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
+    WHERE r.status='live' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'
     AND r.city_id=${route.city.id} AND r.category_id=${route.category.id}
     AND (${!route.area} OR r.area_id=${route.area?.id ?? null}::uuid)
     AND (${!route.intent?.amenity} OR EXISTS (SELECT 1 FROM rentable_amenity ra JOIN amenity am ON am.id=ra.amenity_id WHERE ra.rentable_id=r.id AND am.is_active=true AND am.slug=${route.intent?.amenity ?? ''}))`;

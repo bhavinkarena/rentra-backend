@@ -394,13 +394,13 @@ export async function getSimilarListings({ rentableId, areaId, cityId, limit = 4
 
 export async function getCities() {
   return db.select({ slug: city.slug, name: city.name })
-    .from(city).where(eq(city.isActive, true)).orderBy(asc(city.name));
+    .from(city).where(eq(city.isActive, true)).orderBy(asc(city.sortOrder), asc(city.name));
 }
 
 export async function getAreas(citySlug) {
   return db.select({ slug: area.slug, name: area.name })
     .from(area).innerJoin(city, eq(city.id, area.cityId))
-    .where(eq(city.slug, citySlug)).orderBy(asc(area.name));
+    .where(and(eq(city.slug, citySlug), eq(city.isActive, true), eq(area.isActive, true))).orderBy(asc(area.sortOrder), asc(area.name));
 }
 
 /** Sitemap source. Generated from the DB, never hand-maintained. */
@@ -418,7 +418,7 @@ export async function getSitemapEntries() {
 
   const areas = await db
     .select({ citySlug: city.slug, areaSlug: area.slug })
-    .from(area).innerJoin(city, eq(city.id, area.cityId));
+    .from(area).innerJoin(city, eq(city.id, area.cityId)).where(and(eq(city.isActive, true), eq(area.isActive, true)));
 
   return { listings, cities, areas };
 }
