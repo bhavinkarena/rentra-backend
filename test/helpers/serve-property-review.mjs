@@ -22,7 +22,7 @@ if (process.env.FAKE_RAZORPAY_STATE)
 Object.assign(process.env, {
   DATABASE_URL: fixture.url,
   NODE_ENV: 'test',
-  NEXT_PUBLIC_SITE_URL: 'http://localhost:3106',
+  NEXT_PUBLIC_SITE_URL: process.env.GATE_WEB_ORIGIN || 'http://localhost:3106',
   SESSION_SECRET: 'cp06-local-fixture-signing-secret-not-for-deployment',
   CLOUDINARY_CLOUD_NAME: 'cp06-fixture',
   CLOUDINARY_API_KEY: 'cp06-fixture',
@@ -94,8 +94,9 @@ await writeFile(
   JSON.stringify({ ids, tokens, submission, booking, databaseUrl: fixture.url }),
 );
 const { createApp } = await import('@/app.js');
-const server = createApp().listen(4106, () =>
-  console.log('CP06 disposable API ready on 4106. Send stop on stdin to clean up.'),
+const port = Number(process.env.GATE_API_PORT || 4106);
+const server = createApp().listen(port, () =>
+  console.log(`Disposable API ready on ${port}. Send stop on stdin to clean up.`),
 );
 let stopping = false;
 async function stop() {
