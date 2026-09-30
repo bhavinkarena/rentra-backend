@@ -30,6 +30,23 @@ async function clientIp() {
   return h.get('x-forwarded-for')?.split(',')[0]?.trim() ?? h.get('x-real-ip') ?? null;
 }
 
+/**
+ * Payout details live only in payout_destination. The application object keeps
+ * its historical payout* keys, derived from the client's current destination.
+ */
+export async function withPayoutDetails(app) {
+  const [p] = await database`SELECT payout_upi_id,payout_account_ref,payout_ifsc,payout_holder_name,payout_name_match
+    FROM client_payout_current WHERE client_id=${app.userId}`;
+  return {
+    ...app,
+    payoutUpiId: p?.payout_upi_id ?? null,
+    payoutAccountRef: p?.payout_account_ref ?? null,
+    payoutIfsc: p?.payout_ifsc ?? null,
+    payoutHolderName: p?.payout_holder_name ?? null,
+    payoutNameMatch: p?.payout_name_match ?? null,
+  };
+}
+
 /** Find-or-create the draft. Called by every step and by the dashboard. */
 export async function getOrCreateApplication(userId) {
   const [existing] = await db
@@ -38,14 +55,14 @@ export async function getOrCreateApplication(userId) {
     .where(eq(clientApplication.userId, userId))
     .limit(1);
 
-  if (existing) return existing;
+  if (existing) return withPayoutDetails(existing);
 
   const [created] = await db
     .insert(clientApplication)
     .values({ userId, status: 'draft' })
     .returning();
 
-  return created;
+  return withPayoutDetails(created);
 }
 
 /**
@@ -133,45 +150,19 @@ export async function savePayout(_prev, formData) {
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
   const d = parsed.data;
 
-  /**
-   * TODO(vendor): a real penny-drop returns the name the bank holds, which is
-   * then compared to the KYC name. Until then we compare the holder name the
-   * Client typed against their KYC name — weaker, but it catches the obvious
-   * case of paying a third party, and the Super Admin sees both at review.
-   */
-  const kycName = (app.kycNameOnDoc ?? user.name ?? '').trim().toLowerCase();
-  const holder = d.holderName.trim().toLowerCase();
-  const nameMatch = kycName.length > 0 ? kycName === holder : null;
-
-  // Never store a full account number in the clear. Keep a masked reference —
-  // enough for the Client to recognise it and for support to reconcile.
-  const maskedAccount = d.method === 'bank'
-    ? `••••${d.accountNumber.slice(-4)}`
-    : null;
-
-  await db.update(clientApplication).set({
-    payoutUpiId: d.method === 'upi' ? d.upiId : null,
-    payoutAccountRef: maskedAccount,
-    payoutIfsc: d.method === 'bank' ? d.ifsc : null,
-    payoutHolderName: d.holderName,
-    payoutNameMatch: nameMatch,
-    updatedAt: new Date(),
-  }).where(eq(clientApplication.id, app.id));
-
-  await db.update(users).set({
-    payoutUpiId: d.method === 'upi' ? d.upiId : null,
-    payoutBankRef: maskedAccount,
-    updatedAt: new Date(),
-  }).where(eq(users.id, user.id));
+  // The only store is payout_destination: a submitted, unverified version. It keeps
+  // the last four digits only and records the holder-name check against the KYC name.
+  const row = await recordOnboardingDestination(database, user.id, {
+    method: d.method, upiId: d.upiId, accountNumber: d.accountNumber, ifsc: d.ifsc, holderName: d.holderName,
+  });
+  // The application's own timestamp still moves, so review fingerprints see the change.
+  await db.update(clientApplication).set({ updatedAt: new Date() }).where(eq(clientApplication.id, app.id));
+  const nameMatch = row.name_check === 'same' ? true : row.name_check === 'different' ? false : null;
 
   await audit({
     actorType: 'client', actorId: user.id, entity: 'client_application',
     entityId: app.id, action: 'payout_saved',
     after: { method: d.method, nameMatch }, ip: await clientIp(),
-  });
-  // CP21: the onboarding destination is also version-recorded (submitted, unverified).
-  await recordOnboardingDestination(database, user.id, {
-    method: d.method, upiId: d.upiId, accountNumber: d.accountNumber, ifsc: d.ifsc, holderName: d.holderName,
   });
 
   redirect('/partner');

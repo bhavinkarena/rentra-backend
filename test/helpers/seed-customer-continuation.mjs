@@ -49,8 +49,8 @@ try {
       await db`INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,payment_mode,visit_provenance)
     SELECT ${randomUUID()},customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,amount_deposit_minor,${randomUUID()},${'a'.repeat(64)},'confirmed','real','real' FROM booking_order WHERE id=${f.booking.order} RETURNING id`;
     const [visit] =
-      await db`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,day,local_day,slot,state,amount_rent,amount_fee,starts_at,ends_at,hours_known,blocked_start_at,blocked_end_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,visit_provenance,units_booked,guests)
-    VALUES (${randomUUID().slice(0, 16)},${f.ids.listing},${f.booking.customer},${order.id},1,current_date-2,current_date-2,'day','confirmed',1000,80,now()-interval '2 days',now()-interval '1 day',true,now()-interval '2 days',now()-interval '1 day','INR','Asia/Kolkata',100000,8000,0,'real','real',1,2) RETURNING id`;
+      await db`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,hours_known,blocked_start_at,blocked_end_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,visit_provenance,units_booked,guests)
+    VALUES (${randomUUID().slice(0, 16)},${f.ids.listing},${f.booking.customer},${order.id},1,current_date-2,'day','confirmed',now()-interval '2 days',now()-interval '1 day',true,now()-interval '2 days',now()-interval '1 day','INR','Asia/Kolkata',100000,8000,0,'real','real',1,2) RETURNING id`;
     for (const [phase, hours] of [
       ['handover', 47],
       ['return', 26],
@@ -82,7 +82,7 @@ try {
       phone: '9000000077',
       listingPath: '/listing/review-farm-review01',
     };
-    await db`INSERT INTO availability(rentable_id,day,slot,units_available,blocked_by_client) VALUES (${f.ids.listing},${d.day},'day',1,false) ON CONFLICT DO NOTHING`;
+    await db`INSERT INTO availability(rentable_id,day,slot,units_available) VALUES (${f.ids.listing},${d.day},'day',1) ON CONFLICT DO NOTHING`;
     await writeFile(path, JSON.stringify(f));
     console.log('Disposable customer continuation ready');
   });

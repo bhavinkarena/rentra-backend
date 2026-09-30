@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { insertFixtureOrder } from '../helpers/fixture-order.js';
 import assert from 'node:assert/strict';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
 import { seedReviewFixture, seedConfirmedBooking } from '../helpers/listing-review-fixture.js';
@@ -126,9 +127,15 @@ test(
         createOwnerBlock(sql, f.owner, { rentableId: f.listing, ...interval, reason: 'Owner use' }),
         withListingInventory(sql, f.listing, async (tx, listing) => {
           assert.equal((await findInventoryConflicts(tx, listing, [interval])).length, 0);
+          const order = await insertFixtureOrder(tx, {
+            customerId: booked.customer,
+            rentableId: f.listing,
+          });
           const [b] =
-            await tx`INSERT INTO booking(reference,rentable_id,customer_id,day,slot,amount_rent,amount_fee,state,starts_at,ends_at,blocked_start_at,blocked_end_at,hours_known,units_booked)
-          VALUES ('CP10-RACE',${f.listing},${booked.customer},${raceDay},'day',1000,80,'confirmed',${interval.startsAt},${interval.endsAt},${interval.blockedStartAt},${interval.blockedEndAt},true,1) RETURNING id`;
+            await tx`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,blocked_start_at,blocked_end_at,hours_known,units_booked,
+              currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
+          VALUES ('CP10-RACE',${f.listing},${booked.customer},${order},1,${raceDay},'day','confirmed',${interval.startsAt},${interval.endsAt},${interval.blockedStartAt},${interval.blockedEndAt},true,1,
+              'INR','Asia/Kolkata',100000,8000,0) RETURNING id`;
           await tx`INSERT INTO inventory_reservation(rentable_id,booking_id,source,state,blocked_start_at,blocked_end_at) VALUES (${f.listing},${b.id},'booking','committed',${interval.blockedStartAt},${interval.blockedEndAt})`;
         }),
       ]);
@@ -162,15 +169,16 @@ test(
         ),
       );
       assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
-      await sql`UPDATE availability SET blocked_by_client=true,units_available=0 WHERE rentable_id=${f.listing} AND day=${day} AND slot='day'`;
+      await sql`UPDATE availability SET units_available=0 WHERE rentable_id=${f.listing} AND day=${day} AND slot='day'`;
       const preserve = await command('open', dates, open);
       assert.equal(preserve.preview.result.added, 0);
       await command('open', dates, open, { preview: false, previewToken: preserve.preview.token });
       assert.equal(
         (
-          await sql`SELECT blocked_by_client FROM availability WHERE rentable_id=${f.listing} AND day=${day} AND slot='day'`
-        )[0].blocked_by_client,
-        true,
+          await sql`SELECT units_available FROM availability WHERE rentable_id=${f.listing} AND day=${day} AND slot='day'`
+        )[0].units_available,
+        0,
+        'opening dates never reopens a closed date',
       );
     } finally {
       await fixture.drop();

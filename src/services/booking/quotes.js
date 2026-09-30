@@ -6,7 +6,7 @@ import { bookingConfigSchema } from '../schemas/zod/booking-config.js';
 import { CANCELLATION_TIERS } from '../domain/pricing.js';
 import { BOOKING_POLICY } from '../domain/booking-policy.js';
 import { addLocalDays, buildVisitIntervals, propertyToday } from '../domain/booking-dates.js';
-import { legacyRupeesToMinor, priceVisitsMinor } from '../domain/booking-money.js';
+import { priceVisitsMinor } from '../domain/booking-money.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
 import { withListingInventory, withListingSnapshot, expireInventoryHolds, findInventoryConflicts, prepareInventoryCheck } from './inventory.js';
 
@@ -42,11 +42,11 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
   const byDate = {};
   for (const row of overrides) {
     const date = dayKey(row.day);
-    byDate[date] = { ...byDate[date], [row.slot]: row.rent_minor != null ? Number(row.rent_minor) : legacyRupeesToMinor(row.price_override) };
+    byDate[date] = { ...byDate[date], [row.slot]: Number(row.rent_minor) };
   }
   const price = priceVisitsMinor({
     ...selection,
-    rate: { ...schedule, weekdayMinor: legacyRupeesToMinor(rate.weekday), weekendMinor: legacyRupeesToMinor(rate.weekend), depositMinor: legacyRupeesToMinor(listing.deposit_amount) },
+    rate: { ...schedule, weekdayMinor: Number(rate.weekday_minor), weekendMinor: Number(rate.weekend_minor), depositMinor: Number(listing.deposit_minor) },
     overridesByDate: byDate,
   });
   const policy = {
@@ -83,12 +83,11 @@ async function currentInputs(tx, listing, selection, variables) {
   const [owner] = await tx`SELECT id FROM "user" WHERE id=${listing.client_id} AND role='client' AND account_status='active'`;
   if (!owner) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   await expireInventoryHolds(tx, listing.id, clock.now);
-  const rates = await tx`SELECT slot,weekday,weekend FROM rentable_price WHERE rentable_id=${listing.id} ORDER BY slot`;
+  const rates = await tx`SELECT slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${listing.id} ORDER BY slot`;
   const first = selection.dates[0], last = selection.dates.at(-1);
-  const legacy = await tx`SELECT day::text AS day,slot,price_override FROM availability WHERE rentable_id=${listing.id} AND day BETWEEN ${first} AND ${last} AND price_override IS NOT NULL ORDER BY day,slot`;
-  const explicit = await tx`SELECT day::text AS day,slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} AND day BETWEEN ${first} AND ${last} ORDER BY day,slot`;
+  const overrides = await tx`SELECT day::text AS day,slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} AND day BETWEEN ${first} AND ${last} ORDER BY day,slot`;
   const payment = await getPaymentConfiguration(tx, variables);
-  return { now: clock.now, rates, overrides: [...legacy, ...explicit], payment, publications: await currentPolicyReferences(tx) };
+  return { now: clock.now, rates, overrides, payment, publications: await currentPolicyReferences(tx) };
 }
 
 async function checkedQuote(tx, listing, selection, variables) {
@@ -157,13 +156,8 @@ async function currentCalendarInputs(tx, listing, dates, variables) {
       EXISTS(SELECT 1 FROM "user" WHERE id=${listing.client_id}
         AND role='client' AND account_status='active') AS owner_active,
       COALESCE((SELECT json_agg(r ORDER BY r.slot) FROM (
-        SELECT slot,weekday,weekend FROM rentable_price WHERE rentable_id=${listing.id}
+        SELECT slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${listing.id}
       ) r), '[]'::json) AS rates,
-      COALESCE((SELECT json_agg(a ORDER BY a.day,a.slot) FROM (
-        SELECT day::text AS day,slot,price_override FROM availability
-        WHERE rentable_id=${listing.id} AND day BETWEEN ${dates[0]} AND ${dates.at(-1)}
-          AND price_override IS NOT NULL
-      ) a), '[]'::json) AS legacy,
       COALESCE((SELECT json_agg(o ORDER BY o.day,o.slot) FROM (
         SELECT day::text AS day,slot,rent_minor FROM booking_price_override
         WHERE rentable_id=${listing.id} AND day BETWEEN ${dates[0]} AND ${dates.at(-1)}
@@ -171,7 +165,7 @@ async function currentCalendarInputs(tx, listing, dates, variables) {
   if (!inputs.owner_active) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   // prepareInventoryCheck treats expired holds as free in the read-only snapshot.
   const payment = await getPaymentConfiguration(tx, variables);
-  return { now: inputs.now, rates: inputs.rates, overrides: [...inputs.legacy, ...inputs.explicit], payment };
+  return { now: inputs.now, rates: inputs.rates, overrides: inputs.explicit, payment };
 }
 
 /** Bounded public read with the same price/config/interval rules as quoting. */

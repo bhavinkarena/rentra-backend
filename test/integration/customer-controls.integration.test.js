@@ -28,7 +28,7 @@ test(
       const blocked = await person('9000000000', 'Blocked Guest', null, 'blocked');
       // Created without a status: the column default, which cannot sign in.
       const dormant = await person('9555500000', 'Dormant Guest', null, 'pending_application');
-      await sql`INSERT INTO customer_profile(user_id) VALUES (${riya})`;
+      await sql`UPDATE "user" SET profile_completed_at=now(),profile_version=1,consent_updated_at=now() WHERE id=${riya}`;
 
       const [owner] =
         await sql`INSERT INTO "user"(email,role,account_status) VALUES ('owner4@fixture.invalid','client','active') RETURNING id`;
@@ -47,16 +47,16 @@ test(
           idempotency_key,request_hash,state)
         VALUES ('ORD-CP04',${riya},${listing.id},'INR','Asia/Kolkata','v1','v1','{}','{"title":"Riverside Farm"}',100000,8000,0,
           ${randomUUID()},'hash','confirmed') RETURNING id`;
-      await sql`INSERT INTO booking(reference,rentable_id,customer_id,day,slot,amount_rent,amount_fee,state,starts_at,ends_at,
+      await sql`INSERT INTO booking(reference,rentable_id,customer_id,slot,state,starts_at,ends_at,
           order_id,item_position,local_day,currency,time_zone,guests,units_booked,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
-        VALUES ('V-CP04',${listing.id},${riya},(now()+interval '4 days')::date,'day',1000,80,'confirmed',
+        VALUES ('V-CP04',${listing.id},${riya},'day','confirmed',
           now()+interval '4 days', now()+interval '4 days 8 hours',${order.id},1,(now()+interval '4 days')::date,'INR','Asia/Kolkata',2,1,100000,8000,0)`;
       await sql`INSERT INTO customer_privacy_request(customer_id,kind) VALUES (${riya},'access')`;
       const session = async (userId) => ({
         role: 'customer',
         userId,
         sessionId: (
-          await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${userId},now()+interval '1 day') RETURNING id`
+          await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${userId},now()+interval '1 day') RETURNING id`
         )[0].id,
       });
       const first = await session(riya);

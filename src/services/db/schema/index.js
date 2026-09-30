@@ -68,9 +68,6 @@ const minor = (name) => bigint(name, { mode: 'number' });
    ENUMS
    ========================================================================== */
 
-/** One account = one role, fixed at signup. See docs plan §"Roles". */
-export const userRole = pgEnum('user_role', ['customer', 'client']);
-
 /** A broker may list only as an explicitly-labelled agent, never as owner. */
 export const clientType = pgEnum('client_type', ['owner', 'authorised_agent']);
 
@@ -87,10 +84,6 @@ export const accountStatus = pgEnum('account_status', [
   'pending_application', 'active', 'suspended', 'blocked',
 ]);
 
-export const otpChannel = pgEnum('otp_channel', ['email', 'sms']);
-export const otpPurpose = pgEnum('otp_purpose', [
-  'login', 'verify_email', 'verify_phone',
-]);
 
 export const auditActor = pgEnum('audit_actor', [
   'client', 'customer', 'admin', 'system',
@@ -153,10 +146,6 @@ export const bookingState = pgEnum('booking_state', [
   'completed', 'cancelled', 'disputed',
 ]);
 
-export const balanceMode = pgEnum('balance_mode', [
-  'online_before', 'cash_on_arrival', 'none',
-]);
-
 export const cancellationTier = pgEnum('cancellation_tier', [
   'flexible', 'moderate', 'strict',
 ]);
@@ -184,25 +173,24 @@ export const reservationState = pgEnum('reservation_state', ['held', 'committed'
    ========================================================================== */
 
 /**
- * One verified human. Created from the KYC vendor's result so a person who
- * holds both a Customer and a Client account is verified ONCE — otherwise we
- * pay the vendor twice and ask a verified owner to re-photograph his Aadhaar.
- * We store the vendor's reference, never a raw ID image (DPDP Act).
+ * Role lookup. The code is the key, so `role = 'client'` filters keep working.
+ * One account = one role, fixed at signup. Admins and caretakers are separate principals.
  */
-export const person = pgTable('person', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  kycRef: varchar('kyc_ref', { length: 128 }).unique(),
-  verifiedName: varchar('verified_name', { length: 160 }),
-  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+export const role = pgTable('role', {
+  code: varchar('code', { length: 16 }).primaryKey(),
+  label: varchar('label', { length: 60 }).notNull(),
+  description: text('description'),
+  isActive: boolean('is_active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, t => [check('role_code_chk', sql`${t.code} ~ '^[a-z_]{3,16}$'`)]);
 
 export const users = pgTable(
   'user',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     phone: varchar('phone', { length: 15 }),
-    role: userRole('role').notNull(),
+    role: varchar('role', { length: 16 }).notNull().references(() => role.code, { onDelete: 'restrict', onUpdate: 'restrict' }),
     name: varchar('name', { length: 160 }),
     email: varchar('email', { length: 254 }),
 
@@ -226,11 +214,18 @@ export const users = pgTable(
     preferredLocale: varchar('preferred_locale', { length: 5 }).notNull().default('en'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
 
-    personId: uuid('person_id').references(() => person.id, { onDelete: 'set null' }),
+    // Profile (was customer_profile). profile_completed_at replaces "the profile row exists".
+    photoPublicId: text('photo_public_id'),
+    marketingConsent: boolean('marketing_consent').notNull().default(false),
+    consentUpdatedAt: timestamp('consent_updated_at', { withTimezone: true }),
+    profileCompletedAt: timestamp('profile_completed_at', { withTimezone: true }),
+    /** Self-service edit token: customer profile/photo edits and client inbox preferences. */
+    profileVersion: integer('profile_version').notNull().default(0),
+    /** Client inbox: informational categories delivered already read (was client_update_preference). */
+    mutedUpdateCategories: jsonb('muted_update_categories').notNull().default([]),
+
     clientType: clientType('client_type'),
     kycStatus: kycStatus('kyc_status').notNull().default('none'),
-    payoutUpiId: varchar('payout_upi_id', { length: 128 }),
-    payoutBankRef: varchar('payout_bank_ref', { length: 128 }),
     respondsWithinMins: integer('responds_within_mins'),
     responseRate: real('response_rate'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -247,82 +242,67 @@ export const users = pgTable(
      */
     uniqueIndex('user_phone_role_idx').on(t.phone, t.role),
     uniqueIndex('user_email_role_idx').on(t.email, t.role),
-    index('user_person_idx').on(t.personId),
+    uniqueIndex('user_email_role_ci_idx').on(sql`lower(${t.email})`, t.role),
     index('user_status_idx').on(t.role, t.accountStatus),
+    uniqueIndex('user_id_role_idx').on(t.id, t.role),
+    check('user_client_fields_chk', sql`${t.role} = 'client' OR (${t.clientType} IS NULL AND ${t.kycStatus} = 'none'
+      AND ${t.mutedUpdateCategories} = '[]'::jsonb AND ${t.respondsWithinMins} IS NULL AND ${t.responseRate} IS NULL)`),
+    check('user_customer_fields_chk', sql`${t.role} = 'customer' OR (${t.privacyErasurePending} = false AND ${t.privacyErasedAt} IS NULL)`),
+    check('user_muted_shape_chk', sql`jsonb_typeof(${t.mutedUpdateCategories}) = 'array'`),
+    check('user_versions_chk', sql`${t.profileVersion} >= 0 AND ${t.lifecycleVersion} > 0`),
   ],
 );
 
 /**
- * One-time codes. Only the HMAC of the code is stored — never the code, so a
- * database leak cannot be replayed into logins.
- *
- * Rate limits live here rather than in Redis: at this scale two indexed
- * queries are cheaper than another piece of infrastructure to run.
+ * One-time codes for every principal (customer, client, caretaker). Only an HMAC
+ * of the code is stored, never the code, so a database leak cannot be replayed.
+ * Customer challenges are also bound to the browser and the delivery mode.
  */
-export const otpToken = pgTable(
-  'otp_token',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    identifier: varchar('identifier', { length: 254 }).notNull(),
-    channel: otpChannel('channel').notNull(),
-    purpose: otpPurpose('purpose').notNull(),
-    codeHash: varchar('code_hash', { length: 64 }).notNull(),
-    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-    attempts: integer('attempts').notNull().default(0),
-    consumedAt: timestamp('consumed_at', { withTimezone: true }),
-    requestIp: varchar('request_ip', { length: 45 }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    // Serves both "find the live code" and the resend rate-limit count.
-    index('otp_lookup_idx').on(t.identifier, t.purpose, t.createdAt),
-  ],
-);
-
-/** Customer challenges are isolated from partner login/phone verification. */
-export const customerOtpChallenge = pgTable('customer_otp_challenge', {
-  id: uuid('id').primaryKey(),
-  phone: varchar('phone', { length: 10 }).notNull(),
-  purpose: varchar('purpose', { length: 16 }).notNull().default('login'),
-  customerId: uuid('customer_id').references(() => users.id, { onDelete: 'cascade' }),
-  sessionId: uuid('session_id'),
-  originalPhone: varchar('original_phone', { length: 15 }),
-  browserHash: varchar('browser_hash', { length: 64 }).notNull(),
+export const otpChallenge = pgTable('otp_challenge', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  principalKind: varchar('principal_kind', { length: 10 }).notNull(),
+  channel: varchar('channel', { length: 8 }).notNull(),
+  purpose: varchar('purpose', { length: 16 }).notNull(),
+  /** Normalised phone, lower-cased email, or `staff:<phone>`. */
+  identifier: varchar('identifier', { length: 254 }).notNull(),
   codeHash: varchar('code_hash', { length: 64 }).notNull(),
+  browserHash: varchar('browser_hash', { length: 64 }),
   deliveryMode: varchar('delivery_mode', { length: 16 }).notNull(),
   delivered: boolean('delivered').notNull().default(false),
   attempts: integer('attempts').notNull().default(0),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  sessionId: uuid('session_id').references(() => authSession.id, { onDelete: 'cascade' }),
+  originalPhone: varchar('original_phone', { length: 15 }),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index('customer_otp_phone_idx').on(t.phone, t.createdAt)]);
+}, (t) => [
+  index('otp_challenge_lookup_idx').on(t.principalKind, t.identifier, t.purpose, t.createdAt),
+  index('otp_challenge_user_idx').on(t.userId).where(sql`${t.userId} IS NOT NULL`),
+  index('otp_challenge_session_idx').on(t.sessionId).where(sql`${t.sessionId} IS NOT NULL`),
+  index('otp_challenge_purge_idx').on(t.createdAt),
+  check('otp_challenge_valid_chk', sql`${t.principalKind} IN ('customer','client','staff') AND ${t.channel} IN ('sms','email')
+    AND ${t.purpose} IN ('login','verify_phone','phone_change') AND ${t.attempts} >= 0
+    AND ${t.codeHash} ~ '^[a-f0-9]{64}$' AND ${t.expiresAt} > ${t.createdAt}
+    AND (${t.browserHash} IS NULL OR ${t.browserHash} ~ '^[a-f0-9]{64}$')
+    AND (${t.purpose} <> 'phone_change' OR (${t.principalKind} = 'customer' AND ${t.userId} IS NOT NULL AND ${t.sessionId} IS NOT NULL))`),
+]);
 
 /** HMAC identifiers only; includes failed verification and failed delivery. */
-export const customerAuthRate = pgTable('customer_auth_rate', {
+export const authRateEvent = pgTable('auth_rate_event', {
   id: uuid('id').primaryKey().defaultRandom(),
-  phoneHash: varchar('phone_hash', { length: 64 }).notNull(),
+  principalKind: varchar('principal_kind', { length: 10 }).notNull().default('customer'),
+  identifierHash: varchar('identifier_hash', { length: 64 }).notNull(),
   ipHash: varchar('ip_hash', { length: 64 }).notNull(),
   kind: varchar('kind', { length: 10 }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index('customer_auth_phone_rate_idx').on(t.phoneHash, t.kind, t.createdAt), index('customer_auth_ip_rate_idx').on(t.ipHash, t.kind, t.createdAt)]);
-
-export const customerSession = pgTable('customer_session', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  revokedAt: timestamp('revoked_at', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index('customer_session_user_idx').on(t.userId)]);
-
-export const customerProfile = pgTable('customer_profile', {
-  photoPublicId: text('photo_public_id'),
-  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
-  marketingConsent: boolean('marketing_consent').notNull().default(false),
-  consentUpdatedAt: timestamp('consent_updated_at', { withTimezone: true }).notNull().defaultNow(),
-  version: integer('version').notNull().default(1),
-  completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  index('auth_rate_identifier_idx').on(t.identifierHash, t.kind, t.createdAt),
+  index('auth_rate_ip_idx').on(t.ipHash, t.kind, t.createdAt),
+  index('auth_rate_event_purge_idx').on(t.createdAt),
+  check('auth_rate_event_valid_chk', sql`${t.principalKind} IN ('customer','client','staff') AND ${t.kind} IN ('request','verify')
+    AND ${t.identifierHash} ~ '^[a-f0-9]{64}$' AND ${t.ipHash} ~ '^[a-f0-9]{64}$'`),
+]);
 
 export const customerPrivacyRequest = pgTable('customer_privacy_request', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -354,6 +334,7 @@ export const privacyJob = pgTable('privacy_job', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [index('privacy_job_work_idx').on(t.state,t.updatedAt),
+  index('privacy_job_artifact_exp_idx').on(t.expiresAt).where(sql`${t.artifactCiphertext} IS NOT NULL`),
   check('privacy_job_state_chk', sql`${t.state} IN ('queued','running','failed','completed') AND ${t.stage} BETWEEN 0 AND 4 AND ${t.attempts}>=0`)]);
 
 export const documentType = pgEnum('document_type', [
@@ -410,18 +391,30 @@ export const documents = pgTable(
     issuedAt: date('issued_at'),
 
     status: documentStatus('status').notNull().default('uploaded'),
-    reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     reviewNote: text('review_note'),
 
-    uploadedBy: uuid('uploaded_by').references(() => users.id, { onDelete: 'set null' }),
+    uploadedBy: uuid('uploaded_by').references(() => users.id, { onDelete: 'restrict' }),
     uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
     /** Retention: set when the file is destroyed in Cloudinary. */
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
+
+    /** Generated from owner_type/owner_id so each owner kind has a real FK (0049). */
+    applicationId: uuid('application_id')
+      .generatedAlwaysAs(sql`CASE WHEN owner_type = 'client_application' THEN owner_id END`)
+      .references(() => clientApplication.id, { onDelete: 'restrict' }),
+    rentableId: uuid('rentable_id')
+      .generatedAlwaysAs(sql`CASE WHEN owner_type = 'rentable' THEN owner_id END`)
+      .references(() => rentable.id, { onDelete: 'restrict' }),
   },
   (t) => [
     index('document_owner_idx').on(t.ownerType, t.ownerId, t.status),
-    // One live file per (owner, type, side). Re-uploading supersedes.
-    uniqueIndex('document_slot_idx').on(t.ownerType, t.ownerId, t.docType, t.side),
+    // One LIVE file per (owner, type, side). A re-upload marks the previous row superseded.
+    uniqueIndex('document_live_slot_idx').on(t.ownerType, t.ownerId, t.docType, t.side)
+      .where(sql`${t.status} IN ('uploaded','accepted','rejected') AND ${t.deletedAt} IS NULL`),
+    index('document_application_idx').on(t.applicationId).where(sql`${t.applicationId} IS NOT NULL`),
+    index('document_rentable_idx').on(t.rentableId).where(sql`${t.rentableId} IS NOT NULL`),
+    check('document_owner_chk', sql`${t.ownerType} IN ('client_application','rentable') AND num_nonnulls(${t.applicationId}, ${t.rentableId}) = 1`),
   ],
 );
 
@@ -438,7 +431,7 @@ export const clientApplication = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id').notNull().unique()
-      .references(() => users.id, { onDelete: 'cascade' }),
+      .references(() => users.id, { onDelete: 'restrict' }),
     status: applicationStatus('status').notNull().default('draft'),
 
     // --- their details ---
@@ -451,23 +444,11 @@ export const clientApplication = pgTable(
     ownerName: varchar('owner_name', { length: 160 }),
     ownerRelationship: varchar('owner_relationship', { length: 80 }),
 
-    // --- KYC. We store the vendor's REFERENCE and verdict, never the image. --
-    kycRef: varchar('kyc_ref', { length: 128 }),
+    // --- KYC evidence. The verdict lives on user.kyc_status; files live in document. --
     kycDocType: varchar('kyc_doc_type', { length: 16 }), // 'pan' | 'aadhaar'
     kycNameOnDoc: varchar('kyc_name_on_doc', { length: 160 }),
-    kycVerifiedAt: timestamp('kyc_verified_at', { withTimezone: true }),
 
-    // --- payout destination ---
-    payoutUpiId: varchar('payout_upi_id', { length: 128 }),
-    payoutAccountRef: varchar('payout_account_ref', { length: 64 }),
-    payoutIfsc: varchar('payout_ifsc', { length: 11 }),
-    payoutHolderName: varchar('payout_holder_name', { length: 160 }),
-    /**
-     * Penny-drop result. NULL = not checked, false = mismatch, true = matched.
-     * A mismatch blocks approval: paying out to a third-party account is how a
-     * marketplace becomes a laundering route.
-     */
-    payoutNameMatch: boolean('payout_name_match'),
+    // Payout details live only in payout_destination (read through the client_payout_current view).
 
     // --- consent ---
     consentAt: timestamp('consent_at', { withTimezone: true }),
@@ -476,7 +457,7 @@ export const clientApplication = pgTable(
     // --- review ---
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
-    reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     decisionReason: text('decision_reason'),
     flaggedFields: jsonb('flagged_fields'),
     /** Third rejection blocks the account; only a manual appeal reopens it. */
@@ -583,6 +564,8 @@ export const adminExportJob = pgTable('admin_export_job', {
 }, t => [
   uniqueIndex('admin_export_request_idx').on(t.creatorId, t.requestKey),
   index('admin_export_work_idx').on(t.state, t.updatedAt),
+  index('admin_export_queue_idx').on(t.createdAt, t.id).where(sql`${t.state} = 'queued'`),
+  index('admin_export_artifact_exp_idx').on(t.expiresAt).where(sql`${t.artifactCiphertext} IS NOT NULL`),
   check('admin_export_state_chk', sql`${t.state} IN ('queued','failed','completed') AND ${t.version}>0 AND ${t.attempts}>=0 AND ${t.dataset} IN ('audit_events','payment_orders','operation_receipts')`),
 ]);
 
@@ -590,7 +573,7 @@ export const clientStaff = pgTable(
   'client_staff',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    clientId: uuid('client_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
     phone: varchar('phone', { length: 15 }).notNull(),
     name: varchar('name', { length: 160 }),
     // CP16: { evidence: boolean } — record handover/return/completion. Never
@@ -646,20 +629,22 @@ export const city = pgTable('city', {
   isActive: boolean('is_active').notNull().default(true),
 });
 
-export const portalSession = pgTable('portal_session', {
+/** Every principal's session: customer, client, admin or caretaker. */
+export const authSession = pgTable('auth_session', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   adminId: uuid('admin_id').references(() => adminUsers.id, { onDelete: 'cascade' }),
   /** CP16: a caretaker session; revoked with the caretaker's access. */
-  staffId: uuid('staff_id').references(() => clientStaff.id, { onDelete: 'restrict' }),
+  staffId: uuid('staff_id').references(() => clientStaff.id, { onDelete: 'cascade' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 }, t => [
-  check('portal_session_principal_chk', sql`((${t.userId} IS NOT NULL)::int + (${t.adminId} IS NOT NULL)::int + (${t.staffId} IS NOT NULL)::int) = 1`),
-  index('portal_session_staff_idx').on(t.staffId),
-  index('portal_session_user_idx').on(t.userId),
-  index('portal_session_admin_idx').on(t.adminId),
+  check('auth_session_principal_chk', sql`((${t.userId} IS NOT NULL)::int + (${t.adminId} IS NOT NULL)::int + (${t.staffId} IS NOT NULL)::int) = 1`),
+  index('auth_session_staff_idx').on(t.staffId),
+  index('auth_session_user_idx').on(t.userId),
+  index('auth_session_admin_idx').on(t.adminId),
+  index('auth_session_purge_idx').on(t.expiresAt),
 ]);
 
 export const area = pgTable(
@@ -669,13 +654,14 @@ export const area = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     isActive: boolean('is_active').notNull().default(true),
     id: uuid('id').primaryKey().defaultRandom(),
-    cityId: uuid('city_id').notNull().references(() => city.id, { onDelete: 'cascade' }),
+    cityId: uuid('city_id').notNull().references(() => city.id, { onDelete: 'restrict' }),
     slug: varchar('slug', { length: 80 }).notNull(),
     name: varchar('name', { length: 120 }).notNull(),
     centre: geometry('centre', { type: 'point', mode: 'xy', srid: 4326 }),
   },
   (t) => [
     uniqueIndex('area_city_slug_idx').on(t.cityId, t.slug),
+    uniqueIndex('area_id_city_idx').on(t.id, t.cityId),
     index('area_centre_idx').using('gist', t.centre),
   ],
 );
@@ -720,18 +706,16 @@ export const rentable = pgTable(
     fulfilment: fulfilment('fulfilment').notNull().default('visit_site'),
     rentalUnit: rentalUnit('rental_unit').notNull().default('slot'),
 
-    categoryId: uuid('category_id').notNull().references(() => category.id),
-    cityId: uuid('city_id').notNull().references(() => city.id),
-    areaId: uuid('area_id').notNull().references(() => area.id),
+    categoryId: uuid('category_id').notNull().references(() => category.id, { onDelete: 'restrict' }),
+    cityId: uuid('city_id').notNull().references(() => city.id, { onDelete: 'restrict' }),
+    areaId: uuid('area_id').notNull().references(() => area.id, { onDelete: 'restrict' }),
 
-    requiresOperator: boolean('requires_operator').notNull().default(false),
     /** 1 for a farmhouse. 800 for a tent-house's chairs. */
     totalUnits: integer('total_units').notNull().default(1),
 
     capacity: integer('capacity').notNull().default(1),
     bedrooms: integer('bedrooms').notNull().default(0),
     highlight: varchar('highlight', { length: 60 }),
-    amenities: jsonb('amenities').notNull().default([]),
     houseRules: jsonb('house_rules').notNull().default([]),
     photos: jsonb('photos').notNull().default([]),
 
@@ -748,19 +732,19 @@ export const rentable = pgTable(
     checkInFrom: varchar('check_in_from', { length: 32 }),
     checkOutBy: varchar('check_out_by', { length: 32 }),
 
-    depositAmount: integer('deposit_amount').notNull().default(0), // whole rupees
+    depositMinor: minor('deposit_minor').notNull().default(0),
     cancellationTier: cancellationTier('cancellation_tier').notNull().default('moderate'),
     /** Explicit owner schedules; null is unavailable until reviewed/configured. */
     bookingConfig: jsonb('booking_config'),
     bookingConfigVersion: integer('booking_config_version').notNull().default(0),
-    extraGuestCharge: integer('extra_guest_charge').notNull().default(0),
+    extraGuestChargeMinor: minor('extra_guest_charge_minor').notNull().default(0),
 
     // Denormalised so a listing card is one query, not N.
     ratingAvg: real('rating_avg'),
     reviewCount: integer('review_count').notNull().default(0),
 
     verifiedAt: timestamp('verified_at', { withTimezone: true }),
-    verifiedBy: uuid('verified_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    verifiedBy: uuid('verified_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     availabilityConfirmedAt: timestamp('availability_confirmed_at', { withTimezone: true }),
 
     /**
@@ -770,12 +754,7 @@ export const rentable = pgTable(
      */
     priorStatus: listingStatus('prior_status'),
 
-    /**
-     * The last version an admin approved. Diffing an edit against this is the
-     * only way to tell a genuine reshoot from a photo swap — which is the
-     * widest fraud vector in the whole system.
-     */
-    approvedSnapshot: jsonb('approved_snapshot'),
+    // The approved revision is listing_submission via published_submission_id.
     rejectionReason: text('rejection_reason'),
     /** Increments each time the listing goes back for review. */
     reviewPass: integer('review_pass').notNull().default(0),
@@ -784,7 +763,7 @@ export const rentable = pgTable(
     // FK to listing_submission is added in 0026 SQL (declared later in this file).
     publishedSubmissionId: uuid('published_submission_id'),
     publishedAt: timestamp('published_at', { withTimezone: true }),
-    publishedBy: uuid('published_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    publishedBy: uuid('published_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     /**
      * Admin visibility restriction (CP08). Status 'hidden' is Rentra's alone:
      * owner pause/resume cannot reach it, and restore returns to prior_status.
@@ -792,18 +771,27 @@ export const rentable = pgTable(
      * so an admin command prepared against an older state answers 409.
      */
     restrictedAt: timestamp('restricted_at', { withTimezone: true }),
-    restrictedBy: uuid('restricted_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    restrictedBy: uuid('restricted_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     restrictionReason: text('restriction_reason'),
     lifecycleVersion: integer('lifecycle_version').notNull().default(1),
+    /** Constant; lets the composite FK prove the owner is a client account. */
+    clientRole: varchar('client_role', { length: 16 }).notNull().default('client'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check('rentable_money_chk', sql`${t.depositMinor} BETWEEN 0 AND 9007199254740991 AND ${t.extraGuestChargeMinor} BETWEEN 0 AND 9007199254740991`),
+    check('rentable_client_role_chk', sql`${t.clientRole} = 'client'`),
+    foreignKey({ name: 'rentable_client_role_fk', columns: [t.clientId, t.clientRole], foreignColumns: [users.id, users.role] }).onDelete('restrict'),
     index('rentable_city_cat_idx').on(t.cityId, t.categoryId, t.status),
     index('rentable_area_idx').on(t.areaId, t.status),
     index('rentable_client_idx').on(t.clientId),
     index('rentable_location_idx').using('gist', t.location),
+    // rentable_location_geog_idx ((location::geography)) is created in 0041 SQL only when PostGIS exists.
+    index('rentable_category_idx').on(t.categoryId),
+    index('rentable_live_cursor_idx').on(t.id).where(sql`${t.status} = 'live'`),
+    foreignKey({ name: 'rentable_area_city_fk', columns: [t.areaId, t.cityId], foreignColumns: [area.id, area.cityId] }).onDelete('restrict'),
   ],
 );
 
@@ -840,11 +828,11 @@ export const rentableAmenity = pgTable(
     rentableId: uuid('rentable_id').notNull()
       .references(() => rentable.id, { onDelete: 'cascade' }),
     amenityId: uuid('amenity_id').notNull()
-      .references(() => amenity.id, { onDelete: 'cascade' }),
+      .references(() => amenity.id, { onDelete: 'restrict' }),
     /** e.g. "15x25" for a pool, "8" for parking. NULL when valueType='none'. */
     value: varchar('value', { length: 40 }),
   },
-  (t) => [primaryKey({ columns: [t.rentableId, t.amenityId] })],
+  (t) => [primaryKey({ columns: [t.rentableId, t.amenityId] }), index('rentable_amenity_amenity_idx').on(t.amenityId)],
 );
 
 /**
@@ -856,14 +844,15 @@ export const rentableAmenity = pgTable(
  */
 export const listingSubmission = pgTable('listing_submission', {
   id: uuid('id').primaryKey().defaultRandom(),
-  rentableId: uuid('rentable_id').notNull().references(() => rentable.id),
+  rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
   contentVersion: integer('content_version').notNull(),
   passNumber: integer('pass_number').notNull(),
   snapshot: jsonb('snapshot').notNull(),
-  submittedBy: uuid('submitted_by').notNull().references(() => users.id),
+  submittedBy: uuid('submitted_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
   submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
-  assignedTo: uuid('assigned_to').references(() => adminUsers.id),
-}, t => [uniqueIndex('listing_submission_pass_idx').on(t.rentableId, t.passNumber)]);
+  assignedTo: uuid('assigned_to').references(() => adminUsers.id, { onDelete: 'set null' }),
+}, t => [uniqueIndex('listing_submission_pass_idx').on(t.rentableId, t.passNumber),
+  uniqueIndex('listing_submission_id_rentable_idx').on(t.id, t.rentableId)]);
 
 export const listingReview = pgTable(
   'listing_review',
@@ -873,16 +862,17 @@ export const listingReview = pgTable(
     rentableId: uuid('rentable_id').notNull()
       .references(() => rentable.id, { onDelete: 'restrict' }),
     passNumber: integer('pass_number').notNull().default(1),
-    submissionId: uuid('submission_id').references(() => listingSubmission.id),
+    submissionId: uuid('submission_id').references(() => listingSubmission.id, { onDelete: 'restrict' }),
     /** { ownership, photos, contacts, price, rules, permits } — each a bool. */
     checklist: jsonb('checklist'),
     outcome: listingReviewOutcome('outcome').notNull(),
     reason: text('reason'),
     flaggedFields: jsonb('flagged_fields'),
-    reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('listing_review_idx').on(t.rentableId, t.passNumber), uniqueIndex('listing_review_submission_idx').on(t.submissionId)],
+  (t) => [index('listing_review_idx').on(t.rentableId, t.passNumber), uniqueIndex('listing_review_submission_idx').on(t.submissionId),
+    foreignKey({ name: 'listing_review_submission_rentable_fk', columns: [t.submissionId, t.rentableId], foreignColumns: [listingSubmission.id, listingSubmission.rentableId] }).onDelete('restrict')],
 );
 
 /**
@@ -910,10 +900,10 @@ export const verificationVisit = pgTable(
     completedAt: timestamp('completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /** CP07: the immutable submitted revision this verification examines. */
-    submissionId: uuid('submission_id').references(() => listingSubmission.id),
+    submissionId: uuid('submission_id').references(() => listingSubmission.id, { onDelete: 'restrict' }),
     timeZone: varchar('time_zone', { length: 64 }).notNull().default('Asia/Kolkata'),
-    createdBy: uuid('created_by').references(() => adminUsers.id, { onDelete: 'set null' }),
-    recordedBy: uuid('recorded_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+    createdBy: uuid('created_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
+    recordedBy: uuid('recorded_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     cancelReason: text('cancel_reason'),
     /** Optimistic-concurrency token for reschedule, cancel and outcome commands. */
@@ -925,19 +915,21 @@ export const verificationVisit = pgTable(
     uniqueIndex('verification_open_idx')
       .on(t.rentableId)
       .where(sql`${t.completedAt} IS NULL AND ${t.cancelledAt} IS NULL`),
+    foreignKey({ name: 'verification_visit_submission_rentable_fk', columns: [t.submissionId, t.rentableId], foreignColumns: [listingSubmission.id, listingSubmission.rentableId] }).onDelete('restrict'),
   ],
 );
 
-/** Base price per slot. Weekend/weekday, in whole rupees. */
+/** Base price per slot. Weekend/weekday, in paise. */
 export const rentablePrice = pgTable(
   'rentable_price',
   {
     rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'cascade' }),
     slot: bookingSlot('slot').notNull(),
-    weekday: integer('weekday').notNull(),
-    weekend: integer('weekend').notNull(),
+    weekdayMinor: minor('weekday_minor').notNull(),
+    weekendMinor: minor('weekend_minor').notNull(),
   },
-  (t) => [primaryKey({ columns: [t.rentableId, t.slot] })],
+  (t) => [primaryKey({ columns: [t.rentableId, t.slot] }),
+    check('rentable_price_amount_chk', sql`${t.weekdayMinor} BETWEEN 0 AND 9007199254740991 AND ${t.weekendMinor} BETWEEN 0 AND 9007199254740991`)],
 );
 
 /**
@@ -956,27 +948,13 @@ export const availability = pgTable(
     rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'cascade' }),
     day: date('day').notNull(),
     slot: availabilitySlot('slot').notNull(),
+    /** Open-date calendar only. Prices: booking_price_override. Owner blocks: inventory_reservation. */
     unitsAvailable: integer('units_available').notNull().default(1),
-    priceOverride: integer('price_override'),
-    blockedByClient: boolean('blocked_by_client').notNull().default(false),
   },
   (t) => [
     primaryKey({ columns: [t.rentableId, t.day, t.slot] }),
     index('availability_day_idx').on(t.day, t.slot),
   ],
-);
-
-/** Serial-numbered physical items. Movable goods only (Phase 3); empty for places. */
-export const unit = pgTable(
-  'unit',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'cascade' }),
-    serialNo: varchar('serial_no', { length: 120 }),
-    conditionGrade: varchar('condition_grade', { length: 24 }),
-    status: varchar('status', { length: 24 }).notNull().default('available'),
-  },
-  (t) => [index('unit_rentable_idx').on(t.rentableId)],
 );
 
 /* ==========================================================================
@@ -1006,6 +984,8 @@ export const bookingQuote = pgTable('booking_quote', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 }, (t) => [
   index('booking_quote_expiry_idx').on(t.expiresAt),
+  index('booking_quote_customer_idx').on(t.customerId).where(sql`${t.customerId} IS NOT NULL`),
+  index('booking_quote_rentable_idx').on(t.rentableId),
   check('booking_quote_valid_chk', sql`${t.currency} = 'INR' AND ${t.timeZone} = 'Asia/Kolkata'
     AND ${t.version} > 0 AND ${t.expiresAt} > ${t.createdAt}
     AND ${t.amountRentMinor} BETWEEN 0 AND 9007199254740991
@@ -1045,11 +1025,17 @@ export const bookingOrder = pgTable('booking_order', {
   confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Constant; lets the composite FK prove the customer is a customer account. */
+  customerRole: varchar('customer_role', { length: 16 }).notNull().default('customer'),
 }, (t) => [
+  check('booking_order_customer_role_chk', sql`${t.customerRole} = 'customer'`),
+  foreignKey({ name: 'booking_order_customer_role_fk', columns: [t.customerId, t.customerRole], foreignColumns: [users.id, users.role] }).onDelete('restrict'),
   uniqueIndex('booking_order_customer_key_idx').on(t.customerId, t.idempotencyKey),
   uniqueIndex('booking_order_scope_idx').on(t.id, t.customerId, t.rentableId, t.currency, t.timeZone),
   index('booking_order_history_idx').on(t.customerId, t.createdAt),
   index('booking_order_hold_idx').on(t.state, t.holdExpiresAt),
+  index('booking_order_rentable_idx').on(t.rentableId, t.createdAt.desc()),
+  index('booking_order_quote_idx').on(t.quoteId).where(sql`${t.quoteId} IS NOT NULL`),
   check('booking_order_valid_chk', sql`${t.currency} = 'INR' AND ${t.timeZone} = 'Asia/Kolkata'
     AND ${t.amountRentMinor} BETWEEN 0 AND 9007199254740991
     AND ${t.amountFeeMinor} BETWEEN 0 AND 9007199254740991
@@ -1068,57 +1054,35 @@ export const booking = pgTable(
     rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
     customerId: uuid('customer_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
 
-    day: date('day').notNull(),
     slot: bookingSlot('slot').notNull(),
     startsAt: timestamp('starts_at', { withTimezone: true }),
     endsAt: timestamp('ends_at', { withTimezone: true }),
     unitsBooked: integer('units_booked').notNull().default(1),
     guests: integer('guests').notNull().default(1),
 
-    // All amounts in whole rupees. See lib/domain/pricing.js for the rules.
-    amountRent: integer('amount_rent').notNull(),
-    amountFee: integer('amount_fee').notNull(),
-    amountDeposit: integer('amount_deposit').notNull().default(0),
-    /** Advance = slice of rent + the WHOLE platform fee, so revenue is safe. */
-    amountAdvancePaid: integer('amount_advance_paid').notNull().default(0),
-    balanceMode: balanceMode('balance_mode').notNull().default('online_before'),
-    balanceSettledAt: timestamp('balance_settled_at', { withTimezone: true }),
-
     state: bookingState('state').notNull().default('requested'),
-    checkInCode: varchar('check_in_code', { length: 8 }),
     contactPhone: varchar('contact_phone', { length: 15 }),
     note: text('note'),
 
-    /** Accept within the window or it auto-expires and auto-refunds in full. */
-    acceptDeadline: timestamp('accept_deadline', { withTimezone: true }),
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
-    cancelledBy: userRole('cancelled_by'),
+    /** customer | client | admin | system. NULL only on rows cancelled before 0043. */
+    cancelledByKind: varchar('cancelled_by_kind', { length: 16 }),
     cancellationReason: text('cancellation_reason'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 
-    /* ----------------------------------------------------------------------
-       CUSTOMER PART 02 — a booking becomes one VISIT inside an order.
-       Every column here is additive and nullable (or defaulted), because
-       legacy rows already exist and their review/payout foreign keys must
-       keep pointing at the same booking IDs. Nothing above this line moves.
-       ---------------------------------------------------------------------- */
-
-    /** The parent order. Null only for legacy rows the backfill has not reached. */
-    orderId: uuid('order_id').references(() => bookingOrder.id, { onDelete: 'restrict' }),
+    // A booking is one VISIT inside an order; listing/policy snapshots and versions live on the order.
+    /** The parent order. Rows from before orders existed were moved into 'legacy' orders by 0047. */
+    orderId: uuid('order_id').notNull().references(() => bookingOrder.id, { onDelete: 'restrict' }),
     /** 1-based position within the order, so a 3-visit order has a stable display order. */
-    itemPosition: integer('item_position'),
+    itemPosition: integer('item_position').notNull(),
 
-    /**
-     * The property-LOCAL visit-start date. `day` is retained untouched for the
-     * legacy readers; this column is the one the new services read, alongside
-     * an explicit timezone so a date is never reinterpreted in another zone.
-     */
-    localDay: date('local_day'),
-    timeZone: varchar('time_zone', { length: 64 }),
-    currency: varchar('currency', { length: 3 }),
+    /** The property-LOCAL visit-start date, with an explicit timezone so it is never reinterpreted. */
+    localDay: date('local_day').notNull(),
+    timeZone: varchar('time_zone', { length: 64 }).notNull(),
+    currency: varchar('currency', { length: 3 }).notNull(),
 
     /**
      * Buffer-INCLUSIVE occupied window. Distinct from starts_at/ends_at, which
@@ -1133,10 +1097,10 @@ export const booking = pgTable(
      */
     hoursKnown: boolean('hours_known').notNull().default(false),
 
-    // Minor-unit mirrors of the legacy rupee columns above. See `minor`.
-    amountRentMinor: minor('amount_rent_minor'),
-    amountFeeMinor: minor('amount_fee_minor'),
-    amountDepositMinor: minor('amount_deposit_minor'),
+    // Paise. See `minor`.
+    amountRentMinor: minor('amount_rent_minor').notNull(),
+    amountFeeMinor: minor('amount_fee_minor').notNull(),
+    amountDepositMinor: minor('amount_deposit_minor').notNull(),
     /** The INTENDED advance. An intent is not a payment — see collectedMinor. */
     amountAdvanceMinor: minor('amount_advance_minor'),
     /**
@@ -1155,24 +1119,14 @@ export const booking = pgTable(
     paymentMode: paymentMode('payment_mode').notNull().default('legacy_unknown'),
     visitProvenance: visitProvenance('visit_provenance').notNull().default('legacy_unknown'),
 
-    policyVersion: varchar('policy_version', { length: 32 }),
-    pricingVersion: varchar('pricing_version', { length: 32 }),
-    /** Immutable listing facts as sold, so a retitled or repriced listing does not rewrite history. */
-    listingSnapshot: jsonb('listing_snapshot'),
-    policySnapshot: jsonb('policy_snapshot'),
+    /** The visit as quoted (date, slot, hours, price). */
     slotSnapshot: jsonb('slot_snapshot'),
-    priceSnapshot: jsonb('price_snapshot'),
-    legacyAdvanceReportedMinor: minor('legacy_advance_reported_minor'),
 
-    /** THE IDEMPOTENCY MARKER. Set once by the backfill; its presence is what makes a rerun a no-op. */
-    backfillVersion: varchar('backfill_version', { length: 32 }),
-    backfilledAt: timestamp('backfilled_at', { withTimezone: true }),
     lifecycleVersion: integer('lifecycle_version').notNull().default(0),
   },
   (t) => [
-    index('booking_rentable_day_idx').on(t.rentableId, t.day),
+    index('booking_rentable_day_idx').on(t.rentableId, t.localDay),
     index('booking_customer_idx').on(t.customerId, t.state),
-    index('booking_state_deadline_idx').on(t.state, t.acceptDeadline),
 
     uniqueIndex('booking_id_rentable_idx').on(t.id, t.rentableId),
     foreignKey({ name: 'booking_order_scope_fk',
@@ -1184,15 +1138,13 @@ export const booking = pgTable(
       AND ${t.localDay} IS NOT NULL AND ${t.currency} IS NOT NULL AND ${t.timeZone} IS NOT NULL
       AND ${t.guests} > 0 AND ${t.unitsBooked} = 1
       AND ${t.amountRentMinor} IS NOT NULL AND ${t.amountFeeMinor} IS NOT NULL AND ${t.amountDepositMinor} IS NOT NULL)`),
-    index('booking_order_idx').on(t.orderId),
-    index('booking_backfill_idx').on(t.backfillVersion),
     uniqueIndex('booking_order_position_idx').on(t.orderId, t.itemPosition),
     /** One visit per order per local date and slot — a duplicated date is a bug, not a second visit. */
     uniqueIndex('booking_order_localday_slot_idx').on(t.orderId, t.localDay, t.slot),
     /** Simulated and legacy money can never become collected money. */
+    check('booking_cancelled_by_kind_chk', sql`${t.cancelledByKind} IS NULL OR ${t.cancelledByKind} IN ('customer','client','admin','system')`),
     check('booking_collected_requires_real_chk',
       sql`${t.collectedMinor} = 0 OR ${t.paymentMode} = 'real'`),
-    check('booking_legacy_advance_chk', sql`${t.legacyAdvanceReportedMinor} IS NULL OR ${t.legacyAdvanceReportedMinor} BETWEEN 0 AND 9007199254740991`),
     check('booking_minor_amounts_nonnegative_chk',
       sql`(${t.amountRentMinor} IS NULL OR ${t.amountRentMinor} BETWEEN 0 AND 9007199254740991)
         AND (${t.amountFeeMinor} IS NULL OR ${t.amountFeeMinor} BETWEEN 0 AND 9007199254740991)
@@ -1303,20 +1255,27 @@ export const payout = pgTable(
     clientId: uuid('client_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
     fundingAllocationId: uuid('funding_allocation_id').references(() => paymentAllocation.id, { onDelete: 'restrict' }),
     actualNetMinor: minor('actual_net_minor').notNull().default(0),
-    gross: integer('gross').notNull(),
-    commission: integer('commission').notNull(),
-    tds194o: integer('tds_194o').notNull().default(0),
-    gstTcs: integer('gst_tcs').notNull().default(0),
-    net: integer('net').notNull(),
+    // Quoted amounts in paise. Only actual_net_minor, backed by a funding allocation, is money owed.
+    grossMinor: minor('gross_minor').notNull(),
+    commissionMinor: minor('commission_minor').notNull(),
+    tds194oMinor: minor('tds_194o_minor').notNull().default(0),
+    gstTcsMinor: minor('gst_tcs_minor').notNull().default(0),
+    netMinor: minor('net_minor').notNull(),
     status: payoutStatus('status').notNull().default('pending'),
     /** CP21: the destination version this obligation is pinned to; never redirected. */
     destinationId: uuid('destination_id').references(() => payoutDestination.id, { onDelete: 'restrict' }),
     utr: varchar('utr', { length: 64 }),
     settledAt: timestamp('settled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    clientRole: varchar('client_role', { length: 16 }).notNull().default('client'),
   },
   (t) => [
+    check('payout_amounts_chk', sql`${t.grossMinor} BETWEEN 0 AND 9007199254740991 AND ${t.commissionMinor} >= 0 AND ${t.tds194oMinor} >= 0 AND ${t.gstTcsMinor} >= 0 AND ${t.netMinor} BETWEEN 0 AND 9007199254740991`),
+    check('payout_client_role_chk', sql`${t.clientRole} = 'client'`),
+    foreignKey({ name: 'payout_client_role_fk', columns: [t.clientId, t.clientRole], foreignColumns: [users.id, users.role] }).onDelete('restrict'),
     index('payout_client_status_idx').on(t.clientId, t.status),
+    index('payout_booking_idx').on(t.bookingId),
+    index('payout_destination_fk_idx').on(t.destinationId).where(sql`${t.destinationId} IS NOT NULL`),
     uniqueIndex('payout_funding_allocation_idx').on(t.fundingAllocationId),
     check('payout_actual_funding_chk', sql`${t.actualNetMinor} BETWEEN 0 AND 9007199254740991 AND (${t.actualNetMinor} = 0 OR ${t.fundingAllocationId} IS NOT NULL)`),
   ],
@@ -1327,10 +1286,10 @@ export const review = pgTable(
   'review',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'cascade' }),
-    rentableId: uuid('rentable_id').references(() => rentable.id, { onDelete: 'restrict' }),
-    authorId: uuid('author_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-    authorRole: userRole('author_role').notNull(),
+    bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'restrict' }),
+    rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
+    authorId: uuid('author_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+    authorRole: varchar('author_role', { length: 16 }).notNull().references(() => role.code, { onDelete: 'restrict', onUpdate: 'restrict' }),
     rating: integer('rating').notNull(),
     cleanliness: integer('cleanliness'),
     accuracy: integer('accuracy'),
@@ -1338,11 +1297,11 @@ export const review = pgTable(
     behaviour: integer('behaviour'),
     moderationState: varchar('moderation_state', { length: 16 }).notNull().default('pending'),
     moderationReason: text('moderation_reason'),
-    moderatedBy: uuid('moderated_by').references(() => adminUsers.id),
+    moderatedBy: uuid('moderated_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
     moderatedAt: timestamp('moderated_at', { withTimezone: true }),
     version: integer('version').notNull().default(0),
     ownerReply: text('owner_reply'),
-    repliedBy: uuid('replied_by').references(() => users.id),
+    repliedBy: uuid('replied_by').references(() => users.id, { onDelete: 'restrict' }),
     repliedAt: timestamp('replied_at', { withTimezone: true }),
 
     body: text('body'),
@@ -1350,6 +1309,10 @@ export const review = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('review_booking_author_idx').on(t.bookingId, t.authorId),
+    index('review_rentable_public_idx').on(t.rentableId).where(sql`${t.authorRole} = 'customer' AND ${t.moderationState} = 'published'`),
+    index('review_author_idx').on(t.authorId),
+    foreignKey({ name: 'review_author_user_role_fk', columns: [t.authorId, t.authorRole], foreignColumns: [users.id, users.role] }).onDelete('restrict'),
+    foreignKey({ name: 'review_booking_rentable_fk', columns: [t.bookingId, t.rentableId], foreignColumns: [booking.id, booking.rentableId] }).onDelete('restrict'),
     check('review_scores_chk', sql`${t.rating} BETWEEN 1 AND 5 AND (${t.cleanliness} IS NULL OR ${t.cleanliness} BETWEEN 1 AND 5) AND (${t.accuracy} IS NULL OR ${t.accuracy} BETWEEN 1 AND 5) AND (${t.valueForMoney} IS NULL OR ${t.valueForMoney} BETWEEN 1 AND 5)`),
     check('review_moderation_chk', sql`${t.moderationState} IN ('pending','published','rejected','hidden') AND (${t.moderationState}='published') = (${t.publishedAt} IS NOT NULL) AND ${t.version}>=0`),
   ],
@@ -1435,6 +1398,7 @@ export const customerPaymentMethod = pgTable('customer_payment_method', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex('payment_method_token_idx').on(t.provider, t.environment, t.tokenHash),
+  index('payment_method_customer_idx').on(t.customerId),
   uniqueIndex('payment_method_default_idx').on(t.customerId, t.provider, t.environment).where(sql`${t.isActive} AND ${t.isDefault}`),
   check('payment_method_real_only_chk', sql`${t.environment} IN ('test', 'live') AND ${t.provider} <> 'dummy'
     AND length(trim(${t.provider})) > 0 AND ${t.tokenHash} ~ '^[a-f0-9]{64}$'
@@ -1574,6 +1538,7 @@ export const refund = pgTable('refund', {
 }, (t) => [
   uniqueIndex('refund_external_idx').on(t.provider, t.environment, t.providerRefundId),
   uniqueIndex('refund_key_idx').on(t.transactionId, t.idempotencyKey),
+  index('refund_requested_idx').on(t.createdAt).where(sql`${t.state} = 'requested'`),
   financialScopeCheck('refund_scope_chk', t),
   safeMinor('refund_amount_chk', t.expectedMinor, t.actualMinor),
   check('refund_fact_chk', sql`length(trim(${t.idempotencyKey})) > 0 AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
@@ -1597,6 +1562,7 @@ export const refundAllocation = pgTable('refund_allocation', {
 }, (t) => [
   uniqueIndex('refund_allocation_source_idx').on(t.refundId, t.paymentAllocationId),
   index('refund_allocation_source_lookup_idx').on(t.paymentAllocationId),
+  index('refund_allocation_booking_idx').on(t.bookingId),
   safeMinor('refund_allocation_amount_chk', t.expectedMinor, t.actualMinor),
   check('refund_allocation_cap_chk', sql`${t.actualMinor} <= ${t.expectedMinor}`),
 ]);
@@ -1618,6 +1584,7 @@ export const paymentEvent = pgTable('payment_event', {
 }, (t) => [
   uniqueIndex('payment_event_external_idx').on(t.provider, t.environment, t.externalEventId),
   index('payment_event_work_idx').on(t.state, t.receivedAt),
+  index('payment_event_order_ref_idx').on(sql`(${t.redactedPayload}->>'orderId')`),
   check('payment_event_valid_chk', sql`${t.provider} <> 'dummy' AND length(trim(${t.provider})) > 0
     AND ${t.environment} IN ('test', 'live') AND length(trim(${t.externalEventId})) > 0
     AND ${t.attempts} >= 0 AND ${t.payloadHash} ~ '^[a-f0-9]{64}$'
@@ -1871,6 +1838,7 @@ export const notificationOutbox = pgTable('notification_outbox', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [uniqueIndex('notification_event_recipient_idx').on(t.eventKey, t.customerId, t.channel),
   index('notification_due_idx').on(t.state, t.nextAttemptAt), index('notification_customer_idx').on(t.customerId, t.scheduledAt),
+  index('notification_order_idx').on(t.orderId), index('notification_booking_idx').on(t.bookingId).where(sql`${t.bookingId} IS NOT NULL`),
   check('notification_valid_chk', sql`${t.template} IN ('confirmation','reminder','cancellation','refund','completion','review_invitation')
     AND ${t.channel}='sms' AND ${t.attempts}>=0 AND ${t.state} IN ('pending','blocked','retry','sending','unknown','accepted','delivered','undelivered','suppressed','failed')`)]);
 
@@ -1895,15 +1863,9 @@ export const clientUpdate = pgTable('client_update', {
   readAt: timestamp('read_at', { withTimezone: true }),
 }, t => [uniqueIndex('client_update_event_idx').on(t.clientId, t.eventKey),
   index('client_update_client_idx').on(t.clientId, t.createdAt),
+  index('client_update_rentable_idx').on(t.rentableId).where(sql`${t.rentableId} IS NOT NULL`),
+  index('client_update_order_idx').on(t.orderId).where(sql`${t.orderId} IS NOT NULL`),
   check('client_update_valid_chk', sql`${t.category} IN ('account','property','booking','case') AND ${t.kind} IN ('action','info')`)]);
-
-/** Informational categories the client chose to receive already read. Required work cannot be muted. */
-export const clientUpdatePreference = pgTable('client_update_preference', {
-  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'restrict' }),
-  muted: jsonb('muted').notNull().default([]),
-  version: integer('version').notNull().default(1),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
 
 export const reviewReport = pgTable('review_report', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -1912,7 +1874,7 @@ export const reviewReport = pgTable('review_report', {
   reason: text('reason').notNull(),
   state: varchar('state', { length: 16 }).notNull().default('open'),
   resolution: text('resolution'),
-  resolvedBy: uuid('resolved_by').references(() => adminUsers.id),
+  resolvedBy: uuid('resolved_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [uniqueIndex('review_report_author_idx').on(t.reviewId, t.reporterId),
@@ -1943,6 +1905,10 @@ export const supportRequest = pgTable('support_request', {
   check('support_participant_chk', sql`num_nonnulls(${t.customerId},${t.clientId})=1 AND (${t.clientId} IS NULL OR ${t.privacyRequestId} IS NULL) AND ${t.priority} IN ('normal','urgent') AND (${t.relatedRequestId} IS NULL OR ${t.relatedRequestId}<>${t.id})`),
   uniqueIndex('support_request_replay_idx').on(t.customerId, t.requestKey),
   index('support_request_inbox_idx').on(t.state, t.updatedAt), index('support_request_customer_idx').on(t.customerId, t.createdAt),
+  index('support_request_order_idx').on(t.orderId).where(sql`${t.orderId} IS NOT NULL`),
+  index('support_request_property_idx').on(t.propertyId).where(sql`${t.propertyId} IS NOT NULL`),
+  index('support_request_assignee_idx').on(t.assignedTo, t.state).where(sql`${t.assignedTo} IS NOT NULL`),
+  index('support_request_privacy_idx').on(t.privacyRequestId).where(sql`${t.privacyRequestId} IS NOT NULL`),
   check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other')
     AND ${t.state} IN ('open','in_progress','waiting_customer','resolved') AND ${t.version}>=0
     AND length(trim(${t.subject})) BETWEEN 5 AND 120 AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
@@ -2001,7 +1967,7 @@ export const disputeCase = pgTable('dispute_case', {
   requestHash: varchar('request_hash',{length:64}).notNull(),
   createdAt: timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
   updatedAt: timestamp('updated_at',{withTimezone:true}).notNull().defaultNow(),
-},t=>[uniqueIndex('dispute_case_request_idx').on(t.createdByKind,t.createdById,t.requestKey),index('dispute_case_queue_idx').on(t.state,t.createdAt),index('dispute_case_owner_idx').on(t.ownerId,t.createdAt),index('dispute_case_customer_idx').on(t.customerId,t.createdAt),
+},t=>[uniqueIndex('dispute_case_request_idx').on(t.createdByKind,t.createdById,t.requestKey),index('dispute_case_queue_idx').on(t.state,t.createdAt),index('dispute_case_owner_idx').on(t.ownerId,t.createdAt),index('dispute_case_customer_idx').on(t.customerId,t.createdAt),index('dispute_case_order_idx').on(t.orderId),index('dispute_case_visit_idx').on(t.visitId),
   check('dispute_case_valid_chk',sql`${t.kind} IN ('service','deposit','provider') AND length(trim(${t.subject})) BETWEEN 5 AND 160 AND ${t.claimedMinor} BETWEEN 0 AND 100000000
     AND ${t.state} IN ('open','resolved') AND ${t.version} >= 1 AND ${t.createdByKind} IN ('owner','customer','admin') AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
     AND ((${t.requestedParty} IS NULL AND ${t.responseDue} IS NULL) OR (${t.requestedParty} IN ('owner','customer') AND ${t.responseDue} IS NOT NULL))

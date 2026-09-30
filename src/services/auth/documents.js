@@ -2,7 +2,8 @@
 
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
-import { and, eq, isNull } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '@/services/db';
 import { documents, users, clientApplication } from '@/services/db/schema/index.js';
 import { audit } from '@/services/audit';
@@ -48,8 +49,12 @@ export async function listDocuments({ ownerType, ownerId }) {
       eq(documents.ownerType, ownerType),
       eq(documents.ownerId, ownerId),
       isNull(documents.deletedAt),
+      ne(documents.status, 'superseded'),
     ));
 }
+
+/** The live row of a slot; a re-upload supersedes it so the reviewed version stays on record. */
+export const LIVE_DOCUMENT_STATES = ['uploaded', 'accepted', 'rejected'];
 
 /**
  * A client's KYC documents. Uploads are owned by the APPLICATION
@@ -146,13 +151,24 @@ export async function uploadKycDocuments(_prev, formData) {
       const result = await uploadPrivateDocument({
         buffer: item.buffer,
         folder: `rentra/kyc/${user.id}`,
-        // Stable slot id, so re-uploading a side replaces rather than piles up.
-        publicId: `${docType}_${item.side}`,
+        // A new file per upload: the superseded version keeps pointing at its own bytes.
+        publicId: `${docType}_${item.side}_${randomUUID()}`,
       });
 
-      await db
-        .insert(documents)
-        .values({
+      // The previous live file (and its review) is kept as history, marked superseded;
+      // the new upload starts unreviewed.
+      await db.transaction(async (tx) => {
+        // Serialise uploads to one slot so two tabs cannot both supersede and insert.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`document:${app.id}:${docType}:${item.side}`}, 0))`);
+        await tx.update(documents).set({ status: 'superseded' }).where(and(
+          eq(documents.ownerType, 'client_application'),
+          eq(documents.ownerId, app.id),
+          eq(documents.docType, docType),
+          eq(documents.side, item.side),
+          inArray(documents.status, LIVE_DOCUMENT_STATES),
+          isNull(documents.deletedAt),
+        ));
+        await tx.insert(documents).values({
           ownerType: 'client_application',
           ownerId: app.id,
           docType,
@@ -165,25 +181,8 @@ export async function uploadKycDocuments(_prev, formData) {
           status: 'uploaded',
           uploadedBy: user.id,
           uploadedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [documents.ownerType, documents.ownerId, documents.docType, documents.side],
-          set: {
-            storageKey: result.publicId,
-            mimeType: item.mime,
-            bytes: result.bytes,
-            width: result.width,
-            height: result.height,
-            // A replaced document goes back to unreviewed, and any previous
-            // rejection note is cleared — otherwise the reviewer sees a stale
-            // complaint against a file that no longer exists.
-            status: 'uploaded',
-            reviewNote: null,
-            reviewedBy: null,
-            deletedAt: null,
-            uploadedAt: new Date(),
-          },
         });
+      });
 
       uploaded.push(`${docType}/${item.side}`);
     }

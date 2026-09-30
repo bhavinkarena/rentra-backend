@@ -29,11 +29,11 @@ export async function changePropertyPolicy(database, ownerId, id, command, input
         'The property changed. Reload the latest version and preview again.',
       );
     const rates =
-      await tx`SELECT slot,weekday,weekend FROM rentable_price WHERE rentable_id=${id} ORDER BY slot`;
+      await tx`SELECT slot,(weekday_minor/100)::int AS weekday,(weekend_minor/100)::int AS weekend FROM rentable_price WHERE rentable_id=${id} ORDER BY slot`;
     const before =
       command === 'pricing'
-        ? { rates, extraGuestCharge: listing.extra_guest_charge }
-        : { depositAmount: listing.deposit_amount, cancellationTier: listing.cancellation_tier };
+        ? { rates, extraGuestCharge: Number(listing.extra_guest_charge_minor) / 100 }
+        : { depositAmount: Number(listing.deposit_minor) / 100, cancellationTier: listing.cancellation_tier };
     const token = signature([
       ownerId,
       id,
@@ -59,15 +59,15 @@ export async function changePropertyPolicy(database, ownerId, id, command, input
       await tx`DELETE FROM rentable_price WHERE rentable_id=${id}`;
       for (const slot of ['day', 'night', 'full_day'])
         if (value[`${slot}_weekday`] > 0 || value[`${slot}_weekend`] > 0)
-          await tx`INSERT INTO rentable_price(rentable_id,slot,weekday,weekend) VALUES (${id},${slot},${value[`${slot}_weekday`]},${value[`${slot}_weekend`]})`;
+          await tx`INSERT INTO rentable_price(rentable_id,slot,weekday_minor,weekend_minor) VALUES (${id},${slot},${value[`${slot}_weekday`] * 100},${value[`${slot}_weekend`] * 100})`;
       const config = listing.booking_config;
       if (config?.slots)
         for (const schedule of Object.values(config.slots))
           if (schedule.enabled)
             schedule.extraGuestChargeMinor = (value.extraGuestCharge || 0) * 100;
-      await tx`UPDATE rentable SET extra_guest_charge=${value.extraGuestCharge || 0},booking_config=${JSON.stringify(config)}::text::jsonb,booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
+      await tx`UPDATE rentable SET extra_guest_charge_minor=${(value.extraGuestCharge || 0) * 100},booking_config=${JSON.stringify(config)}::text::jsonb,booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
     } else {
-      await tx`UPDATE rentable SET deposit_amount=${value.depositAmount},cancellation_tier=${value.cancellationTier},booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
+      await tx`UPDATE rentable SET deposit_minor=${value.depositAmount * 100},cancellation_tier=${value.cancellationTier},booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
     }
     const [after] =
       await tx`SELECT content_version,booking_config_version FROM rentable WHERE id=${id}`;

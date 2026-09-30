@@ -108,7 +108,7 @@ export function profileCompletion(user, application = null, documents = []) {
        * Client from finishing their own side.
        */
       done: Boolean(
-        (user?.payoutUpiId || app.payoutUpiId || app.payoutAccountRef)
+        (app.payoutUpiId || app.payoutAccountRef)
         && app.payoutNameMatch !== false,
       ),
       failed: app.payoutNameMatch === false,

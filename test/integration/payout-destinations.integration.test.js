@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
 import { seedReviewFixture, seedConfirmedBooking } from '../helpers/listing-review-fixture.js';
 import { issuePortalSession } from '../../src/services/auth/portal-sessions.js';
@@ -27,7 +26,7 @@ test(
       await sql`UPDATE client_application SET kyc_name_on_doc='Property Owner' WHERE user_id=${f.owner}`;
       const fresh = async () => issuePortalSession(sql, 'client', f.owner, 3600);
       const age = (id) =>
-        sql`UPDATE portal_session SET created_at=now()-interval '1 hour' WHERE id=${id}`;
+        sql`UPDATE auth_session SET created_at=now()-interval '1 hour' WHERE id=${id}`;
       const owner = { kind: 'owner', id: f.owner, sessionId: await fresh() };
       const bank = {
         method: 'bank',
@@ -82,7 +81,7 @@ test(
       const everywhere = JSON.stringify([
         await sql`SELECT * FROM payout_destination`,
         await sql`SELECT "after","before" FROM audit_log WHERE entity='payout_destination'`,
-        await sql`SELECT payout_bank_ref FROM "user" WHERE id=${f.owner}`,
+        await sql`SELECT payout_account_ref FROM client_payout_current WHERE client_id=${f.owner}`,
       ]);
       assert.doesNotMatch(
         everywhere,
@@ -90,14 +89,16 @@ test(
         'the full account number is never stored',
       );
       assert.equal(
-        (await sql`SELECT payout_bank_ref FROM "user" WHERE id=${f.owner}`)[0].payout_bank_ref,
+        (
+          await sql`SELECT payout_account_ref FROM client_payout_current WHERE client_id=${f.owner}`
+        )[0].payout_account_ref,
         '••••6789',
       );
       await assert.rejects(change(owner, { expectedLatest: 0 }), { code: 'DESTINATION_CHANGED' });
 
       // An obligation pinned to v1 is never redirected by later changes.
       const [pinned] =
-        await sql`INSERT INTO payout(booking_id,client_id,gross,commission,net,status,destination_id) VALUES (${visit.id},${f.owner},1000,80,920,'pending',(SELECT id FROM payout_destination WHERE client_id=${f.owner} AND version=1)) RETURNING id,destination_id`;
+        await sql`INSERT INTO payout(booking_id,client_id,gross_minor,commission_minor,net_minor,status,destination_id) VALUES (${visit.id},${f.owner},100000,8000,92000,'pending',(SELECT id FROM payout_destination WHERE client_id=${f.owner} AND version=1)) RETURNING id,destination_id`;
 
       // A stale sign-in turns a change into a draft; the draft needs a fresh sign-in to submit.
       await age(owner.sessionId);
@@ -157,9 +158,9 @@ test(
       await sql`UPDATE payout_destination SET state='verified',verification_provider='provider-under-test',verification_reference='fa_TEST',
         verification_evidence_hash=${'a'.repeat(64)},verified_at=now(),updated_at=now() WHERE client_id=${f.owner} AND version=2`;
       const [second] =
-        await sql`INSERT INTO payout(booking_id,client_id,gross,commission,net,status,destination_id) VALUES (${visit.id},${f.owner},500,40,460,'pending',(SELECT id FROM payout_destination WHERE client_id=${f.owner} AND version=2)) RETURNING id`;
+        await sql`INSERT INTO payout(booking_id,client_id,gross_minor,commission_minor,net_minor,status,destination_id) VALUES (${visit.id},${f.owner},50000,4000,46000,'pending',(SELECT id FROM payout_destination WHERE client_id=${f.owner} AND version=2)) RETURNING id`;
       const [third] =
-        await sql`INSERT INTO payout(booking_id,client_id,gross,commission,net,status,destination_id) VALUES (${visit.id},${f.owner},500,40,460,'pending',(SELECT id FROM payout_destination WHERE client_id=${f.owner} AND version=2)) RETURNING id`;
+        await sql`INSERT INTO payout(booking_id,client_id,gross_minor,commission_minor,net_minor,status,destination_id) VALUES (${visit.id},${f.owner},50000,4000,46000,'pending',(SELECT id FROM payout_destination WHERE client_id=${f.owner} AND version=2)) RETURNING id`;
       await sql`UPDATE payout SET status='processing' WHERE id=${second.id}`;
 
       // Admin failure: impact preview, recent sign-in, reason, one effect, owner inbox update.
@@ -260,22 +261,10 @@ test(
         [1, 'submitted', 'onboarding'],
       );
 
-      // Backfill: legacy details become version 1 (submitted); invalid legacy rows are left alone.
-      const [legacyA] =
-        await sql`INSERT INTO "user"(email,role,account_status,name,payout_upi_id) VALUES ('legacy-a@fixture.invalid','client','active','Legacy Owner','Legacy.Owner@ybl') RETURNING id`;
-      const [legacyB] =
-        await sql`INSERT INTO "user"(email,role,account_status,name,payout_bank_ref) VALUES ('legacy-b@fixture.invalid','client','active','Legacy Bank','••••1111') RETURNING id`;
-      const migration = await readFile(
-        new URL('../../drizzle/0033_payout_destinations.sql', import.meta.url),
-        'utf8',
-      );
-      await sql.unsafe(migration.split('--> statement-breakpoint').at(-1));
-      const legacyRows =
-        await sql`SELECT client_id,version,state,source,upi_id FROM payout_destination WHERE client_id IN ${sql([legacyA.id, legacyB.id])}`;
-      assert.deepEqual(
-        legacyRows.map((r) => [r.client_id === legacyA.id, r.version, r.state, r.source, r.upi_id]),
-        [[true, 1, 'submitted', 'migration', 'legacy.owner@ybl']],
-      );
+      // 0044 removed the legacy user/application payout columns: the view is the only read path.
+      const legacyColumns =
+        await sql`SELECT column_name FROM information_schema.columns WHERE table_name IN ('user','client_application') AND column_name LIKE 'payout%'`;
+      assert.equal(legacyColumns.length, 0);
     } finally {
       await fixture.drop();
     }

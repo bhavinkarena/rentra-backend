@@ -183,7 +183,7 @@ test(
       await sql`UPDATE rentable SET status='pending_verification' WHERE id=${id}`;
       s = await state();
       await hide(s.version);
-      await sql`UPDATE rentable_price SET weekday=1100 WHERE rentable_id=${id}`;
+      await sql`UPDATE rentable_price SET weekday_minor=110000 WHERE rentable_id=${id}`;
       s = await state();
       assert.equal(s.priorStatus, 'pending_review');
       await restore(s.version);

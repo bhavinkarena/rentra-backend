@@ -73,7 +73,7 @@ test(
       const second = await submit(f.owner);
       await assert.rejects(decide(first.submissionId), { code: 'SUBMISSION_CHANGED' });
       // Child edits invalidate review, even when no property editor update follows.
-      await sql`UPDATE rentable_price SET weekday=1200 WHERE rentable_id=${id}`;
+      await sql`UPDATE rentable_price SET weekday_minor=120000 WHERE rentable_id=${id}`;
       assert.equal((await propertyReviewContext(sql, id)).needsResubmission, true);
       await assert.rejects(decide(second.submissionId), { code: 'SUBMISSION_CHANGED' });
       const third = await submit(f.owner);

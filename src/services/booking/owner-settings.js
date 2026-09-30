@@ -36,7 +36,6 @@ export async function saveBookingPriceOverride(database, ownerId, input) {
     await ownerAccess(tx, listing, ownerId);
     if (value.rentMinor === null) {
       await tx`DELETE FROM booking_price_override WHERE rentable_id=${listing.id} AND day=${value.day} AND slot=${value.slot}`;
-      if (value.slot !== 'full_day') await tx`UPDATE availability SET price_override=NULL WHERE rentable_id=${listing.id} AND day=${value.day} AND slot=${value.slot}`;
     } else {
       await tx`INSERT INTO booking_price_override (rentable_id,day,slot,rent_minor)
         VALUES (${listing.id},${value.day},${value.slot},${value.rentMinor})
@@ -56,8 +55,8 @@ export async function openBookingDates(database, ownerId, { rentableId, from, to
   if (count < 1 || count > 366) throw new InventoryError('INVALID_RANGE', 'Choose an ordered range of at most 366 dates.');
   return withListingInventory(database, rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId);
-    const result = await tx`INSERT INTO availability (rentable_id,day,slot,units_available,blocked_by_client)
-      SELECT ${listing.id}, d::date, s::availability_slot, 1, false
+    const result = await tx`INSERT INTO availability (rentable_id,day,slot,units_available)
+      SELECT ${listing.id}, d::date, s::availability_slot, 1
       FROM generate_series(${from}::date,${to}::date,interval '1 day') d CROSS JOIN unnest(ARRAY['day','night']) s
       ON CONFLICT (rentable_id,day,slot) DO NOTHING RETURNING day`;
     await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"after") VALUES

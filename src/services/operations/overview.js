@@ -14,7 +14,7 @@ export async function readOperations(database, adminId, env = process.env) {
       (SELECT count(*)::int FROM refund WHERE state IN ('requested','processing','unknown','failed') AND created_at<clock_timestamp()-interval '15 minutes') AS refund_backlog,
       (SELECT count(*)::int FROM notification_outbox WHERE state IN ('failed','undelivered','unknown','blocked')
         OR (state IN ('pending','retry','sending','accepted') AND scheduled_at<clock_timestamp()-interval '15 minutes')) AS delivery_backlog,
-      (SELECT count(*)::int FROM customer_otp_challenge WHERE delivery_mode<>'development' AND NOT delivered AND created_at>clock_timestamp()-interval '1 hour') AS otp_delivery_failures,
+      (SELECT count(*)::int FROM otp_challenge WHERE principal_kind='customer' AND delivery_mode<>'development' AND NOT delivered AND created_at>clock_timestamp()-interval '1 hour') AS otp_delivery_failures,
       (SELECT count(*)::int FROM support_request WHERE state<>'resolved' AND updated_at<clock_timestamp()-interval '24 hours') AS support_backlog,
       (SELECT count(*)::int FROM availability WHERE units_available<0) AS negative_inventory,
       (SELECT count(*)::int FROM inventory_reservation a JOIN inventory_reservation b ON a.id<b.id AND a.rentable_id=b.rentable_id AND a.resource_key=b.resource_key

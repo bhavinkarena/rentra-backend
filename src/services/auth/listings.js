@@ -2,7 +2,8 @@
 
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
-import { and, eq } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, eq, inArray, isNull, sql as raw } from 'drizzle-orm';
 import { db, sql } from '@/services/db';
 import { submitProperty } from '../admin/listings.js';
 import { changePropertyPolicy } from '../booking/property-policy.js';
@@ -508,36 +509,36 @@ export async function uploadOwnershipDocument(_prev, formData) {
   const result = await uploadPrivateDocument({
     buffer,
     folder: `rentra/ownership/${listing.id}`,
-    publicId: d.docType,
+    // A new file per upload: the superseded version keeps pointing at its own bytes.
+    publicId: `${d.docType}_${randomUUID()}`,
   });
 
-  // The reviewer sets nameMatch — we only record what the Client typed.
-  await db.insert(documents).values({
-    ownerType: 'rentable',
-    ownerId: listing.id,
-    docType: d.docType,
-    side: 'single',
-    storageKey: result.publicId,
-    mimeType: mime,
-    bytes: result.bytes,
-    nameOnDocument: d.nameOnDocument,
-    issuedAt: d.issuedAt || null,
-    status: 'uploaded',
-    uploadedBy: user.id,
-  }).onConflictDoUpdate({
-    target: [documents.ownerType, documents.ownerId, documents.docType, documents.side],
-    set: {
+  // The reviewer sets nameMatch — we only record what the Client typed. The previous
+  // live file and its review stay on record as superseded.
+  await db.transaction(async (tx) => {
+    // Serialise uploads to one slot so two tabs cannot both supersede and insert.
+    await tx.execute(raw`SELECT pg_advisory_xact_lock(hashtextextended(${`document:${listing.id}:${d.docType}:single`}, 0))`);
+    await tx.update(documents).set({ status: 'superseded' }).where(and(
+      eq(documents.ownerType, 'rentable'),
+      eq(documents.ownerId, listing.id),
+      eq(documents.docType, d.docType),
+      eq(documents.side, 'single'),
+      inArray(documents.status, ['uploaded', 'accepted', 'rejected']),
+      isNull(documents.deletedAt),
+    ));
+    await tx.insert(documents).values({
+      ownerType: 'rentable',
+      ownerId: listing.id,
+      docType: d.docType,
+      side: 'single',
       storageKey: result.publicId,
       mimeType: mime,
       bytes: result.bytes,
       nameOnDocument: d.nameOnDocument,
       issuedAt: d.issuedAt || null,
       status: 'uploaded',
-      reviewNote: null,
-      reviewedBy: null,
-      nameMatch: null,
-      uploadedAt: new Date(),
-    },
+      uploadedBy: user.id,
+    });
   });
 
   await audit({

@@ -260,7 +260,7 @@ export async function refundableVisits(database, actor, orderId) {
     await requireAdmin(tx, actor);
     const [order] = await tx`SELECT id,reference,listing_snapshot->>'title' title FROM booking_order WHERE id=${orderId}`;
     if (!order) throw new RefundOperationError('ORDER_NOT_FOUND', 'Not found', 404);
-    const visits = await tx`SELECT id,reference,state,local_day,day FROM booking WHERE order_id=${orderId} ORDER BY item_position NULLS LAST,day,id`;
+    const visits = await tx`SELECT id,reference,state,local_day FROM booking WHERE order_id=${orderId} ORDER BY item_position NULLS LAST,local_day,id`;
     const sources = visits.length ? await capturedAllocations(tx, visits.map((v) => v.id)) : [];
     return {
       orderId,
@@ -273,7 +273,7 @@ export async function refundableVisits(database, actor, orderId) {
           id: v.id,
           reference: v.reference,
           state: v.state,
-          date: String((v.local_day ?? v.day) instanceof Date ? (v.local_day ?? v.day).toISOString() : (v.local_day ?? v.day)).slice(0, 10),
+          date: String(v.local_day instanceof Date ? v.local_day.toISOString() : v.local_day).slice(0, 10),
           capturedMinor: own.reduce((sum, s) => sum + n(s.actual_minor), 0),
           remainingMinor: own.reduce((sum, s) => sum + Math.max(0, n(s.actual_minor) - n(s.reserved)), 0),
         };

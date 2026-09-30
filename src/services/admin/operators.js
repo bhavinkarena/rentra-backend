@@ -118,7 +118,7 @@ export async function readOperator(db, actor, id) {
     enrollment_hash IS NOT NULL enrollment_pending,security_version,last_login_at,locked_until
     FROM admin_user WHERE id=${id}`;
   if (!row) throw notFound();
-  const sessions = await db`SELECT id,created_at,expires_at FROM portal_session WHERE admin_id=${id}
+  const sessions = await db`SELECT id,created_at,expires_at FROM auth_session WHERE admin_id=${id}
     AND revoked_at IS NULL AND expires_at>clock_timestamp() ORDER BY created_at DESC LIMIT 100`;
   const history =
     await db`SELECT action,reason,at AS created_at FROM audit_log WHERE entity='admin_user'
@@ -219,7 +219,7 @@ export async function operatorCommand(db, actor, id, input) {
         security_version=security_version+1 WHERE id=${id}`;
     } else if (f.command === 'revoke') {
       const rows =
-        await tx`UPDATE portal_session SET revoked_at=clock_timestamp() WHERE admin_id=${id}
+        await tx`UPDATE auth_session SET revoked_at=clock_timestamp() WHERE admin_id=${id}
         AND revoked_at IS NULL AND expires_at>clock_timestamp() AND (${f.sessionId ?? null}::uuid IS NULL OR id=${f.sessionId ?? null}::uuid) RETURNING id`;
       await audit(tx, actor, id, 'operator_revoke', f.reason, { count: rows.length });
       return { ok: true, id };

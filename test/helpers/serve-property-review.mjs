@@ -75,7 +75,7 @@ if (process.env.FIXTURE_STAGE === 'published') {
   await v.publishProperty(fixture.sql, { adminId: ids.admin, id: ids.listing, input });
   booking = await seedConfirmedBooking(fixture.sql, ids.listing);
   const [session] =
-    await fixture.sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booking.customer},now()+interval '1 day') RETURNING id`;
+    await fixture.sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${booking.customer},now()+interval '1 day') RETURNING id`;
   tokens.customer = await encryptSession({
     userId: booking.customer,
     role: 'customer',

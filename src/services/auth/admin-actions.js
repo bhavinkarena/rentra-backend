@@ -3,7 +3,7 @@
 import { redirect } from 'next/navigation';
 import { decideApplication } from '@/services/admin/applications.js';
 import { headers } from 'next/headers';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, sql } from '@/services/db';
 import { adminUsers, documents } from '@/services/db/schema/index.js';
@@ -224,19 +224,18 @@ export async function reviewDocument(_prev, formData) {
     return { errors: { note: 'Say what is wrong with it — the Client sees this.' } };
   }
 
-  const [doc] = await db
-    .select()
-    .from(documents)
-    .where(eq(documents.id, documentId))
-    .limit(1);
+  // Only the live version of a slot can be decided; a replaced file stays superseded.
+  const live = and(eq(documents.id, documentId), inArray(documents.status, ['uploaded', 'accepted', 'rejected']), isNull(documents.deletedAt));
+  const [doc] = await db.select().from(documents).where(live).limit(1);
 
-  if (!doc) return { errors: { _: 'That document is no longer available.' } };
+  if (!doc) return { errors: { _: 'That document was replaced or removed. Reload to review the current file.' } };
 
-  await db.update(documents).set({
+  const [decided] = await db.update(documents).set({
     status: outcome,
     reviewedBy: admin.id,
     reviewNote: note || null,
-  }).where(eq(documents.id, doc.id));
+  }).where(live).returning({ id: documents.id });
+  if (!decided) return { errors: { _: 'That document was replaced or removed. Reload to review the current file.' } };
 
   await audit({
     actorType: 'admin', actorId: admin.id, entity: 'document', entityId: doc.id,

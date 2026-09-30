@@ -29,10 +29,13 @@ test(
           await sql`INSERT INTO "user"(email,role,account_status,name,phone,client_type,email_verified_at,phone_verified_at)
           VALUES (${email},'client','pending_application','Asha Patel',${String(Math.random()).slice(2, 12)},'owner',now(),now()) RETURNING id`;
         const [app] =
-          await sql`INSERT INTO client_application(user_id,status,legal_name,residential_address,pincode,submitted_at,
-            payout_upi_id,payout_name_match,consent_at)
+          await sql`INSERT INTO client_application(user_id,status,legal_name,residential_address,pincode,submitted_at,consent_at)
           VALUES (${user.id},${fields.status ?? 'submitted'},'Asha Patel','12 Ring Road','395007',now() - interval '60 hours',
-            'asha@upi',${fields.payoutMatch ?? null},now()) RETURNING id`;
+            now()) RETURNING id`;
+        // Payout details live only in payout_destination.
+        const check = { true: 'same', false: 'different' }[fields.payoutMatch] ?? 'unknown';
+        await sql`INSERT INTO payout_destination(client_id,version,method,holder_name,upi_id,name_check,state,source,submitted_at)
+          VALUES (${user.id},1,'upi','Asha Patel','asha@upi',${check},'submitted','onboarding',now())`;
         return { userId: user.id, appId: app.id };
       };
       const one = await applicant('one@fixture.invalid');
@@ -193,7 +196,9 @@ test(
         code: 'APPROVAL_BLOCKED',
       });
       await sql`UPDATE "user" SET account_status='suspended' WHERE id=${mismatch.userId}`;
-      await sql`UPDATE client_application SET payout_name_match=true WHERE id=${mismatch.appId}`;
+      await sql`UPDATE payout_destination SET state='superseded',updated_at=now() WHERE client_id=${mismatch.userId}`;
+      await sql`INSERT INTO payout_destination(client_id,version,method,holder_name,upi_id,name_check,state,source,submitted_at)
+        VALUES (${mismatch.userId},2,'upi','Asha Patel','asha@upi','same','submitted','settings',now())`;
       await assert.rejects(decide(alice, mismatch.appId, 'approve', { expectedVersion: 1 }), {
         statusCode: 409,
         code: 'ACCOUNT_NOT_PENDING',

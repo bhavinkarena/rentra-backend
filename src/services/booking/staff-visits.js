@@ -14,7 +14,7 @@ const uuid = z.string().uuid();
 const TABS = ['today', 'upcoming', 'action_needed', 'past'];
 const instant = (value) => (value ? new Date(value).toISOString() : null);
 const dayOf = (row) => {
-  const value = row.local_day ?? row.day;
+  const value = row.local_day;
   return value instanceof Date ? value.toISOString().slice(0, 10) : String(value ?? '').slice(0, 10);
 };
 
@@ -67,7 +67,7 @@ export async function readStaffVisitRecord(database, staff, orderId) {
   return database.begin(async (tx) => {
     const rows = await tx`SELECT b.*, r.title, o.reference AS order_reference, o.time_zone, o.policy_snapshot
       FROM booking b JOIN booking_order o ON o.id=b.order_id JOIN rentable r ON r.id=b.rentable_id
-      WHERE b.order_id=${orderId} AND ${assigned(tx, staff)} ORDER BY b.item_position NULLS LAST, b.day, b.id`;
+      WHERE b.order_id=${orderId} AND ${assigned(tx, staff)} ORDER BY b.item_position NULLS LAST, b.local_day, b.id`;
     if (!rows.length) return null;
     const records = await visitEvidenceRecords(tx, orderId, 'staff');
     const visits = rows.map((row) => ({

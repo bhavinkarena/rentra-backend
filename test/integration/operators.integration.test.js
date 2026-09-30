@@ -57,9 +57,9 @@ test(
       await assert.rejects(cmd(a, a.id, 'access', 1, { active: false, permissions: null }), {
         code: 'SELF_LOCKOUT',
       });
-      await db`UPDATE portal_session SET created_at=now()-interval '16 minutes' WHERE id=${a.sessionId}`;
+      await db`UPDATE auth_session SET created_at=now()-interval '16 minutes' WHERE id=${a.sessionId}`;
       await assert.rejects(cmd(a, b.id, 'revoke'), { code: 'RECENT_AUTH_REQUIRED' });
-      await db`UPDATE portal_session SET created_at=now() WHERE id=${a.sessionId}`;
+      await db`UPDATE auth_session SET created_at=now() WHERE id=${a.sessionId}`;
       await cmd(a, b.id, 'access', 1, { active: true, permissions: ['admin.security.read'] });
       assert.equal(
         await validPortalSession(db, { adminId: b.id, sessionId: b.sessionId }, 'admin'),

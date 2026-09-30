@@ -96,7 +96,7 @@ export async function settleVerifiedPayment(database, paymentId, payment) {
     } else {
       // Conservative late-capture policy: never reacquire expired inventory.
       await tx`UPDATE inventory_reservation SET state='released',released_at=${now} WHERE booking_id IN ${tx(visits.map(v=>v.id))} AND state='held'`;
-      await tx`UPDATE booking SET state='cancelled',cancelled_at=${now},cancellation_reason='Test capture requires resolution',
+      await tx`UPDATE booking SET state='cancelled',cancelled_at=${now},cancelled_by_kind='system',cancellation_reason='Test capture requires resolution',
         lifecycle_version=lifecycle_version+1,updated_at=${now} WHERE order_id=${order.id} AND state='requested'`;
       await tx`UPDATE booking_order SET state='cancelled',updated_at=${now} WHERE id=${order.id} AND state='held'`;
       const refundId = randomUUID();

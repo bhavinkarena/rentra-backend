@@ -46,9 +46,9 @@ test(
         await sql`UPDATE booking SET visit_provenance='real',hours_known=true,starts_at=now()-interval '1 hour',ends_at=now()+interval '2 hours',
         blocked_start_at=now()-interval '1 hour',blocked_end_at=now()+interval '2 hours' WHERE order_id=${booked.order} RETURNING *`;
       const [b] =
-        await sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,day,local_day,slot,state,amount_rent,amount_fee,starts_at,ends_at,hours_known,
+        await sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,hours_known,
         blocked_start_at,blocked_end_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,visit_provenance,units_booked,guests)
-        VALUES ('CP13-TEST',${f.listing},${booked.customer},${booked.order},2,current_date-1,current_date-1,'day','confirmed',1000,80,
+        VALUES ('CP13-TEST',${f.listing},${booked.customer},${booked.order},2,current_date-1,'day','confirmed',
         now()-interval '28 hours',now()-interval '24 hours',true,now()-interval '28 hours',now()-interval '24 hours','INR','Asia/Kolkata',100000,8000,0,'test',1,2) RETURNING *`;
       for (const visit of [a, b])
         await sql`INSERT INTO inventory_reservation(rentable_id,booking_id,source,state,blocked_start_at,blocked_end_at) VALUES (${f.listing},${visit.id},'booking','committed',${visit.blocked_start_at},${visit.blocked_end_at})`;
@@ -343,7 +343,7 @@ test(
       );
       assert.equal(adminView.visits.find((v) => v.id === b.id).incidents[0].actorName, 'Reviewer');
       const [sessionRow] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
       const customerView = await readBookingRecord(
         sql,
         {

@@ -20,8 +20,8 @@ export async function seedFinanceFixture(sql, f) {
         await tx`INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,payment_mode,visit_provenance)
       VALUES (${key},${customer.id},${f.listing},'INR','Asia/Kolkata','v1','v1','{}',${JSON.stringify(snapshot)}::text::jsonb,100000,8000,0,${key},${'a'.repeat(64)},'completed',${mode},${environment === 'live' ? 'real' : 'test'}) RETURNING id`;
       const [visit] =
-        await tx`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,day,local_day,slot,state,amount_rent,amount_fee,starts_at,ends_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,visit_provenance,units_booked,guests,listing_snapshot)
-      VALUES (${key.slice(0, 16)},${f.listing},${customer.id},${order.id},1,current_date-1,current_date-1,'day','completed',1000,80,now()-interval '1 day',now()-interval '16 hours','INR','Asia/Kolkata',100000,8000,0,${mode},${environment === 'live' ? 'real' : 'test'},1,2,${JSON.stringify(snapshot)}::text::jsonb) RETURNING id`;
+        await tx`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,visit_provenance,units_booked,guests)
+      VALUES (${key.slice(0, 16)},${f.listing},${customer.id},${order.id},1,current_date-1,'day','completed',now()-interval '1 day',now()-interval '16 hours','INR','Asia/Kolkata',100000,8000,0,${mode},${environment === 'live' ? 'real' : 'test'},1,2) RETURNING id`;
       const [payment] =
         await tx`INSERT INTO payment_order(booking_order_id,provider,environment,mode,currency,purpose,expected_minor,idempotency_key,request_hash,state)
       VALUES (${order.id},${provider},${environment},${mode},'INR','full',108000,${key},${'b'.repeat(64)},'succeeded') RETURNING id`;
@@ -67,10 +67,10 @@ export async function seedFinanceFixture(sql, f) {
     });
   }
   const [payout] =
-    await sql`INSERT INTO payout(booking_id,client_id,funding_allocation_id,actual_net_minor,gross,commission,net,status,destination_id,utr,settled_at)
-    VALUES (${live.bookingId},${f.owner},${live.allocationId},30000,1000,80,920,'paid',${destination.id},'FIXTURE-UTR',now()) RETURNING id`;
+    await sql`INSERT INTO payout(booking_id,client_id,funding_allocation_id,actual_net_minor,gross_minor,commission_minor,net_minor,status,destination_id,utr,settled_at)
+    VALUES (${live.bookingId},${f.owner},${live.allocationId},30000,100000,8000,92000,'paid',${destination.id},'FIXTURE-UTR',now()) RETURNING id`;
   const [legacy] =
-    await sql`INSERT INTO payout(booking_id,client_id,gross,commission,net,status,destination_id) VALUES (${test.bookingId},${f.owner},1000,80,920,'pending',${destination.id}) RETURNING id`;
+    await sql`INSERT INTO payout(booking_id,client_id,gross_minor,commission_minor,net_minor,status,destination_id) VALUES (${test.bookingId},${f.owner},100000,8000,92000,'pending',${destination.id}) RETURNING id`;
   return {
     live,
     test,

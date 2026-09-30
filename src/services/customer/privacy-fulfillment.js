@@ -38,7 +38,7 @@ export const RETAINED = [
     schedule:
       'Routine backup target: 35 days, unverified; KYC: one year after all linked purposes end, subject to reviewed exceptions.',
     identifyingFields:
-      'Shared person/KYC records, encrypted payment tokens, provider data, backups and delivered messages require separate review.',
+      'Encrypted payment tokens, provider data, backups and delivered messages require separate review.',
     reason:
       'Local payment-method disable is not provider erasure. These actions are outstanding, not completed by this job.',
   },
@@ -125,7 +125,7 @@ export async function privacyInventory(tx, id) {
     (SELECT count(*)::int FROM customer_favourite WHERE customer_id=${id}) favourites,
     (SELECT count(*)::int FROM customer_payment_method WHERE customer_id=${id} AND is_active) payment_methods`;
   const [profile] =
-    await tx`SELECT version,photo_public_id IS NOT NULL has_photo FROM customer_profile WHERE user_id=${id}`;
+    await tx`SELECT profile_version AS version,photo_public_id IS NOT NULL has_photo FROM "user" WHERE id=${id} AND profile_completed_at IS NOT NULL`;
   return {
     ...counts,
     profileVersion: profile?.version ?? 0,
@@ -308,12 +308,12 @@ export async function privacyCommand(db, actor, id, input, env = process.env) {
     const [exists] = await tx`SELECT request_id FROM privacy_job WHERE request_id=${id}`;
     if (exists) throw conflict('JOB_EXISTS');
     const [profile] =
-      await tx`SELECT photo_public_id FROM customer_profile WHERE user_id=${customer.id}`;
+      await tx`SELECT photo_public_id FROM "user" WHERE id=${customer.id}`;
     await tx`INSERT INTO privacy_job(request_id,photo_key) VALUES (${id},${request.kind === 'deletion' ? (profile?.photo_public_id ?? null) : null})`;
     if (request.kind === 'deletion') {
       await tx`UPDATE "user" SET account_status='blocked',privacy_erasure_pending=true,lifecycle_version=lifecycle_version+1,updated_at=now() WHERE id=${customer.id}`;
-      await tx`UPDATE customer_session SET revoked_at=now() WHERE user_id=${customer.id} AND revoked_at IS NULL`;
-      await tx`UPDATE customer_profile SET marketing_consent=false,consent_updated_at=now(),version=version+1,updated_at=now() WHERE user_id=${customer.id}`;
+      await tx`UPDATE auth_session SET revoked_at=now() WHERE user_id=${customer.id} AND revoked_at IS NULL`;
+      await tx`UPDATE "user" SET marketing_consent=false,consent_updated_at=now(),profile_version=profile_version+1,updated_at=now() WHERE id=${customer.id} AND profile_completed_at IS NOT NULL`;
       await tx`UPDATE privacy_job SET artifact_ciphertext=NULL,expires_at=now() WHERE request_id IN (SELECT id FROM customer_privacy_request WHERE customer_id=${customer.id})`;
     }
     await tx`UPDATE customer_privacy_request SET version=version+1,updated_at=now() WHERE id=${id}`;
@@ -339,7 +339,7 @@ async function exportSnapshot(tx, customer) {
     limit = 5001;
   const sections = {};
   sections.bookings =
-    await tx`SELECT id,reference,state,day,slot,starts_at,ends_at,guests,contact_phone,note,amount_rent,amount_fee,amount_deposit,cancellation_reason FROM booking WHERE customer_id=${id} ORDER BY created_at,id LIMIT ${limit}`;
+    await tx`SELECT id,reference,state,local_day AS day,slot,starts_at,ends_at,guests,contact_phone,note,(amount_rent_minor/100)::int AS amount_rent,(amount_fee_minor/100)::int AS amount_fee,(amount_deposit_minor/100)::int AS amount_deposit,cancellation_reason FROM booking WHERE customer_id=${id} ORDER BY created_at,id LIMIT ${limit}`;
   sections.orders =
     await tx`SELECT id,reference,state,currency,amount_rent_minor,amount_fee_minor,amount_deposit_minor,collected_minor,created_at FROM booking_order WHERE customer_id=${id} ORDER BY created_at,id LIMIT ${limit}`;
   sections.payments =
@@ -372,7 +372,7 @@ async function exportSnapshot(tx, customer) {
       'This account exceeds the automatic export scope. Arrange a separately reviewed copy.',
     );
   const [profile] =
-    await tx`SELECT marketing_consent,consent_updated_at,completed_at FROM customer_profile WHERE user_id=${id}`;
+    await tx`SELECT marketing_consent,consent_updated_at,profile_completed_at AS completed_at FROM "user" WHERE id=${id} AND profile_completed_at IS NOT NULL`;
   return {
     format: 'rentra-customer-data-v1',
     generatedAt: new Date().toISOString(),
@@ -441,7 +441,7 @@ export async function processPrivacyJob(db, id, options = {}) {
               !(await (options.destroyPhoto ?? destroyProfilePhoto)(job.photo_key))
             )
               throw unavailable('PHOTO_REMOVAL_FAILED');
-            await tx`UPDATE customer_profile SET photo_public_id=NULL,version=version+1,updated_at=now() WHERE user_id=${customer.id}`;
+            await tx`UPDATE "user" SET photo_public_id=NULL,profile_version=profile_version+1,updated_at=now() WHERE id=${customer.id} AND profile_completed_at IS NOT NULL`;
             await tx`UPDATE privacy_job SET photo_key=NULL WHERE request_id=${id}`;
             result = {
               stage: 'photo',
@@ -451,10 +451,10 @@ export async function processPrivacyJob(db, id, options = {}) {
             const removed =
               await tx`DELETE FROM customer_favourite WHERE customer_id=${customer.id} RETURNING rentable_id`;
             await tx`DELETE FROM customer_favourite_merge WHERE customer_id=${customer.id}`;
-            await tx`UPDATE customer_profile SET marketing_consent=false,version=version+1,updated_at=now() WHERE user_id=${customer.id}`;
+            await tx`UPDATE "user" SET marketing_consent=false,profile_version=profile_version+1,updated_at=now() WHERE id=${customer.id} AND profile_completed_at IS NOT NULL`;
             const methods =
               await tx`UPDATE customer_payment_method SET is_active=false,is_default=false,revoked_at=coalesce(revoked_at,now()) WHERE customer_id=${customer.id} AND is_active RETURNING id`;
-            await tx`UPDATE customer_otp_challenge SET consumed_at=now() WHERE customer_id=${customer.id} AND consumed_at IS NULL`;
+            await tx`UPDATE otp_challenge SET consumed_at=now() WHERE user_id=${customer.id} AND consumed_at IS NULL`;
             result = {
               stage: 'preferences',
               outcome: 'transient_preferences_removed',
@@ -463,7 +463,7 @@ export async function processPrivacyJob(db, id, options = {}) {
               providerErasure: false,
             };
           } else if (job.stage === 3) {
-            await tx`UPDATE "user" SET name=NULL,email=NULL,phone=NULL,email_verified_at=NULL,phone_verified_at=NULL,preferred_locale='en',person_id=NULL,privacy_erased_at=now(),privacy_erasure_pending=false,lifecycle_version=lifecycle_version+1,updated_at=now() WHERE id=${customer.id}`;
+            await tx`UPDATE "user" SET name=NULL,email=NULL,phone=NULL,email_verified_at=NULL,phone_verified_at=NULL,preferred_locale='en',privacy_erased_at=now(),privacy_erasure_pending=false,lifecycle_version=lifecycle_version+1,updated_at=now() WHERE id=${customer.id}`;
             result = {
               stage: 'account',
               outcome: 'live_profile_identifiers_removed_account_disabled',
@@ -472,7 +472,6 @@ export async function processPrivacyJob(db, id, options = {}) {
                 'email',
                 'phone',
                 'verification timestamps',
-                'person link',
                 'locale preference',
               ],
               retainedIdentifier: 'account UUID',

@@ -15,17 +15,6 @@ export async function calendarSnapshot(tx, listing) {
   const state = await getInventoryState(tx, listing);
   const overrides =
     await tx`SELECT day::text,slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} ORDER BY day,slot`;
-  for (const row of state.availability) {
-    if (
-      row.price_override != null &&
-      !overrides.some((o) => o.day === row.day && o.slot === row.slot)
-    )
-      overrides.push({
-        day: row.day,
-        slot: row.slot,
-        rent_minor: Math.round(Number(row.price_override) * 100),
-      });
-  }
   return {
     ...state,
     overrides,

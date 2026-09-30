@@ -57,19 +57,22 @@ async function lockedListing(tx, id, clientId) {
 /** Called while holding the property lock; child writes take the same lock via triggers. */
 async function snapshot(tx, row) {
   const prices =
-    await tx`SELECT slot,weekday,weekend FROM rentable_price WHERE rentable_id=${row.id} ORDER BY slot`;
+    await tx`SELECT slot,(weekday_minor/100)::int AS weekday,(weekend_minor/100)::int AS weekend FROM rentable_price WHERE rentable_id=${row.id} ORDER BY slot`;
   const amenities =
     await tx`SELECT a.id AS amenity_id,a.label_en,a.slug,ra.value FROM rentable_amenity ra JOIN amenity a ON a.id=ra.amenity_id WHERE ra.rentable_id=${row.id} ORDER BY a.id`;
   const documents =
-    await tx`SELECT id,doc_type,side,status,review_note,name_on_document,issued_at,uploaded_at FROM document WHERE owner_type='rentable' AND owner_id=${row.id} AND deleted_at IS NULL ORDER BY id`;
+    await tx`SELECT id,doc_type,side,status,review_note,name_on_document,issued_at,uploaded_at FROM document WHERE owner_type='rentable' AND owner_id=${row.id} AND deleted_at IS NULL AND status<>'superseded' ORDER BY id`;
   const [place] =
     await tx`SELECT c.name AS city,a.name AS area,cat.name AS category FROM rentable r LEFT JOIN city c ON c.id=r.city_id LEFT JOIN area a ON a.id=r.area_id LEFT JOIN category cat ON cat.id=r.category_id WHERE r.id=${row.id}`;
   // No storage keys, signed links, account credentials or financial history in snapshots.
-  const listing = camel(row);
+  // Snapshots keep their historical rupee fields so old and new revisions diff correctly.
+  const { depositMinor, extraGuestChargeMinor, ...content } = camel(row);
+  const listing = { ...content, depositAmount: Number(depositMinor) / 100, extraGuestCharge: Number(extraGuestChargeMinor) / 100 };
   if (typeof row.location === 'string' && /^[0-9a-f]+$/i.test(row.location))
     listing.location = rentable.location.mapFromDriverValue(row.location);
   // Admin bookkeeping, not submitted content.
-  for (const key of ['approvedSnapshot', 'restrictedAt', 'restrictedBy', 'restrictionReason', 'lifecycleVersion'])
+  // clientRole is a constant integrity column, not content.
+  for (const key of ['restrictedAt', 'restrictedBy', 'restrictionReason', 'lifecycleVersion', 'clientRole'])
     delete listing[key];
   return {
     listing,

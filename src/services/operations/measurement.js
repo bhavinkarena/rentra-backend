@@ -27,3 +27,19 @@ export async function recordWorkerHealth(database, service, healthy) {
 export async function pruneMeasurements(database) {
   await database`DELETE FROM customer_measurement WHERE day<=(clock_timestamp() AT TIME ZONE 'UTC')::date-90`;
 }
+
+/**
+ * Short-lived auth artefacts and abandoned quotes. Windows sit well beyond the code's own:
+ * OTP 10 min, rate window 1 h, session 30 days. Audit history is append-only and never pruned here.
+ */
+export async function pruneAuthArtifacts(database) {
+  const [otp] = await database`WITH d AS (DELETE FROM otp_challenge WHERE created_at<clock_timestamp()-interval '7 days' RETURNING 1) SELECT count(*)::int n FROM d`;
+  const [rate] = await database`WITH d AS (DELETE FROM auth_rate_event WHERE created_at<clock_timestamp()-interval '7 days' RETURNING 1) SELECT count(*)::int n FROM d`;
+  const [sessions] = await database`WITH d AS (DELETE FROM auth_session WHERE coalesce(revoked_at,expires_at)<clock_timestamp()-interval '90 days' RETURNING 1) SELECT count(*)::int n FROM d`;
+  const [quotes] = await database`WITH d AS (DELETE FROM booking_quote q WHERE q.expires_at<clock_timestamp()-interval '30 days'
+    AND NOT EXISTS (SELECT 1 FROM booking_order o WHERE o.quote_id=q.id) RETURNING 1) SELECT count(*)::int n FROM d`;
+  // A duplicate webhook racing the worker can leave a job row for an already processed event.
+  const [jobs] = await database`WITH d AS (DELETE FROM payment_event_job j USING payment_event e
+    WHERE e.id=j.event_id AND e.state='processed' RETURNING 1) SELECT count(*)::int n FROM d`;
+  return { otp: otp.n, rate: rate.n, sessions: sessions.n, quotes: quotes.n, webhookJobs: jobs.n };
+}

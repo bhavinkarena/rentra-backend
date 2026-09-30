@@ -74,9 +74,9 @@ test(
         service.createExport(db, actor, { ...base, dataset: 'payment_orders' }),
         { statusCode: 422 },
       );
-      await db`UPDATE portal_session SET created_at=now()-interval '16 minutes' WHERE id=${actor.sessionId}`;
+      await db`UPDATE auth_session SET created_at=now()-interval '16 minutes' WHERE id=${actor.sessionId}`;
       await assert.rejects(service.createExport(db, actor, base), { code: 'RECENT_AUTH_REQUIRED' });
-      await db`UPDATE portal_session SET created_at=now() WHERE id=${actor.sessionId}`;
+      await db`UPDATE auth_session SET created_at=now() WHERE id=${actor.sessionId}`;
       const jobs = await Promise.all([
         service.createExport(db, actor, base),
         service.createExport(db, actor, base),
@@ -216,7 +216,7 @@ test(
         (await db`SELECT error_code FROM admin_export_job WHERE id=${revoked.id}`)[0].error_code,
         'CAPABILITY_REQUIRED',
       );
-      await db`UPDATE portal_session SET revoked_at=now() WHERE id=${actor.sessionId}`;
+      await db`UPDATE auth_session SET revoked_at=now() WHERE id=${actor.sessionId}`;
       await assert.rejects(service.exportDownload(db, actor, rp.id, true, env), {
         statusCode: 401,
       });

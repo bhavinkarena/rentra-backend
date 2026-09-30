@@ -81,7 +81,7 @@ export async function markClientUpdatesRead(database, clientId, input = {}) {
 }
 
 export async function readClientPreferences(database, clientId) {
-  const [row] = await database`SELECT muted, version, updated_at FROM client_update_preference WHERE user_id=${clientId}`;
+  const [row] = await database`SELECT muted_update_categories AS muted, profile_version AS version, updated_at FROM "user" WHERE id=${clientId} AND role='client'`;
   return {
     muted: Array.isArray(row?.muted) ? row.muted : [],
     version: row?.version ?? 0,
@@ -105,14 +105,11 @@ export async function saveClientPreferences(database, clientId, input = {}) {
   const { expectedVersion, muted } = parsed.data;
   const value = JSON.stringify([...new Set(muted)].sort());
   return database.begin(async (tx) => {
-    const [current] = await tx`SELECT version FROM client_update_preference WHERE user_id=${clientId} FOR UPDATE`;
+    const [current] = await tx`SELECT profile_version AS version FROM "user" WHERE id=${clientId} AND role='client' FOR UPDATE`;
     if ((current?.version ?? 0) !== expectedVersion)
       throw conflict('PREFERENCES_CHANGED', 'Your update preferences changed in another tab. Reload and try again.');
-    const [row] = current
-      ? await tx`UPDATE client_update_preference SET muted=${value}::text::jsonb, version=version+1, updated_at=now()
-          WHERE user_id=${clientId} RETURNING muted, version, updated_at`
-      : await tx`INSERT INTO client_update_preference(user_id, muted) VALUES (${clientId}, ${value}::text::jsonb)
-          RETURNING muted, version, updated_at`;
+    const [row] = await tx`UPDATE "user" SET muted_update_categories=${value}::text::jsonb, profile_version=profile_version+1, updated_at=now()
+      WHERE id=${clientId} AND role='client' RETURNING muted_update_categories AS muted, profile_version AS version, updated_at`;
     return { muted: row.muted, version: row.version, updatedAt: row.updated_at, categories: MUTABLE_CATEGORIES };
   });
 }

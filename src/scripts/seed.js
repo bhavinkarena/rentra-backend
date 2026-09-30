@@ -72,8 +72,8 @@ const db = drizzle(client, { schema: s });
 
 console.log('[seed] clearing');
 await client`TRUNCATE TABLE
-  review, payout, booking, availability, rentable_price, unit, rentable,
-  client_staff, "user", person, area, city, category, redirect
+  review, payout, booking, availability, rentable_price, rentable,
+  client_staff, "user", area, city, category, redirect
   RESTART IDENTITY CASCADE`;
 
 /* ------------------------------- taxonomy ------------------------------- */
@@ -110,12 +110,6 @@ const [farmhouse] = await db.insert(s.category).values({
 /* ------------------------------- identity ------------------------------- */
 console.log('[seed] the dummy client + guests');
 
-const [clientPerson] = await db.insert(s.person).values({
-  kycRef: 'kyc_seed_client_0001',
-  verifiedName: 'Demo Client',
-  verifiedAt: new Date(),
-}).returning();
-
 // THE dummy client that owns every seeded listing.
 const [demoClient] = await db.insert(s.users).values({
   phone: '9000000001',
@@ -124,27 +118,28 @@ const [demoClient] = await db.insert(s.users).values({
   email: 'client@gmail.com',
   accountStatus: 'active',
   clientType: 'owner',
-  personId: clientPerson.id,
   kycStatus: 'verified',
-  payoutUpiId: 'client@upi',
   respondsWithinMins: 84,
   responseRate: 0.94,
 }).returning();
+// Payout details live only in payout_destination.
+await client`INSERT INTO payout_destination(client_id,version,method,holder_name,upi_id,name_check,state,source,submitted_at)
+  VALUES (${demoClient.id},1,'upi','Demo Client','client@upi','same','submitted','onboarding',now())`;
 
 // Same human, second account. Possible only because uniqueness is
-// (phone, role) and not phone alone — and KYC is reused via person_id.
+// (phone, role) and not phone alone. Customers are never KYC-verified.
 await db.insert(s.users).values({
   phone: '9000000001', role: 'customer', name: 'Demo Client',
-  email: 'client@gmail.com', personId: clientPerson.id, kycStatus: 'verified',
+  email: 'client@gmail.com',
   accountStatus: 'active',
 });
 
 const guests = await db.insert(s.users).values([
-  { phone: '9898980001', role: 'customer', name: 'Rahul S.',  kycStatus: 'verified', accountStatus: 'active' },
-  { phone: '9898980002', role: 'customer', name: 'Priya M.',  kycStatus: 'verified', accountStatus: 'active' },
-  { phone: '9898980003', role: 'customer', name: 'Jignesh T.', kycStatus: 'verified', accountStatus: 'active' },
-  { phone: '9898980004', role: 'customer', name: 'Ankita D.', kycStatus: 'verified', accountStatus: 'active' },
-  { phone: '9898980005', role: 'customer', name: 'Mehul V.',  kycStatus: 'none', accountStatus: 'active' },
+  { phone: '9898980001', role: 'customer', name: 'Rahul S.',  accountStatus: 'active' },
+  { phone: '9898980002', role: 'customer', name: 'Priya M.',  accountStatus: 'active' },
+  { phone: '9898980003', role: 'customer', name: 'Jignesh T.', accountStatus: 'active' },
+  { phone: '9898980004', role: 'customer', name: 'Ankita D.', accountStatus: 'active' },
+  { phone: '9898980005', role: 'customer', name: 'Mehul V.',  accountStatus: 'active' },
 ]).returning();
 
 // Ensure default admin user is seeded so db:seed never leaves an adminless DB
@@ -372,14 +367,14 @@ for (const l of LISTINGS) {
     categoryId: farmhouse.id, cityId: surat.id, areaId: byArea[l.area].id,
     totalUnits: 1,
     capacity: l.capacity, bedrooms: l.bedrooms, highlight: l.highlight,
-    amenities: l.amenities, houseRules: l.rules,
+    houseRules: l.rules,
     photos: galleryFor(l, inserted.length, byArea[l.area].name),
     location: { x: l.lng, y: l.lat },
     exactAddress: `Survey No. ${100 + inserted.length}/${l.bedrooms}, `
       + `${byArea[l.area].name}, Surat — released on confirmation`,
     farmSize: l.farmSize, farmSizeUnit: l.farmUnit, poolSize: l.pool,
     checkInFrom: '9 AM to 7 PM', checkOutBy: '8 AM to 6 PM',
-    depositAmount: l.deposit, cancellationTier: l.tier,
+    depositMinor: l.deposit * 100, cancellationTier: l.tier,
     ratingAvg: null, reviewCount: 0,
     verifiedAt: l.verified ? new Date() : null,
     availabilityConfirmedAt: new Date(),
@@ -426,9 +421,18 @@ for (const l of LISTINGS) {
     },
   }).returning();
 
+  // Amenities are picked from the taxonomy; free-text labels map by English label (exact or prefix + value).
+  await client`INSERT INTO rentable_amenity (rentable_id, amenity_id, value)
+    SELECT DISTINCT ON (a.id) ${row.id}, a.id,
+      CASE WHEN a.value_type <> 'none' THEN nullif(left(trim(substr(l.label, length(a.label_en) + 1)), 40), '') END
+    FROM unnest(${l.amenities}::text[]) AS l(label)
+    JOIN amenity a ON a.is_active AND (lower(l.label) = lower(a.label_en) OR lower(l.label) LIKE lower(a.label_en) || ' %')
+    ORDER BY a.id, length(a.label_en) DESC
+    ON CONFLICT DO NOTHING`;
+
   await db.insert(s.rentablePrice).values(
     Object.entries(l.prices).map(([slot, [weekday, weekend]]) => ({
-      rentableId: row.id, slot, weekday, weekend,
+      rentableId: row.id, slot, weekdayMinor: weekday * 100, weekendMinor: weekend * 100,
     })),
   );
 
@@ -449,7 +453,6 @@ for (const { row } of inserted) {
       availRows.push({
         rentableId: row.id, day, slot,
         unitsAvailable: 1,
-        blockedByClient: false,
       });
     }
   }
@@ -472,27 +475,32 @@ for (const [idx, { row, spec }] of inserted.entries()) {
     const slot = rIdx % 2 === 0 ? 'night' : 'day';
     const rent = spec.prices[slot][0];
     const fee = Math.round(rent * 0.08);
-    const advance = Math.round(rent * 0.25 + fee);
-
+    // Every visit belongs to an order. Seed money is simulated and never collected.
+    const reference = nextRef();
+    const [order] = await db.insert(s.bookingOrder).values({
+      reference: `SEED-${reference}`, customerId: guest.id, rentableId: row.id, state: 'completed',
+      currency: 'INR', timeZone: 'Asia/Kolkata', pricingVersion: 'seed', policyVersion: 'seed',
+      policySnapshot: {}, listingSnapshot: { title: row.title, rentableId: row.id, ownerId: demoClient.id },
+      amountRentMinor: rent * 100, amountFeeMinor: fee * 100, amountDepositMinor: spec.deposit * 100,
+      paymentMode: 'simulated', visitProvenance: 'seed',
+      idempotencyKey: `seed:${reference}`, requestHash: '0'.repeat(64), confirmedAt: past, createdAt: past,
+    }).returning();
     const [bk] = await db.insert(s.booking).values({
-      reference: nextRef(), rentableId: row.id, customerId: guest.id,
-      day: past.toISOString().slice(0, 10), slot,
+      reference, rentableId: row.id, customerId: guest.id,
+      orderId: order.id, itemPosition: 1, localDay: past.toISOString().slice(0, 10), slot,
+      currency: 'INR', timeZone: 'Asia/Kolkata',
       guests: Math.max(2, Math.round(spec.capacity * 0.6)),
-      amountRent: rent, amountFee: fee, amountDeposit: spec.deposit,
-      amountAdvancePaid: advance,
+      amountRentMinor: rent * 100, amountFeeMinor: fee * 100, amountDepositMinor: spec.deposit * 100,
       visitProvenance: 'seed', paymentMode: 'simulated', collectedMinor: 0,
-      balanceMode: rIdx % 3 === 0 ? 'cash_on_arrival' : 'online_before',
-      balanceSettledAt: past, state: 'completed',
-      checkInCode: String(1000 + ((idx * 7 + rIdx * 13) % 8999)),
-      contactPhone: guest.phone, confirmedAt: past,
+      state: 'completed', contactPhone: guest.phone, confirmedAt: past,
     }).returning();
 
     // TDS u/s 194-O at 0.1% of gross. Confirm the rate with a CA.
     const tds = Math.round(rent * 0.001);
     await db.insert(s.payout).values({
       bookingId: bk.id, clientId: demoClient.id,
-      gross: rent, commission: fee, tds194o: tds, gstTcs: 0,
-      net: rent - fee - tds, status: 'paid',
+      grossMinor: rent * 100, commissionMinor: fee * 100, tds194oMinor: tds * 100, gstTcsMinor: 0,
+      netMinor: (rent - fee - tds) * 100, status: 'paid',
       utr: `NEFT${(900000 + idx * 100 + rIdx).toString()}`, settledAt: past,
     });
 

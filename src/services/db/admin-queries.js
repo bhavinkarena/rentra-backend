@@ -1,7 +1,8 @@
 import 'server-only';
 
-import { and, desc, eq, isNull, sql as raw } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, sql as raw } from 'drizzle-orm';
 import { db } from './index.js';
+import { withPayoutDetails } from '../auth/application.js';
 import {
   users, clientApplication, auditLog, adminUsers, rentable, documents,
 } from './schema/index.js';
@@ -103,9 +104,10 @@ export async function getApplicationForReview(id) {
       eq(documents.ownerType, 'client_application'),
       eq(documents.ownerId, id),
       isNull(documents.deletedAt),
+      ne(documents.status, 'superseded'),
     ));
 
-  return { ...row, trail, listings, documents: docs };
+  return { ...row, app: await withPayoutDetails(row.app), trail, listings, documents: docs };
 }
 
 /** Recently decided, so a mistaken approval can be found and reversed. */

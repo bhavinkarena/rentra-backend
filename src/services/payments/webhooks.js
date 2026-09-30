@@ -7,6 +7,7 @@ import { resolvePinnedPaymentConfiguration } from './gateway-settings.js';
 
 const refundEvents = new Set(['refund.created','refund.processed','refund.failed']);
 const supported = new Set(['payment.authorized','payment.captured','payment.failed','order.paid']);
+const MAX_EVENT_ATTEMPTS = 20;
 export async function ingestRazorpayEvent(database, raw, signature, eventId, env = process.env) {
   if (!Buffer.isBuffer(raw) || raw.length > 262144 || !/^[A-Za-z0-9_-]{1,160}$/.test(eventId ?? '')) throw new ProviderError('INVALID_EVENT');
   verifyWebhookSignature(raw, signature, env);
@@ -29,9 +30,10 @@ export async function ingestRazorpayEvent(database, raw, signature, eventId, env
     const [inserted]=await tx`INSERT INTO payment_event(provider,environment,external_event_id,payload_hash,redacted_payload,signature_verified_at)
       VALUES('razorpay','test',${eventId},${hash},${JSON.stringify(normalized)}::text::jsonb,clock_timestamp())
       ON CONFLICT(provider,environment,external_event_id) DO NOTHING RETURNING id`;
-    const [event]=inserted?[inserted]:await tx`SELECT id,payload_hash FROM payment_event WHERE provider='razorpay' AND environment='test' AND external_event_id=${eventId}`;
+    const [event]=inserted?[inserted]:await tx`SELECT id,payload_hash,state FROM payment_event WHERE provider='razorpay' AND environment='test' AND external_event_id=${eventId}`;
     if (!inserted && event.payload_hash!==hash) throw new ProviderError('EVENT_ID_CONFLICT');
-    await tx`INSERT INTO payment_event_job(event_id) VALUES(${event.id}) ON CONFLICT DO NOTHING`;
+    // A processed event has no job row; only new or unfinished events are queued.
+    if (inserted || event.state!=='processed') await tx`INSERT INTO payment_event_job(event_id) VALUES(${event.id}) ON CONFLICT DO NOTHING`;
     return { id:event.id, duplicate:!inserted };
   });
 }
@@ -78,7 +80,10 @@ export async function processNextPaymentEvent(database, options = {}) {
     if (!job) return;
     await tx`UPDATE payment_event SET state=${failure?'failed':'processed'},failure_code=${failure},
       processed_at=CASE WHEN ${failure===null} THEN clock_timestamp() ELSE NULL END WHERE id=${event.id}`;
-    await tx`UPDATE payment_event_job SET lease_token=NULL,lease_until=NULL,next_attempt_at=clock_timestamp()+interval '1 minute' WHERE event_id=${event.id}`;
+    // Done or out of attempts: drop the job so the claim scan never revisits it.
+    // A failed event stays visible in payment investigation for manual review.
+    if (failure===null || event.attempts>=MAX_EVENT_ATTEMPTS) await tx`DELETE FROM payment_event_job WHERE event_id=${event.id}`;
+    else await tx`UPDATE payment_event_job SET lease_token=NULL,lease_until=NULL,next_attempt_at=clock_timestamp()+interval '1 minute' WHERE event_id=${event.id}`;
   });
   return true;
 }

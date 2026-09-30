@@ -29,11 +29,11 @@ try {
     holderName: 'Property Owner',
   });
   const [visit] = await sql`SELECT id FROM booking WHERE order_id=${fixture.booking.order} LIMIT 1`;
-  await sql`INSERT INTO payout(booking_id,client_id,gross,commission,net,status,destination_id) VALUES (${visit.id},${owner},1000,80,920,'pending',${v1.id})`;
+  await sql`INSERT INTO payout(booking_id,client_id,gross_minor,commission_minor,net_minor,status,destination_id) VALUES (${visit.id},${owner},100000,8000,92000,'pending',${v1.id})`;
   // Sessions issued an hour ago: valid, but not a recent sign-in.
   const ownerSession = await issuePortalSession(sql, 'client', owner, 3600);
   const adminSession = await issuePortalSession(sql, 'admin', fixture.ids.admin, 3600);
-  await sql`UPDATE portal_session SET created_at=now()-interval '1 hour' WHERE id IN ${sql([ownerSession, adminSession])}`;
+  await sql`UPDATE auth_session SET created_at=now()-interval '1 hour' WHERE id IN ${sql([ownerSession, adminSession])}`;
   const ownerStale = await encryptSession({
     userId: owner,
     role: 'client',

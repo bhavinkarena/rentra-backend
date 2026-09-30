@@ -1,7 +1,7 @@
 import 'server-only';
 
 import {
-  and, asc, count, desc, eq, ilike, inArray, isNull, or, sql as raw,
+  and, asc, count, desc, eq, ilike, inArray, isNull, ne, or, sql as raw,
 } from 'drizzle-orm';
 import { db, sql } from './index.js';
 import {
@@ -45,7 +45,7 @@ function listingFilters(clientId, { query = '', status = 'all' } = {}) {
     // Live is not bookable until hours are confirmed and a future date is open (CP09).
     filters.push(eq(rentable.status, 'live'), raw`NOT (coalesce(${rentable.bookingConfig}->>'inventoryReady','')='true'
       AND EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=${rentable.id}
-        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0 AND a.blocked_by_client = false))`);
+        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0))`);
   } else if (FILTERABLE_STATUSES.has(status)) {
     filters.push(eq(rentable.status, status));
   }
@@ -88,7 +88,7 @@ export async function getClientListingSummary(clientId) {
   const [{ bookable }] = await sql`SELECT count(*)::int AS bookable FROM rentable r
     WHERE r.client_id=${clientId} AND r.status='live' AND r.booking_config->>'inventoryReady'='true'
       AND EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=r.id
-        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0 AND a.blocked_by_client = false)`;
+        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0)`;
   const counts = Object.fromEntries(grouped.map((row) => [row.status, Number(row.value)]));
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
 
@@ -161,8 +161,8 @@ export async function getListingForEdit(id, clientId = null) {
   const [prices, tags, docs, reviews] = await Promise.all([
     db.select({
       slot: rentablePrice.slot,
-      weekday: rentablePrice.weekday,
-      weekend: rentablePrice.weekend,
+      weekday: raw`(${rentablePrice.weekdayMinor}/100)::int`.mapWith(Number).as('weekday'),
+      weekend: raw`(${rentablePrice.weekendMinor}/100)::int`.mapWith(Number).as('weekend'),
     }).from(rentablePrice).where(eq(rentablePrice.rentableId, id)),
 
     db.select({
@@ -192,6 +192,7 @@ export async function getListingForEdit(id, clientId = null) {
       eq(documents.ownerType, 'rentable'),
       eq(documents.ownerId, id),
       isNull(documents.deletedAt),
+      ne(documents.status, 'superseded'),
     )),
 
     db.select().from(listingReview)
@@ -200,7 +201,8 @@ export async function getListingForEdit(id, clientId = null) {
   ]);
 
   return {
-    listing: row,
+    // Money is stored in paise; the editor keeps its whole-rupee fields.
+    listing: { ...row, depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
     prices,
     amenities: tags,
     photos: Array.isArray(row.photos) ? row.photos : [],

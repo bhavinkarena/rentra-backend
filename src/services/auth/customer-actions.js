@@ -59,8 +59,8 @@ export async function verifyCustomerOtp(_previous, formData) {
   const intent = await readCustomerSelection(jar.get(SELECTION_COOKIE)?.value);
   // Browsing can start immediately; a booking still needs a customer name.
   if (intent) {
-    const [profile] = await sql`SELECT p.user_id FROM customer_profile p JOIN "user" u ON u.id=p.user_id
-      WHERE p.user_id=${result.userId} AND length(trim(u.name))>=2`;
+    const [profile] = await sql`SELECT id FROM "user"
+      WHERE id=${result.userId} AND profile_completed_at IS NOT NULL AND length(trim(name))>=2`;
     if (!profile) redirect('/onboarding');
   }
   // No anonymous quote survives this navigation. The listing requests a fresh owned quote.

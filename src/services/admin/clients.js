@@ -112,7 +112,7 @@ async function impact(tx, clientId) {
       (SELECT count(*)::int FROM rentable r WHERE r.client_id=${clientId} AND r.status='live') AS live_listings,
       (SELECT count(*)::int FROM booking v JOIN rentable r ON r.id=v.rentable_id
         WHERE r.client_id=${clientId} AND ${upcoming(tx)}) AS upcoming_visits,
-      (SELECT count(*)::int FROM portal_session s
+      (SELECT count(*)::int FROM auth_session s
         WHERE s.user_id=${clientId} AND s.revoked_at IS NULL AND s.expires_at > now()) AS open_sessions`;
   return {
     liveListings: counts.live_listings,
@@ -122,7 +122,7 @@ async function impact(tx, clientId) {
 }
 
 async function upcomingVisits(tx, clientId, limit) {
-  const rows = await tx`SELECT v.id, v.reference, v.state, v.day, v.slot, v.starts_at, v.ends_at,
+  const rows = await tx`SELECT v.id, v.reference, v.state, v.local_day AS day, v.slot, v.starts_at, v.ends_at,
       coalesce(v.time_zone, o.time_zone, 'Asia/Kolkata') AS time_zone, v.guests,
       o.id AS order_id, o.reference AS order_reference, r.title AS listing_title
     FROM booking v JOIN rentable r ON r.id=v.rentable_id LEFT JOIN booking_order o ON o.id=v.order_id

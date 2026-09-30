@@ -17,10 +17,10 @@ try {
       SELECT 'CP31-ORDER-'||n,${f.booking.customer},${f.ids.listing},'INR','Asia/Kolkata','v1','v1','{}',
       '{"title":"CP31 historical fixture"}',100000,8000,0,gen_random_uuid(),'cp31-fixture','confirmed',now()-interval '60 days'
       FROM generate_series(1,1000) n`;
-    await tx`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,day,local_day,slot,state,
-      amount_rent,amount_fee,starts_at,ends_at,currency,time_zone,guests,units_booked,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
-      SELECT replace(reference,'ORDER','V'),${f.ids.listing},${f.booking.customer},id,1,current_date-60,current_date-60,'day','confirmed',
-      1000,80,now()-interval '60 days',now()-interval '59 days','INR','Asia/Kolkata',2,1,100000,8000,0
+    await tx`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,
+      starts_at,ends_at,currency,time_zone,guests,units_booked,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
+      SELECT replace(reference,'ORDER','V'),${f.ids.listing},${f.booking.customer},id,1,current_date-60,'day','confirmed',
+      now()-interval '60 days',now()-interval '59 days','INR','Asia/Kolkata',2,1,100000,8000,0
       FROM booking_order WHERE reference LIKE 'CP31-ORDER-%'`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action)
       SELECT 'admin',${f.ids.admin},'rentable',${f.ids.listing},'cp31_fixture_event' FROM generate_series(1,5000)`;

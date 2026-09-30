@@ -54,9 +54,9 @@ export async function ownerPropertyOverview(database, ownerId, id) {
   const inventory = await listingInventory(database, id, row);
   const [next] = await database`SELECT min(day)::text AS day FROM availability
     WHERE rentable_id=${id} AND day >= (now() AT TIME ZONE 'Asia/Kolkata')::date
-      AND units_available > 0 AND blocked_by_client = false`;
+      AND units_available > 0`;
   const visits = await database`SELECT b.id, b.reference, b.order_id, o.reference AS order_reference,
-      b.local_day, b.day, b.slot, b.guests, b.state, b.starts_at, b.ends_at, b.hours_known
+      b.local_day, b.slot, b.guests, b.state, b.starts_at, b.ends_at, b.hours_known
     FROM booking b LEFT JOIN booking_order o ON o.id=b.order_id
     WHERE b.rentable_id=${id} AND b.state IN ${database(UPCOMING)} AND b.ends_at > now()
     ORDER BY b.starts_at LIMIT 10`;
@@ -76,7 +76,7 @@ export async function ownerPropertyOverview(database, ownerId, id) {
         reference: v.reference,
         orderId: v.order_id,
         orderReference: v.order_reference,
-        date: dayOf(v.local_day ?? v.day),
+        date: dayOf(v.local_day),
         slot: v.slot,
         guests: v.guests,
         state: v.state,

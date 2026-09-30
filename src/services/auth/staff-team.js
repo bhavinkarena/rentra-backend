@@ -103,7 +103,7 @@ const memberState = (row) =>
 
 export async function listTeam(database, ownerId) {
   const rows = await database`SELECT s.*,
-      (SELECT max(p.created_at) FROM portal_session p WHERE p.staff_id=s.id) AS last_session_at,
+      (SELECT max(p.created_at) FROM auth_session p WHERE p.staff_id=s.id) AS last_session_at,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'title', r.title) ORDER BY r.title), '[]'::jsonb)
          FROM staff_property sp JOIN rentable r ON r.id=sp.rentable_id WHERE sp.staff_id=s.id) AS properties,
       (SELECT jsonb_build_object('expiresAt', i.expires_at, 'createdAt', i.created_at) FROM staff_invitation i
@@ -224,7 +224,7 @@ export async function revokeStaff(database, ownerId, staffId, input) {
     if (staff.revoked_at) throw conflict('STAFF_REVOKED', 'This caretaker’s access is already revoked.');
     const [row] = await tx`UPDATE client_staff SET revoked_at=now(), is_active=false, revoked_reason=${d.reason},
         version=version+1, updated_at=now() WHERE id=${staff.id} RETURNING version`;
-    const sessions = await tx`UPDATE portal_session SET revoked_at=now()
+    const sessions = await tx`UPDATE auth_session SET revoked_at=now()
       WHERE staff_id=${staff.id} AND revoked_at IS NULL RETURNING id`;
     await tx`UPDATE staff_invitation SET revoked_at=now() WHERE staff_id=${staff.id} AND used_at IS NULL AND revoked_at IS NULL`;
     await audit(tx, {

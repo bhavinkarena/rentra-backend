@@ -62,11 +62,13 @@ function fieldHashes(row) {
 }
 
 /** Application row plus everything its field fingerprint needs. */
-const reviewRow = (sql, where) => sql`SELECT a.*, u.name AS user_name, u.phone, u.client_type,
+const reviewRow = (sql, where) => sql`SELECT a.*, pc.*, u.name AS user_name, u.phone, u.client_type,
     u.account_status, u.email,
     (SELECT string_agg(d.doc_type || ':' || d.side || ':' || d.storage_key || ':' || d.status, ',' ORDER BY d.doc_type, d.side)
-       FROM document d WHERE d.owner_type='client_application' AND d.owner_id=a.id AND d.deleted_at IS NULL) AS document_fingerprint
-  FROM client_application a JOIN "user" u ON u.id=a.user_id WHERE ${where}`;
+       FROM document d WHERE d.owner_type='client_application' AND d.owner_id=a.id AND d.deleted_at IS NULL AND d.status<>'superseded') AS document_fingerprint
+  FROM client_application a JOIN "user" u ON u.id=a.user_id
+  LEFT JOIN LATERAL (SELECT pc.payout_upi_id, pc.payout_account_ref, pc.payout_ifsc, pc.payout_holder_name, pc.payout_name_match
+    FROM client_payout_current pc WHERE pc.client_id=a.user_id) pc ON true WHERE ${where}`;
 
 export async function listApplications(database, adminId, input = {}) {
   const f = applicationQueueQuery.parse(input);
@@ -97,7 +99,7 @@ export async function listApplications(database, adminId, input = {}) {
       ? database`a.submitted_at ASC NULLS LAST, a.id`
       : database`a.updated_at DESC, a.id`;
   const rows = await database`SELECT a.id, a.status, a.legal_name, a.submitted_at, a.reviewed_at,
-      a.updated_at, a.strike_count, a.payout_name_match, a.review_version, a.assigned_to,
+      a.updated_at, a.strike_count, pc.payout_name_match, a.review_version, a.assigned_to,
       coalesce(jsonb_array_length(a.flagged_fields), 0) AS flagged_count,
       u.id AS user_id, u.email, u.client_type, u.account_status, ad.email AS assignee_email,
       round(extract(epoch FROM (now() - a.submitted_at)) / 3600)::int AS age_hours,
@@ -105,6 +107,7 @@ export async function listApplications(database, adminId, input = {}) {
         AND l.entity_id=a.id::text AND l.action='application_submitted') AS submissions,
       (SELECT count(*)::int FROM audit_log l WHERE l.actor_id=u.id AND l.action='locked_cta_click') AS cta_clicks
     FROM client_application a JOIN "user" u ON u.id=a.user_id
+    LEFT JOIN client_payout_current pc ON pc.client_id=a.user_id
     LEFT JOIN admin_user ad ON ad.id=a.assigned_to
     WHERE ${match} AND ${assignee} AND ${status}
     ORDER BY ${order} LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}`;

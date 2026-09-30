@@ -125,7 +125,7 @@ test(
         env,
       );
       const [row] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
       const session = { role: 'customer', userId: booked.customer, sessionId: row.id };
       const admin = { kind: 'admin', id: f.admin };
       const provider = fakeProvider();
@@ -346,8 +346,8 @@ test(
           amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,payment_mode)
         VALUES ('SIM-CP19',${booked.customer},${f.listing},'INR','Asia/Kolkata','v1','v1','{}','{"title":"Simulated farm"}',50000,4000,0,${randomUUID()},${'e'.repeat(64)},'confirmed','simulated') RETURNING id`;
       const [simVisit] =
-        await sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,day,local_day,slot,state,amount_rent,amount_fee,starts_at,ends_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,units_booked,guests)
-        VALUES ('SIM-CP19-V',${f.listing},${booked.customer},${simOrder.id},1,current_date+40,current_date+40,'day','confirmed',500,40,now()+interval '40 days',now()+interval '40 days 8 hours','INR','Asia/Kolkata',50000,4000,0,'simulated',1,2) RETURNING id`;
+        await sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,units_booked,guests)
+        VALUES ('SIM-CP19-V',${f.listing},${booked.customer},${simOrder.id},1,current_date+40,'day','confirmed',now()+interval '40 days',now()+interval '40 days 8 hours','INR','Asia/Kolkata',50000,4000,0,'simulated',1,2) RETURNING id`;
       const [simPayment] =
         await sql`INSERT INTO payment_order(booking_order_id,provider,environment,mode,currency,purpose,expected_minor,idempotency_key,request_hash,state)
         VALUES (${simOrder.id},'dummy','simulated','simulated','INR','full',54000,${randomUUID()},${'f'.repeat(64)},'succeeded') RETURNING id`;

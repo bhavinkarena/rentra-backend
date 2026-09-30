@@ -109,8 +109,11 @@ test(
         preview: true,
       });
       assert.equal(
-        (await sql`SELECT weekday FROM rentable_price WHERE rentable_id=${f.listing}`)[0].weekday,
-        1000,
+        Number(
+          (await sql`SELECT weekday_minor FROM rentable_price WHERE rentable_id=${f.listing}`)[0]
+            .weekday_minor,
+        ),
+        100000,
         'preview writes nothing',
       );
       await assert.rejects(
@@ -191,8 +194,8 @@ test(
       // One currently due visit and one cancelled visit in the same confirmed order.
       await sql`UPDATE booking SET starts_at=now()-interval '1 hour',ends_at=now()+interval '2 hours',blocked_start_at=now()-interval '1 hour',blocked_end_at=now()+interval '2 hours' WHERE id=${visit.id}`;
       await sql`UPDATE inventory_reservation r SET blocked_start_at=b.blocked_start_at,blocked_end_at=b.blocked_end_at FROM booking b WHERE b.id=r.booking_id AND b.id=${visit.id}`;
-      await sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,day,local_day,slot,state,amount_rent,amount_fee,starts_at,ends_at,hours_known,blocked_start_at,blocked_end_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
-    VALUES ('CP12-CANCELLED',${f.listing},${booked.customer},${booked.order},2,current_date+20,current_date+20,'day','cancelled',1000,80,now()+interval '20 days',now()+interval '20 days 8 hours',true,now()+interval '20 days',now()+interval '20 days 8 hours','INR','Asia/Kolkata',100000,8000,0)`;
+      await sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,hours_known,blocked_start_at,blocked_end_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
+    VALUES ('CP12-CANCELLED',${f.listing},${booked.customer},${booked.order},2,current_date+20,'day','cancelled',now()+interval '20 days',now()+interval '20 days 8 hours',true,now()+interval '20 days',now()+interval '20 days 8 hours','INR','Asia/Kolkata',100000,8000,0)`;
       const owner = { kind: 'owner', id: f.owner },
         admin = { kind: 'admin', id: f.admin };
       for (const actor of [owner, admin]) {
@@ -282,7 +285,7 @@ test(
         env,
       );
       const [sessionRow] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
       const session = { role: 'customer', userId: booked.customer, sessionId: sessionRow.id };
       const payable = await createBookingQuote(
         app,
@@ -361,7 +364,8 @@ test(
         (await sql`SELECT count(*)::int n FROM payment_transaction WHERE kind='capture'`)[0].n,
         1,
       );
-      const [paidVisit] = await sql`SELECT * FROM booking WHERE order_id=${held.orderId}`;
+      const [paidVisit] =
+        await sql`SELECT b.*,o.policy_snapshot FROM booking b JOIN booking_order o ON o.id=b.order_id WHERE b.order_id=${held.orderId}`;
       assert.equal(paidVisit.state, 'confirmed');
       assert.equal(paidVisit.policy_snapshot.cancellationTier, 'flexible');
       // Customer cancellation still follows the accepted snapshot and replays idempotently.
