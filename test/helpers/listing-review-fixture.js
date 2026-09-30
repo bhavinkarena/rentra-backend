@@ -37,7 +37,7 @@ export async function seedReviewFixture(sql) {
       await sql`INSERT INTO amenity(slug,group_slug,label_en) VALUES (${slug},'outdoors',${slug}) RETURNING id`;
     await sql`INSERT INTO rentable_amenity(rentable_id,amenity_id) VALUES (${listing.id},${amenity.id})`;
   }
-  await sql`INSERT INTO rentable_price VALUES (${listing.id},'day',1000,1500)`;
+  await sql`INSERT INTO rentable_price(rentable_id,slot,weekday_minor,weekend_minor) VALUES (${listing.id},'day',100000,150000)`;
   const [document] =
     await sql`INSERT INTO document(owner_type,owner_id,doc_type,storage_key,status) VALUES ('rentable',${listing.id},'extract_7_12','fixture/private-evidence','uploaded') RETURNING id`;
   return {
@@ -57,16 +57,16 @@ export async function seedConfirmedBooking(sql, listingId) {
   const [customer] =
     await sql`INSERT INTO "user"(email,phone,role,account_status,name) VALUES ('booked-guest@fixture.invalid','9000000077','customer','active','Booked Guest') RETURNING id`;
   // An onboarded customer: the booking pages redirect without a profile.
-  await sql`INSERT INTO customer_profile(user_id) VALUES (${customer.id})`;
+  await sql`UPDATE "user" SET profile_completed_at=now(),profile_version=1,consent_updated_at=now() WHERE id=${customer.id}`;
   const [order] =
     await sql`INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,
       policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,amount_deposit_minor,
       idempotency_key,request_hash,state,confirmed_at)
     VALUES ('ORD-CP08',${customer.id},${listingId},'INR','Asia/Kolkata','v1','v1','{}',
       '{"title":"Review River Farm (as booked)"}',100000,8000,0,${randomUUID()},'hash','confirmed',now()) RETURNING id`;
-  await sql`INSERT INTO booking(reference,rentable_id,customer_id,day,slot,amount_rent,amount_fee,state,starts_at,ends_at,
+  await sql`INSERT INTO booking(reference,rentable_id,customer_id,slot,state,starts_at,ends_at,
       order_id,item_position,local_day,currency,time_zone,guests,units_booked,amount_rent_minor,amount_fee_minor,amount_deposit_minor,confirmed_at)
-    VALUES ('V-CP08',${listingId},${customer.id},(now()+interval '5 days')::date,'day',1000,80,'confirmed',
+    VALUES ('V-CP08',${listingId},${customer.id},'day','confirmed',
       now()+interval '5 days', now()+interval '5 days 8 hours',${order.id},1,(now()+interval '5 days')::date,'INR','Asia/Kolkata',2,1,100000,8000,0,now())`;
   return { customer: customer.id, order: order.id };
 }

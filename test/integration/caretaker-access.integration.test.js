@@ -74,7 +74,7 @@ test(
       // Same shape as the CP11/12 gate seed: a visit in progress with its committed reservation.
       await sql`UPDATE booking SET starts_at=now()-interval '1 hour', ends_at=now()+interval '2 hours',
         blocked_start_at=now()-interval '90 minutes', blocked_end_at=now()+interval '150 minutes', hours_known=true,
-        local_day=(now() AT TIME ZONE 'Asia/Kolkata')::date, day=(now() AT TIME ZONE 'Asia/Kolkata')::date WHERE order_id=${booked.order}`;
+        local_day=(now() AT TIME ZONE 'Asia/Kolkata')::date WHERE order_id=${booked.order}`;
       await sql`INSERT INTO inventory_reservation(rentable_id,booking_id,source,state,blocked_start_at,blocked_end_at)
         SELECT rentable_id,id,'booking','committed',blocked_start_at,blocked_end_at FROM booking WHERE order_id=${booked.order}`;
       const [visit] =

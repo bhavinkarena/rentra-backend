@@ -44,12 +44,19 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
     const rows = await database`
       SELECT r.id,r.slug,r.public_code,r.title,r.capacity,r.bedrooms,r.highlight,r.photos,r.created_at,r.rating_avg,r.review_count,
         (r.verified_at IS NOT NULL AND EXISTS (SELECT 1 FROM verification_visit vv WHERE vv.rentable_id=r.id AND vv.mode='physical' AND vv.outcome='passed' AND vv.completed_at IS NOT NULL)) AS physically_verified,
-        a.name AS area_name,c.name AS city_name,p.weekday,p.weekend
+        a.name AS area_name,c.name AS city_name,(p.weekday_minor/100)::int AS weekday,(p.weekend_minor/100)::int AS weekend
       FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id
       JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
       LEFT JOIN rentable_price p ON p.rentable_id=r.id AND p.slot=${filters.slot}
       WHERE r.status='live' AND u.role='client' AND u.account_status='active' AND c.is_active=true AND a.is_active=true AND cat.is_active=true
         AND r.id>${cursor}::uuid AND r.capacity>=${filters.guests}
+        -- Cheap prefilter before the per-listing quote: only listings the quote could accept
+        -- (inventory ready, every requested date open for every half of the slot).
+        AND (${!filters.dates.length} OR (r.booking_config->>'inventoryReady' = 'true' AND NOT EXISTS (
+          SELECT 1 FROM unnest(${filters.dates}::text[]::date[]) d(day)
+          CROSS JOIN unnest(CASE WHEN ${filters.slot}='full_day' THEN ARRAY['day','night'] ELSE ARRAY[${filters.slot}] END) h(slot)
+          WHERE NOT EXISTS (SELECT 1 FROM availability av WHERE av.rentable_id=r.id AND av.day=d.day
+            AND av.slot::text=h.slot AND av.units_available>0))))
         AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area}) AND (${!category} OR cat.slug=${category})
         AND (${!filters.q} OR a.name ILIKE ${term} OR c.name ILIKE ${term} OR r.title ILIKE ${term})
         AND (${!filters.cancellation} OR r.cancellation_tier::text=${filters.cancellation})

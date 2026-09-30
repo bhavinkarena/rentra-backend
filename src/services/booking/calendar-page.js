@@ -15,7 +15,7 @@ import { calendarSnapshot } from './owner-calendar.js';
  */
 export async function ownerCalendarPage(database, ownerId, rentableId) {
   const [listing] = await database`
-    SELECT id, title, capacity, extra_guest_charge, booking_config, booking_config_version
+    SELECT id, title, capacity, booking_config, booking_config_version
     FROM rentable WHERE id=${rentableId} AND client_id=${ownerId}`;
   if (!listing) return null;
 
@@ -29,9 +29,10 @@ export async function ownerCalendarPage(database, ownerId, rentableId) {
     const format = (time) => new Intl.DateTimeFormat('en-IN', {
       dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata',
     }).format(new Date(time));
-    const { id, title, capacity, extra_guest_charge, booking_config, booking_config_version } = current;
+    const { id, title, capacity, booking_config, booking_config_version } = current;
     return {
-      listing: { id, title, capacity, extra_guest_charge, booking_config, booking_config_version,
+      // Stored in paise; the calendar form keeps its whole-rupee default.
+      listing: { id, title, capacity, extra_guest_charge: Number(current.extra_guest_charge_minor) / 100, booking_config, booking_config_version,
         calendar_version: (await calendarSnapshot(tx, current)).version },
       blocks: rows.map(row => ({ id:row.id, reason:row.reason, label:`${format(row.blocked_start_at)} – ${format(row.blocked_end_at)}` })),
     };

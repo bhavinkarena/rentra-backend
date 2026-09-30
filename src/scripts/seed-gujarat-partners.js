@@ -1,7 +1,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { readFile } from 'node:fs/promises';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import * as s from '@/services/db/schema/index.js';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_Om65hHJxGsPF@ep-frosty-haze-ayd7hzah-pooler.c-5.us-east-2.aws.neon.tech/rentra?sslmode=require&channel_binding=require';
@@ -2223,18 +2223,7 @@ async function seed() {
     console.log(`[seed] Processing Partner: ${p.name} (${p.email})`);
     console.log(`--------------------------------------------------------------`);
 
-    // 1. Ensure Person (KYC)
-    let [personRow] = await db.select().from(s.person).where(eq(s.person.kycRef, `kyc_seed_${p.citySlug}`)).limit(1);
-    if (!personRow) {
-      [personRow] = await db.insert(s.person).values({
-        kycRef: `kyc_seed_${p.citySlug}`,
-        verifiedName: p.name,
-        verifiedAt: new Date(),
-      }).returning();
-      console.log(`  ✓ Person created: ${personRow.id}`);
-    }
-
-    // 2. Ensure User (Client account)
+    // 1. Ensure User (Client account)
     let [clientUser] = await db.select().from(s.users)
       .where(and(eq(s.users.email, p.email), eq(s.users.role, 'client'))).limit(1);
 
@@ -2246,9 +2235,7 @@ async function seed() {
         email: p.email,
         accountStatus: 'active',
         clientType: 'owner',
-        personId: personRow.id,
         kycStatus: 'verified',
-        payoutUpiId: p.payoutUpi,
         respondsWithinMins: 45,
         responseRate: 0.95,
         emailVerifiedAt: new Date(),
@@ -2260,13 +2247,15 @@ async function seed() {
         name: p.name,
         accountStatus: 'active',
         kycStatus: 'verified',
-        payoutUpiId: p.payoutUpi,
-        personId: personRow.id,
       }).where(eq(s.users.id, clientUser.id)).returning();
       console.log(`  ✓ Client user updated: ${clientUser.id}`);
     }
+    // Payout details live only in payout_destination (one current version per client).
+    await db.execute(sql`INSERT INTO payout_destination(client_id,version,method,holder_name,upi_id,name_check,state,source,submitted_at)
+      SELECT ${clientUser.id},1,'upi',${p.name},lower(${p.payoutUpi}),'same','submitted','onboarding',now()
+      WHERE NOT EXISTS (SELECT 1 FROM payout_destination WHERE client_id=${clientUser.id})`);
 
-    // 3. Ensure Caretaker / Client Staff
+    // 2. Ensure Caretaker / Client Staff
     let [staffRow] = await db.select().from(s.clientStaff)
       .where(and(eq(s.clientStaff.clientId, clientUser.id), eq(s.clientStaff.phone, p.caretakerPhone))).limit(1);
 
@@ -2340,11 +2329,6 @@ async function seed() {
 
       const photos = buildGallery(item, idx, areaRow.name, p.cityName);
 
-      const amenityLabels = item.amenities.map((slug) => {
-        const am = amenityBySlug[slug];
-        return am ? am.labelEn : slug.replace(/_/g, ' ');
-      });
-
       const description = `${item.title} in ${areaRow.name}, ${p.cityName}. `
         + `Spanning ${item.farmSize} ${item.farmUnit} of pristine private land, `
         + `accommodating up to ${item.capacity} guests across ${item.bedrooms} spacious AC bedrooms. `
@@ -2377,7 +2361,6 @@ async function seed() {
         capacity: item.capacity,
         bedrooms: item.bedrooms,
         highlight: item.highlight,
-        amenities: amenityLabels,
         houseRules,
         photos,
         location: { x: item.lng, y: item.lat },
@@ -2387,7 +2370,7 @@ async function seed() {
         poolSize: item.pool,
         checkInFrom: '9 AM to 7 PM',
         checkOutBy: '8 AM to 6 PM',
-        depositAmount: item.deposit,
+        depositMinor: item.deposit * 100,
         cancellationTier: item.tier,
         ratingAvg: null,
         reviewCount: 0,
@@ -2441,8 +2424,8 @@ async function seed() {
         Object.entries(item.prices).map(([slot, [weekday, weekend]]) => ({
           rentableId: row.id,
           slot,
-          weekday,
-          weekend,
+          weekdayMinor: weekday * 100,
+          weekendMinor: weekend * 100,
         })),
       );
 
@@ -2505,7 +2488,6 @@ async function seed() {
             day: dayStr,
             slot,
             unitsAvailable: 1,
-            blockedByClient: false,
           });
         }
       }

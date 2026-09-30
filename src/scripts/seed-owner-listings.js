@@ -311,13 +311,9 @@ for (const [idx, l] of LISTINGS.entries()) {
   const areaRow = areaByKey[`${l.city}/${l.area}`];
   const spec = { ...l, cityName: cityRow.name, areaName: areaRow.name };
 
-  // Labels for the jsonb column the public page still reads, resolved from the
-  // taxonomy so the two can never disagree about what an amenity is called.
-  const amenityLabels = l.amenities.map(([slug, value]) => {
-    const a = amenityBySlug[slug];
-    if (!a) throw new Error(`Unknown amenity "${slug}" — check the taxonomy.`);
-    return value ? `${a.labelEn} ${value}` : a.labelEn;
-  });
+  for (const [slug] of l.amenities) {
+    if (!amenityBySlug[slug]) throw new Error(`Unknown amenity "${slug}" — check the taxonomy.`);
+  }
 
   const [row] = await db.insert(s.rentable).values({
     clientId: owner.id,
@@ -335,14 +331,14 @@ for (const [idx, l] of LISTINGS.entries()) {
     categoryId: farmhouse.id, cityId: cityRow.id, areaId: areaRow.id,
     totalUnits: 1,
     capacity: l.capacity, bedrooms: l.bedrooms, highlight: l.highlight,
-    amenities: amenityLabels, houseRules: l.rules,
+    houseRules: l.rules,
     photos: galleryFor(spec, idx * 3 + 1),
     location: { x: l.lng, y: l.lat },
     exactAddress: `Survey No. ${210 + idx}/${l.bedrooms}, ${areaRow.name}, `
       + `${cityRow.name} — released on confirmation`,
     farmSize: l.farmSize, farmSizeUnit: l.farmUnit, poolSize: l.pool,
     checkInFrom: '9 AM to 7 PM', checkOutBy: '8 AM to 6 PM',
-    depositAmount: l.deposit, cancellationTier: l.tier,
+    depositMinor: l.deposit * 100, cancellationTier: l.tier,
     ratingAvg: null, reviewCount: 0,
     verifiedAt: l.verified ? new Date() : null,
     availabilityConfirmedAt: new Date(),
@@ -350,7 +346,7 @@ for (const [idx, l] of LISTINGS.entries()) {
 
   await db.insert(s.rentablePrice).values(
     Object.entries(l.prices).map(([slot, [weekday, weekend]]) => ({
-      rentableId: row.id, slot, weekday, weekend,
+      rentableId: row.id, slot, weekdayMinor: weekday * 100, weekendMinor: weekend * 100,
     })),
   );
 
@@ -402,7 +398,7 @@ for (const { row } of inserted) {
     for (const slot of ['day', 'night']) {
       availRows.push({
         rentableId: row.id, day: d.toISOString().slice(0, 10), slot,
-        unitsAvailable: 1, blockedByClient: false,
+        unitsAvailable: 1,
       });
     }
   }
@@ -434,25 +430,32 @@ if (!guests.length) {
       const rent = spec.prices[slot][0];
       const fee = Math.round(rent * 0.08);
 
+      // Every visit belongs to an order. Seed money is simulated and never collected.
+      const reference = nextRef();
+      const [order] = await db.insert(s.bookingOrder).values({
+        reference: `SEED-${reference}`, customerId: guest.id, rentableId: row.id, state: 'completed',
+        currency: 'INR', timeZone: 'Asia/Kolkata', pricingVersion: 'seed', policyVersion: 'seed',
+        policySnapshot: {}, listingSnapshot: { title: row.title, rentableId: row.id, ownerId: owner.id },
+        amountRentMinor: rent * 100, amountFeeMinor: fee * 100, amountDepositMinor: spec.deposit * 100,
+        paymentMode: 'simulated', visitProvenance: 'seed',
+        idempotencyKey: `seed:${reference}`, requestHash: '0'.repeat(64), confirmedAt: past, createdAt: past,
+      }).returning();
       const [bk] = await db.insert(s.booking).values({
-        reference: nextRef(), rentableId: row.id, customerId: guest.id,
-        day: past.toISOString().slice(0, 10), slot,
+        reference, rentableId: row.id, customerId: guest.id,
+        orderId: order.id, itemPosition: 1, localDay: past.toISOString().slice(0, 10), slot,
+        currency: 'INR', timeZone: 'Asia/Kolkata',
         guests: Math.max(2, Math.round(spec.capacity * 0.5)),
-        amountRent: rent, amountFee: fee, amountDeposit: spec.deposit,
-        amountAdvancePaid: Math.round(rent * 0.25 + fee),
+        amountRentMinor: rent * 100, amountFeeMinor: fee * 100, amountDepositMinor: spec.deposit * 100,
         visitProvenance: 'seed', paymentMode: 'simulated', collectedMinor: 0,
-        balanceMode: rIdx % 3 === 0 ? 'cash_on_arrival' : 'online_before',
-        balanceSettledAt: past, state: 'completed',
-        checkInCode: String(1000 + ((idx * 11 + rIdx * 7) % 8999)),
-        contactPhone: guest.phone, confirmedAt: past,
+        state: 'completed', contactPhone: guest.phone, confirmedAt: past,
       }).returning();
 
       // TDS u/s 194-O at 0.1% of gross. Confirm the rate with a CA.
       const tds = Math.round(rent * 0.001);
       await db.insert(s.payout).values({
         bookingId: bk.id, clientId: owner.id,
-        gross: rent, commission: fee, tds194o: tds, gstTcs: 0,
-        net: rent - fee - tds, status: 'paid',
+        grossMinor: rent * 100, commissionMinor: fee * 100, tds194oMinor: tds * 100, gstTcsMinor: 0,
+        netMinor: (rent - fee - tds) * 100, status: 'paid',
         utr: `NEFT${(950000 + idx * 100 + rIdx).toString()}`, settledAt: past,
       });
 

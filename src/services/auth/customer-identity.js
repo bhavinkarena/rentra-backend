@@ -26,13 +26,13 @@ async function rate(tx, phone, ip, kind, env) {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
   }
   const [counts] = await tx`SELECT
-    count(*) FILTER (WHERE phone_hash=${phoneHash})::int AS phone,
+    count(*) FILTER (WHERE identifier_hash=${phoneHash})::int AS phone,
     count(*) FILTER (WHERE ip_hash=${ipHash})::int AS ip,
-    count(*) FILTER (WHERE phone_hash=${phoneHash} AND created_at > now()-interval '60 seconds')::int AS recent
-    FROM customer_auth_rate WHERE kind=${kind} AND created_at > now()-interval '1 hour'
-    AND (phone_hash=${phoneHash} OR ip_hash=${ipHash})`;
+    count(*) FILTER (WHERE identifier_hash=${phoneHash} AND created_at > now()-interval '60 seconds')::int AS recent
+    FROM auth_rate_event WHERE principal_kind='customer' AND kind=${kind} AND created_at > now()-interval '1 hour'
+    AND (identifier_hash=${phoneHash} OR ip_hash=${ipHash})`;
   if (counts.phone >= (kind === 'request' ? 3 : 15) || counts.ip >= (kind === 'request' ? 20 : 60) || (kind === 'request' && counts.recent)) return false;
-  await tx`INSERT INTO customer_auth_rate(phone_hash,ip_hash,kind) VALUES (${phoneHash},${ipHash},${kind})`;
+  await tx`INSERT INTO auth_rate_event(principal_kind,identifier_hash,ip_hash,kind) VALUES ('customer',${phoneHash},${ipHash},${kind})`;
   return true;
 }
 
@@ -50,9 +50,9 @@ export async function requestCustomerCode(database, { phone: input, browserToken
       const [conflict] = await tx`SELECT id FROM "user" WHERE phone=${phone} AND role='customer'`;
       if (conflict || customer.phone === phone) return 'conflict';
     }
-    await tx`UPDATE customer_otp_challenge SET consumed_at=now() WHERE phone=${phone} AND consumed_at IS NULL`;
-    await tx`INSERT INTO customer_otp_challenge(id,phone,browser_hash,code_hash,delivery_mode,expires_at,purpose,customer_id,session_id,original_phone)
-      VALUES (${id},${phone},${authHash(`browser:${browserToken}`, env)},${authHash(`code:${id}:${code}`, env)},${mode},now()+interval '5 minutes',
+    await tx`UPDATE otp_challenge SET consumed_at=now() WHERE principal_kind='customer' AND identifier=${phone} AND consumed_at IS NULL`;
+    await tx`INSERT INTO otp_challenge(id,principal_kind,channel,identifier,browser_hash,code_hash,delivery_mode,expires_at,purpose,user_id,session_id,original_phone)
+      VALUES (${id},'customer','sms',${phone},${authHash(`browser:${browserToken}`, env)},${authHash(`code:${id}:${code}`, env)},${mode},now()+interval '5 minutes',
         ${customer ? 'phone_change' : 'login'},${customer?.id ?? null},${changeSession?.sessionId ?? null},${customer?.phone ?? null})`;
     return true;
   });
@@ -60,10 +60,10 @@ export async function requestCustomerCode(database, { phone: input, browserToken
   if (inserted === 'conflict') return failure('That number cannot be used. Choose a different mobile number.');
   try {
     await deliver(phone, code, env);
-    await database`UPDATE customer_otp_challenge SET delivered=true WHERE id=${id} AND consumed_at IS NULL`;
+    await database`UPDATE otp_challenge SET delivered=true WHERE id=${id} AND consumed_at IS NULL`;
     return { challengeId: id, phone, development: mode === 'development', resendAfter: 60 };
   } catch {
-    await database`UPDATE customer_otp_challenge SET consumed_at=now() WHERE id=${id}`;
+    await database`UPDATE otp_challenge SET consumed_at=now() WHERE id=${id}`;
     return failure('We could not send your code. Please try again later.');
   }
 }
@@ -75,22 +75,22 @@ export async function verifyCustomerCode(database, { phone: input, challengeId, 
   if (mode === 'disabled') return failure('Phone login is temporarily unavailable.');
   return database.begin(async (tx) => {
     if (!await rate(tx, phone, ip, 'verify', env)) return failure('Too many attempts. Try again in an hour.');
-    const [challenge] = await tx`SELECT *, expires_at > clock_timestamp() AS live FROM customer_otp_challenge WHERE id=${challengeId} AND phone=${phone} FOR UPDATE`;
+    const [challenge] = await tx`SELECT *, expires_at > clock_timestamp() AS live FROM otp_challenge WHERE id=${challengeId} AND principal_kind='customer' AND identifier=${phone} FOR UPDATE`;
     if (!challenge || !challenge.live || !challenge.delivered || challenge.consumed_at || challenge.attempts >= 5 || challenge.delivery_mode !== mode || challenge.browser_hash !== authHash(`browser:${browserToken}`, env)) return failure();
     if (challenge.purpose !== (changeSession ? 'phone_change' : 'login')) return failure();
-    if (changeSession && (challenge.customer_id !== changeSession.userId || challenge.session_id !== changeSession.sessionId)) return failure();
+    if (changeSession && (challenge.user_id !== changeSession.userId || challenge.session_id !== changeSession.sessionId)) return failure();
     const customer = changeSession ? await lockCustomerAccount(tx, changeSession, env) : null;
     if (customer && customer.phone !== challenge.original_phone) return failure('Your phone changed. Request a new code.');
-    await tx`UPDATE customer_otp_challenge SET attempts=attempts+1 WHERE id=${challengeId}`;
+    await tx`UPDATE otp_challenge SET attempts=attempts+1 WHERE id=${challengeId}`;
     const expected = Buffer.from(challenge.code_hash, 'hex');
     if (!timingSafeEqual(expected, Buffer.from(authHash(`code:${challengeId}:${code}`, env), 'hex'))) return failure();
-    await tx`UPDATE customer_otp_challenge SET consumed_at=now() WHERE id=${challengeId}`;
+    await tx`UPDATE otp_challenge SET consumed_at=now() WHERE id=${challengeId}`;
     if (customer) {
       const [conflict] = await tx`SELECT id FROM "user" WHERE phone=${phone} AND role='customer'`;
       if (conflict) return failure('That number cannot be used. Choose a different mobile number.');
       await tx`UPDATE "user" SET phone=${phone},phone_verified_at=now(),updated_at=now() WHERE id=${customer.id}`;
-      await tx`UPDATE customer_session SET revoked_at=now() WHERE user_id=${customer.id} AND revoked_at IS NULL`;
-      const [session] = await tx`INSERT INTO customer_session(user_id,expires_at) VALUES (${customer.id},now()+interval '30 days') RETURNING id`;
+      await tx`UPDATE auth_session SET revoked_at=now() WHERE user_id=${customer.id} AND revoked_at IS NULL`;
+      const [session] = await tx`INSERT INTO auth_session(user_id,expires_at) VALUES (${customer.id},now()+interval '30 days') RETURNING id`;
       await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action) VALUES ('customer',${customer.id},'user',${customer.id},'customer_phone_changed')`;
       return { userId:customer.id,sessionId:session.id,role:'customer',accountStatus:'active',development:mode==='development' };
     }
@@ -98,7 +98,7 @@ export async function verifyCustomerCode(database, { phone: input, challengeId, 
     const [user] = await tx`SELECT id,account_status FROM "user" WHERE phone=${phone} AND role='customer' FOR UPDATE`;
     if (user.account_status !== 'active') return failure('Your customer account is unavailable. Contact support.');
     await tx`UPDATE "user" SET phone_verified_at=now(),last_login_at=now(),updated_at=now() WHERE id=${user.id}`;
-    const [session] = await tx`INSERT INTO customer_session(user_id,expires_at) VALUES (${user.id},now()+interval '30 days') RETURNING id`;
+    const [session] = await tx`INSERT INTO auth_session(user_id,expires_at) VALUES (${user.id},now()+interval '30 days') RETURNING id`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action) VALUES ('customer',${user.id},'user',${user.id},'customer_login')`;
     return { userId: user.id, sessionId: session.id, role: 'customer', accountStatus: 'active', development: mode === 'development' };
   });
@@ -107,13 +107,13 @@ export async function verifyCustomerCode(database, { phone: input, challengeId, 
 export async function validCustomerSession(database, session, env = process.env) {
   if (session?.development && !['development', 'test'].includes(env.NODE_ENV)) return false;
   if (session?.role !== 'customer' || !uuid.safeParse(session.sessionId).success || !uuid.safeParse(session.userId).success) return false;
-  const [row] = await database`SELECT s.id FROM customer_session s JOIN "user" u ON u.id=s.user_id
+  const [row] = await database`SELECT s.id FROM auth_session s JOIN "user" u ON u.id=s.user_id
     WHERE s.id=${session.sessionId} AND s.user_id=${session.userId} AND s.revoked_at IS NULL
     AND s.expires_at > now() AND u.role='customer' AND u.account_status='active'`;
   return Boolean(row);
 }
 export async function revokeCustomerSession(database, session) {
   if (session?.role === 'customer' && uuid.safeParse(session.sessionId).success && uuid.safeParse(session.userId).success) {
-    await database`UPDATE customer_session SET revoked_at=now() WHERE id=${session.sessionId} AND user_id=${session.userId} AND revoked_at IS NULL`;
+    await database`UPDATE auth_session SET revoked_at=now() WHERE id=${session.sessionId} AND user_id=${session.userId} AND revoked_at IS NULL`;
   }
 }

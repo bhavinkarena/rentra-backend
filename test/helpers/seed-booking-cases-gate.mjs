@@ -53,7 +53,7 @@ try {
     env,
   );
   const [row] =
-    await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${customer},now()+interval '1 day') RETURNING id`;
+    await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${customer},now()+interval '1 day') RETURNING id`;
   const session = { role: 'customer', userId: customer, sessionId: row.id };
   const quote = await createBookingQuote(
     sql,

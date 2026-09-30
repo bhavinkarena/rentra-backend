@@ -24,7 +24,7 @@ test(
       const f = await seedReviewFixture(sql),
         booking = await seedConfirmedBooking(sql, f.listing);
       const [session] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES(${booking.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES(${booking.customer},now()+interval '1 day') RETURNING id`;
       const customer = {
           kind: 'customer',
           session: { role: 'customer', userId: booking.customer, sessionId: session.id },

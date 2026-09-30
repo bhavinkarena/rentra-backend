@@ -86,7 +86,7 @@ test(
         env,
       );
       const [sessionRow] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
       const session = { role: 'customer', userId: booked.customer, sessionId: sessionRow.id };
       const quote = await createBookingQuote(
         sql,
@@ -274,15 +274,15 @@ test(
       assert.equal((await resolve(admin, { requestKey: resolveKey })).replayed, true);
       await assert.rejects(resolve(admin), { code: 'CASE_CHANGED' });
       const states =
-        await sql`SELECT id,state,cancelled_by FROM booking WHERE order_id=${held.orderId} ORDER BY item_position`;
+        await sql`SELECT id,state,cancelled_by_kind FROM booking WHERE order_id=${held.orderId} ORDER BY item_position`;
       assert.deepEqual(
         states.map((s) => s.state),
         ['cancelled', 'confirmed'],
       );
       assert.equal(
-        states[0].cancelled_by,
-        null,
-        'an admin cancellation is not attributed to the customer or owner',
+        states[0].cancelled_by_kind,
+        'admin',
+        'an admin cancellation is attributed to Rentra, not the customer or owner',
       );
       assert.equal(
         (await sql`SELECT state FROM booking_order WHERE id=${held.orderId}`)[0].state,

@@ -27,11 +27,11 @@ export async function saveProfilePhoto(database, session, { buffer, remove = fal
     if (!remove) uploaded = await storage.upload({ buffer, publicId: randomUUID() });
     await database.begin(async tx => {
       const user = await lockCustomerAccount(tx, session, env);
-      const [profile] = await tx`SELECT photo_public_id,version FROM customer_profile WHERE user_id=${user.id} FOR UPDATE`;
+      const [profile] = await tx`SELECT photo_public_id,profile_version AS version FROM "user" WHERE id=${user.id} AND profile_completed_at IS NOT NULL FOR UPDATE`;
       if (!profile) throw new CustomerAccountError('Save your name before adding a profile photo.');
       if (profile.version !== expectedVersion) throw new CustomerAccountError('Your profile changed in another tab. Reload before saving.');
       previous = profile.photo_public_id;
-      await tx`UPDATE customer_profile SET photo_public_id=${uploaded?.publicId ?? null},version=version+1,updated_at=now() WHERE user_id=${user.id}`;
+      await tx`UPDATE "user" SET photo_public_id=${uploaded?.publicId ?? null},profile_version=profile_version+1,updated_at=now() WHERE id=${user.id}`;
     });
   } catch (error) {
     if (uploaded) await storage.destroy(uploaded.publicId).catch(() => {});

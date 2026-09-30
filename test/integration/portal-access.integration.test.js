@@ -27,9 +27,8 @@ test(
     try {
       await database.unsafe(`CREATE TABLE "user" (id uuid PRIMARY KEY, role text, account_status text, email text,
       name text, phone text, email_verified_at timestamptz, phone_verified_at timestamptz,
-      preferred_locale text, client_type text, kyc_status text, payout_upi_id text, person_id uuid);
+      preferred_locale text, client_type text, kyc_status text);
       CREATE TABLE admin_user (id uuid PRIMARY KEY, is_active boolean, email text, password_hash text, totp_secret text, name text,last_login_at timestamptz);
-      CREATE TABLE customer_session (id uuid PRIMARY KEY,user_id uuid,expires_at timestamptz,revoked_at timestamptz);
       CREATE TABLE audit_log (actor_type text,actor_id uuid,entity text,entity_id text,action text,after jsonb);`);
       const migration = await readFile(
         new URL('../../drizzle/0022_portal_access.sql', import.meta.url),
@@ -38,6 +37,17 @@ test(
       await database.begin(async (tx) => {
         for (const statement of migration.split('--> statement-breakpoint'))
           await tx.unsafe(statement);
+        // 0043 renamed portal_session to auth_session and rewrote its revocation trigger function.
+        await tx.unsafe('ALTER TABLE portal_session RENAME TO auth_session');
+        const identity = await readFile(
+          new URL('../../drizzle/0043_identity_consolidation.sql', import.meta.url),
+          'utf8',
+        );
+        await tx.unsafe(
+          identity
+            .split('--> statement-breakpoint')
+            .find((s) => s.includes('FUNCTION revoke_changed_portal_access')),
+        );
       });
       const owner = randomUUID(),
         other = randomUUID(),
@@ -93,7 +103,7 @@ test(
       await revokePortalSession(database, admin, 'admin');
       assert.equal(await validPortalSession(database, admin, 'admin'), false);
       const expired = await clientClaims();
-      await database`UPDATE portal_session SET expires_at=now()-interval '1 second' WHERE id=${expired.sessionId}`;
+      await database`UPDATE auth_session SET expires_at=now()-interval '1 second' WHERE id=${expired.sessionId}`;
       assert.equal(await validPortalSession(database, expired, 'client'), false);
       // Issuance/suspension serialize on the principal: either no token or a revoked token.
       const [raced] = await Promise.all([
@@ -213,7 +223,7 @@ test(
       const customer = randomUUID(),
         customerSession = randomUUID();
       await database`INSERT INTO "user"(id,role,account_status) VALUES (${customer},'customer','active')`;
-      await database`INSERT INTO customer_session VALUES (${customerSession},${customer},now()+interval '1 hour',NULL)`;
+      await database`INSERT INTO auth_session(id,user_id,expires_at) VALUES (${customerSession},${customer},now()+interval '1 hour')`;
       const guestToken = await encryptSession({
         userId: customer,
         role: 'customer',

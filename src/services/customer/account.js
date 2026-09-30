@@ -14,7 +14,7 @@ const profileSchema = z.object({
 export async function readCustomerAccount(database, session, env = process.env) {
   return database.begin(async tx => {
     const user = await lockCustomerAccount(tx, session, env);
-    const [profile] = await tx`SELECT marketing_consent,version,photo_public_id FROM customer_profile WHERE user_id=${user.id}`;
+    const [profile] = await tx`SELECT marketing_consent,profile_version AS version,photo_public_id FROM "user" WHERE id=${user.id} AND profile_completed_at IS NOT NULL`;
     const requests = await tx`SELECT r.id,r.kind,r.state,r.created_at,r.receipt,j.state job_state,j.stage,j.error_code,j.expires_at,j.artifact_ciphertext IS NOT NULL AND j.expires_at>clock_timestamp() export_available FROM customer_privacy_request r LEFT JOIN privacy_job j ON j.request_id=r.id
       WHERE r.customer_id=${user.id} ORDER BY r.created_at DESC LIMIT 20`;
     return { photoUrl: profilePhotoUrl(profile?.photo_public_id, env), name: user.name ?? '', email: user.email ?? '', phone: user.phone,
@@ -30,16 +30,16 @@ export async function saveCustomerProfile(database, session, input, env = proces
   try {
     return await database.begin(async tx => {
       const user = await lockCustomerAccount(tx, session, env);
-      const [before] = await tx`SELECT version,marketing_consent FROM customer_profile WHERE user_id=${user.id}`;
+      const [before] = await tx`SELECT profile_version AS version FROM "user" WHERE id=${user.id}`;
       if ((before?.version ?? 0) !== value.expectedVersion) throw new CustomerAccountError('Your profile changed in another tab. Reload before saving.');
       const email = value.email || null;
+      // One statement: SET expressions read the row as it was before this update.
       await tx`UPDATE "user" SET name=${value.name},email=${email},preferred_locale=${value.preferredLocale},
-        email_verified_at=CASE WHEN email IS NOT DISTINCT FROM ${email} THEN email_verified_at ELSE NULL END,updated_at=now()
+        email_verified_at=CASE WHEN email IS NOT DISTINCT FROM ${email} THEN email_verified_at ELSE NULL END,
+        marketing_consent=${value.marketingConsent},
+        consent_updated_at=CASE WHEN profile_completed_at IS NULL OR marketing_consent<>${value.marketingConsent} THEN now() ELSE consent_updated_at END,
+        profile_completed_at=coalesce(profile_completed_at,now()),profile_version=profile_version+1,updated_at=now()
         WHERE id=${user.id}`;
-      await tx`INSERT INTO customer_profile(user_id,marketing_consent) VALUES (${user.id},${value.marketingConsent})
-        ON CONFLICT(user_id) DO UPDATE SET marketing_consent=excluded.marketing_consent,
-        consent_updated_at=CASE WHEN customer_profile.marketing_consent<>excluded.marketing_consent THEN now() ELSE customer_profile.consent_updated_at END,
-        version=customer_profile.version+1,updated_at=now()`;
       // Audit consent without placing names/contact details in an operational log.
       await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES
         ('customer',${user.id},'customer_profile',${user.id},'customer_profile_saved',

@@ -23,7 +23,7 @@ const listing = {
   booking_config_version: 3,
   cancellation_tier: 'flexible',
   house_rules: ['Quiet hours'],
-  deposit_amount: 500,
+  deposit_minor: 50000,
   booking_config: {
     inventoryReady: true,
     timeZone: 'Asia/Kolkata',
@@ -44,7 +44,7 @@ const quote = (dates, overrides = []) =>
   prepareQuote(
     { rentableId: '00000000-0000-4000-8000-000000000001', dates, slot: 'day', guests: 3 },
     listing,
-    [{ slot: 'day', weekday: 1000, weekend: 2000 }],
+    [{ slot: 'day', weekday_minor: 100000, weekend_minor: 200000 }],
     overrides,
     payment,
     new Date('2030-01-01T00:00:00Z'),
@@ -59,13 +59,7 @@ test('CP11 quotes use India-local weekend boundaries, explicit overrides and exa
   assert.equal(q.totals.rentMinor, 320000);
   assert.equal(q.totals.feeMinor, 25600);
   assert.equal(q.totals.totalMinor, 345600);
-  const override = quote(
-    ['2030-01-05'],
-    [
-      { day: '2030-01-05', slot: 'day', price_override: 1500 },
-      { day: '2030-01-05', slot: 'day', rent_minor: 175050 },
-    ],
-  );
+  const override = quote(['2030-01-05'], [{ day: '2030-01-05', slot: 'day', rent_minor: 175050 }]);
   assert.equal(override.totals.rentMinor, 185050);
   assert.equal(override.visits[0].priceSource, 'override');
   assert.equal(override.policy.pricing.platformFeeBps, 800);

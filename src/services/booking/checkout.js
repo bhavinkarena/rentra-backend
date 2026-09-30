@@ -67,16 +67,14 @@ export async function createCheckoutHold(database, session, input, env = process
       'real','test',${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
     for (const [position, visit] of quote.visits.entries()) {
       const id = randomUUID();
-      const legacy = [visit.rentMinor, visit.feeMinor, visit.depositMinor].map(v => Math.floor(v / 100));
-      if (legacy.some(v => v > 2147483647)) throw new CheckoutError('ORDER_AMOUNT_UNSUPPORTED');
-      await tx`INSERT INTO booking(id,reference,rentable_id,customer_id,order_id,item_position,day,local_day,slot,guests,
-        starts_at,ends_at,blocked_start_at,blocked_end_at,hours_known,currency,time_zone,amount_rent,amount_fee,amount_deposit,
-        amount_rent_minor,amount_fee_minor,amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,
-        policy_version,pricing_version,listing_snapshot,policy_snapshot,slot_snapshot,price_snapshot)
-        VALUES(${id},${'T' + id.replaceAll('-','').slice(0,15)},${listing.id},${customer.id},${orderId},${position+1},${visit.date},${visit.date},${visit.slot},${quote.selection.guests},
-        ${visit.startsAt},${visit.endsAt},${visit.blockedStartAt},${visit.blockedEndAt},true,'INR',${quote.timeZone},${legacy[0]},${legacy[1]},${legacy[2]},
-        ${visit.rentMinor},${visit.feeMinor},${visit.depositMinor},${visit.illustrativeAdvanceMinor},'real','test',${quote.policy.version},${quote.pricingVersion},
-        ${JSON.stringify(listingSnapshot)}::text::jsonb,${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(visit)}::text::jsonb,${JSON.stringify(visit)}::text::jsonb)`;
+      // Listing and policy snapshots, and the pricing/policy versions, live on the order.
+      await tx`INSERT INTO booking(id,reference,rentable_id,customer_id,order_id,item_position,local_day,slot,guests,
+        starts_at,ends_at,blocked_start_at,blocked_end_at,hours_known,currency,time_zone,
+        amount_rent_minor,amount_fee_minor,amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,slot_snapshot)
+        VALUES(${id},${'T' + id.replaceAll('-','').slice(0,15)},${listing.id},${customer.id},${orderId},${position+1},${visit.date},${visit.slot},${quote.selection.guests},
+        ${visit.startsAt},${visit.endsAt},${visit.blockedStartAt},${visit.blockedEndAt},true,'INR',${quote.timeZone},
+        ${visit.rentMinor},${visit.feeMinor},${visit.depositMinor},${visit.illustrativeAdvanceMinor},'real','test',
+        ${JSON.stringify(visit)}::text::jsonb)`;
       await tx`INSERT INTO inventory_reservation(booking_id,rentable_id,source,blocked_start_at,blocked_end_at,state,hold_expires_at)
         VALUES(${id},${listing.id},'booking',${visit.blockedStartAt},${visit.blockedEndAt},'held',${expires.toISOString()})`;
     }
@@ -114,7 +112,7 @@ export async function releaseUnstartedCheckout(database, session, orderId, env =
     await tx`UPDATE booking_order SET state='expired',updated_at=clock_timestamp() WHERE id=${orderId} AND state='held'`;
     await tx`UPDATE inventory_reservation r SET state='expired',released_at=clock_timestamp()
       FROM booking b WHERE r.booking_id=b.id AND b.order_id=${orderId} AND r.state='held'`;
-    await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancellation_reason='Customer requested a new quote',
+    await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by_kind='customer',cancellation_reason='Customer requested a new quote',
       lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp() WHERE order_id=${orderId} AND state='requested'`;
     await lifecycle(tx, orderId, 'expired', { environment:'test', reason:'quote_replacement' });
     return checkoutStatus(tx, orderId);

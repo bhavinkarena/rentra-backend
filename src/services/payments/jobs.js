@@ -14,7 +14,10 @@ export async function runPaymentJobs(database, options = {}) {
   for (const order of expired) await lifecycle(database,order.id,'expired',{environment:'test'});
   const work=await database`WITH due AS (
     SELECT e.payment_order_id FROM payment_execution e JOIN payment_order p ON p.id=e.payment_order_id
-    WHERE e.state<>'ready' AND p.state<>'succeeded' AND e.next_check_at<=clock_timestamp()
+    -- Open orders are polled until settled; failed or cancelled ones only for a day, to catch late
+    -- captures, instead of every minute forever.
+    WHERE e.state<>'ready' AND e.next_check_at<=clock_timestamp()
+      AND (p.state IN ('created','processing','unknown') OR (p.state<>'succeeded' AND p.created_at>clock_timestamp()-interval '1 day'))
     ORDER BY e.next_check_at LIMIT 10 FOR UPDATE OF e SKIP LOCKED)
     UPDATE payment_execution e SET next_check_at=clock_timestamp()+interval '1 minute'
     FROM due WHERE e.payment_order_id=due.payment_order_id RETURNING e.payment_order_id`;

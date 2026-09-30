@@ -82,8 +82,8 @@ test(
 
       // Confirmed hours and opened dates make it bookable; the visit is listed.
       await sql`UPDATE rentable SET booking_config='{"inventoryReady":true}'::jsonb WHERE id=${id}`;
-      await sql`INSERT INTO availability(rentable_id,day,slot,units_available,blocked_by_client)
-        VALUES (${id},(now() AT TIME ZONE 'Asia/Kolkata')::date + 3,'day',1,false)`;
+      await sql`INSERT INTO availability(rentable_id,day,slot,units_available)
+        VALUES (${id},(now() AT TIME ZONE 'Asia/Kolkata')::date + 3,'day',1)`;
       const booked = await seedConfirmedBooking(sql, id);
       overview = await ownerPropertyOverview(sql, f.owner, id);
       assert.equal(overview.inventory.bookable, true);

@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { insertFixtureOrder } from '../helpers/fixture-order.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
@@ -52,10 +53,13 @@ test(
         )[0].id;
       const live = await listing('Riverside Farm', 'live', 'LIVE1');
       await listing('Quiet Paused Farm', 'paused', 'PAUS1');
-      const visit = async (reference, state, days) =>
-        sql`INSERT INTO booking(reference,rentable_id,customer_id,day,slot,amount_rent,amount_fee,state,starts_at,ends_at)
-          VALUES (${reference},${live},${customer.id},(now() + ${days} * interval '1 day')::date,'day',1000,80,${state},
-            now() + ${days} * interval '1 day', now() + ${days} * interval '1 day' + interval '8 hours')`;
+      const visit = async (reference, state, days) => {
+        const order = await insertFixtureOrder(sql, { customerId: customer.id, rentableId: live });
+        return sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,
+            currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
+          VALUES (${reference},${live},${customer.id},${order},1,(now() + ${days} * interval '1 day')::date,'day',${state},
+            now() + ${days} * interval '1 day', now() + ${days} * interval '1 day' + interval '8 hours','INR','Asia/Kolkata',100000,8000,0)`;
+      };
       await visit('UPC1', 'confirmed', 5);
       await visit('PAST1', 'completed', -5);
       await visit('CANC1', 'cancelled', 7);

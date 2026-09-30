@@ -22,7 +22,7 @@ export async function seedReviewModeration(sql, f, booking) {
     );
   }
   const [session] =
-    await sql`INSERT INTO customer_session(user_id,expires_at) VALUES(${booking.customer},now()+interval '1 day') RETURNING id`;
+    await sql`INSERT INTO auth_session(user_id,expires_at) VALUES(${booking.customer},now()+interval '1 day') RETURNING id`;
   const customer = { role: 'customer', userId: booking.customer, sessionId: session.id };
   const review = await submitReview(sql, customer, {
     visitId: visit.id,

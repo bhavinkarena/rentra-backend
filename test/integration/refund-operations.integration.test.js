@@ -144,7 +144,7 @@ test(
         env,
       );
       const [row] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
       const session = { role: 'customer', userId: booked.customer, sessionId: row.id };
       const admin = { kind: 'admin', id: f.admin };
       const provider = fakeProvider();

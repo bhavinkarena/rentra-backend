@@ -41,10 +41,10 @@ for (const kind of ['customer', 'foreign']) {
     const [c] =
       await fixture.sql`INSERT INTO "user"(role,account_status,name,phone) VALUES ('customer','active','Foreign Guest','9000000022') RETURNING id`;
     ids.foreign = c.id;
-    await fixture.sql`INSERT INTO customer_profile(user_id) VALUES (${c.id})`;
+    await fixture.sql`UPDATE "user" SET profile_completed_at=now(),profile_version=1,consent_updated_at=now() WHERE id=${c.id}`;
   }
   const [s] =
-    await fixture.sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${ids[kind]},now()+interval '1 day') RETURNING id`;
+    await fixture.sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${ids[kind]},now()+interval '1 day') RETURNING id`;
   tokens[kind] = await encryptSession({ role: 'customer', userId: ids[kind], sessionId: s.id });
 }
 for (const kind of ['access', 'deletion']) {
@@ -62,7 +62,7 @@ app.get('/__fixture/expire', async (_req, res) => {
   res.json({ ok: true });
 });
 app.get('/__fixture/revoke-readonly', async (_req, res) => {
-  await fixture.sql`UPDATE portal_session SET revoked_at=now() WHERE id=${ids.readonlySession}`;
+  await fixture.sql`UPDATE auth_session SET revoked_at=now() WHERE id=${ids.readonlySession}`;
   res.json({ ok: true });
 });
 app.use(createApp());

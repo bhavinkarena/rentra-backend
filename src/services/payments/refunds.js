@@ -70,7 +70,9 @@ export async function runRefundJobs(database,options={}) {
     ON CONFLICT DO NOTHING`;
   const work=await database`WITH due AS (
     SELECT e.refund_id FROM refund_execution e JOIN refund r ON r.id=e.refund_id
-    WHERE r.state<>'succeeded' AND e.next_check_at<=clock_timestamp() ORDER BY e.next_check_at LIMIT 10 FOR UPDATE OF e SKIP LOCKED)
+    WHERE e.next_check_at<=clock_timestamp()
+      AND (r.state IN ('requested','processing','unknown') OR (r.state<>'succeeded' AND r.created_at>clock_timestamp()-interval '1 day'))
+    ORDER BY e.next_check_at LIMIT 10 FOR UPDATE OF e SKIP LOCKED)
     UPDATE refund_execution e SET next_check_at=clock_timestamp()+interval '2 minutes' FROM due
     WHERE e.refund_id=due.refund_id RETURNING e.refund_id`;
   for(const row of work) {

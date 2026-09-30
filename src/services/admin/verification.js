@@ -105,7 +105,7 @@ export async function listingInventory(database, id, row) {
   const config = row.booking_config;
   const [{ open }] = await database`SELECT count(*)::int AS open FROM availability
     WHERE rentable_id=${id} AND day >= (now() AT TIME ZONE ${TIME_ZONE})::date
-      AND units_available > 0 AND blocked_by_client = false`;
+      AND units_available > 0`;
   const scheduleReady = config?.inventoryReady === true;
   return {
     scheduleReady,
@@ -333,7 +333,6 @@ export async function publishProperty(database, { adminId, id, input, ip = null 
     const [visit] = await tx`SELECT completed_at, recorded_by FROM verification_visit WHERE id=${state.visitId}`;
     await tx`UPDATE rentable SET status='live', prior_status=NULL, rejection_reason=NULL,
         verified_at=${new Date(visit.completed_at).toISOString()}::timestamptz, verified_by=${visit.recorded_by},
-        approved_snapshot=${JSON.stringify(submission.snapshot)}::text::jsonb,
         published_submission_id=${submissionId}, published_at=now(), published_by=${adminId}, updated_at=now()
       WHERE id=${id}`;
     await audit(tx, {

@@ -18,7 +18,7 @@ const visit = {
 async function check(
   reservations = [],
   bookings = [],
-  availability = [{ day: visit.date, slot: 'day', units_available: 1, blocked_by_client: false }],
+  availability = [{ day: visit.date, slot: 'day', units_available: 1 }],
 ) {
   const listing = { id, total_units: 1, booking_config: { inventoryReady: true } };
   const tx = async (strings) => {
@@ -93,9 +93,7 @@ async function snapshotCheck(holdExpiresAt) {
     blocked_start_at: visit.blockedStartAt,
     blocked_end_at: visit.blockedEndAt,
   };
-  const availability = [
-    { day: visit.date, slot: 'day', units_available: 1, blocked_by_client: false },
-  ];
+  const availability = [{ day: visit.date, slot: 'day', units_available: 1 }];
   const tx = async (strings) => {
     const query = strings.join('?');
     queries.push(query);

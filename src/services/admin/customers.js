@@ -16,7 +16,7 @@ import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
  * editable here. Phone changes go through the customer's verified flow.
  *
  * Concurrency: `user.lifecycle_version` guards every admin command on the
- * account; corrections also carry `customer_profile.version`, so a customer
+ * account; corrections also carry `user.profile_version`, so a customer
  * saving their own profile in parallel produces a conflict, not a lost edit.
  */
 
@@ -104,18 +104,14 @@ export async function listCustomers(database, input = {}) {
 async function loadCustomer(tx, customerId, { lock = false } = {}) {
   if (!uuid.safeParse(customerId).success) return null;
   const rows = lock
-    ? await tx`SELECT u.*, coalesce(p.version, 0) AS profile_version FROM "user" u
-        LEFT JOIN customer_profile p ON p.user_id=u.id
-        WHERE u.id=${customerId} AND u.role='customer' FOR UPDATE OF u`
-    : await tx`SELECT u.*, coalesce(p.version, 0) AS profile_version, p.marketing_consent FROM "user" u
-        LEFT JOIN customer_profile p ON p.user_id=u.id
-        WHERE u.id=${customerId} AND u.role='customer'`;
+    ? await tx`SELECT u.* FROM "user" u WHERE u.id=${customerId} AND u.role='customer' FOR UPDATE`
+    : await tx`SELECT u.* FROM "user" u WHERE u.id=${customerId} AND u.role='customer'`;
   return rows[0] ?? null;
 }
 
 async function impact(tx, customerId) {
   const [row] = await tx`SELECT
-      (SELECT count(*)::int FROM customer_session s WHERE s.user_id=${customerId}
+      (SELECT count(*)::int FROM auth_session s WHERE s.user_id=${customerId}
         AND s.revoked_at IS NULL AND s.expires_at > now()) AS open_sessions,
       (SELECT count(*)::int FROM booking v JOIN booking_order o ON o.id=v.order_id
         WHERE o.customer_id=${customerId} AND ${upcoming(tx)}) AS upcoming_visits,
@@ -180,7 +176,7 @@ export async function readCustomer(database, customerId) {
   const effects = await impact(database, id);
   const [orders, support, reviews, privacy, history, [sessions]] = await Promise.all([
     database`SELECT o.id, o.reference, o.state, o.created_at, o.listing_snapshot->>'title' AS title,
-        (SELECT min(v.day)::text FROM booking v WHERE v.order_id=o.id) AS first_visit
+        (SELECT min(v.local_day)::text FROM booking v WHERE v.order_id=o.id) AS first_visit
       FROM booking_order o WHERE o.customer_id=${id} ORDER BY o.created_at DESC LIMIT 20`,
     database`SELECT id, reference, subject, category, state, updated_at FROM support_request
       WHERE customer_id=${id} ORDER BY updated_at DESC LIMIT 20`,
@@ -199,7 +195,7 @@ export async function readCustomer(database, customerId) {
     database`SELECT count(*)::int AS total,
         count(*) FILTER (WHERE revoked_at IS NULL AND expires_at > now())::int AS open,
         max(created_at) AS latest
-      FROM customer_session WHERE user_id=${id}`,
+      FROM auth_session WHERE user_id=${id}`,
   ]);
   const [counts] = await database`SELECT
       (SELECT count(*)::int FROM booking_order WHERE customer_id=${id}) AS orders,
@@ -333,7 +329,7 @@ export async function revokeCustomerSessions(database, { adminId, customerId, in
     if (!customer) throw notFound('CUSTOMER_NOT_FOUND', 'No such customer.');
     stale(customer, parsed.data.expectedVersion);
     // Same lock order as login and lockCustomerAccount: user row, then sessions.
-    const revoked = await tx`UPDATE customer_session SET revoked_at=now()
+    const revoked = await tx`UPDATE auth_session SET revoked_at=now()
       WHERE user_id=${customer.id} AND revoked_at IS NULL AND expires_at > now() RETURNING id`;
     if (!revoked.length) return { customerId: customer.id, revoked: 0, lifecycleVersion: customer.lifecycle_version };
     const [updated] = await tx`UPDATE "user" SET lifecycle_version=lifecycle_version+1
@@ -386,8 +382,8 @@ export async function correctCustomerProfile(database, { adminId, customerId, in
           lifecycle_version=lifecycle_version+1, updated_at=now()
         WHERE id=${customer.id} RETURNING lifecycle_version`;
       // Keep the customer's own open profile form in step: its version moves too.
-      const [profile] = await tx`UPDATE customer_profile SET version=version+1, updated_at=now()
-        WHERE user_id=${customer.id} RETURNING version`;
+      const [profile] = await tx`UPDATE "user" SET profile_version=profile_version+1, updated_at=now()
+        WHERE id=${customer.id} AND profile_completed_at IS NOT NULL RETURNING profile_version AS version`;
       await audit(tx, {
         adminId,
         customerId: customer.id,

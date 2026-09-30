@@ -3,7 +3,7 @@ import 'server-only';
 import crypto from 'node:crypto';
 import { and, desc, eq, gt, isNull, sql as raw } from 'drizzle-orm';
 import { db } from '@/services/db';
-import { otpToken } from '@/services/db/schema/index.js';
+import { otpChallenge } from '@/services/db/schema/index.js';
 import { getEnv, isOtpBypassEnabled } from '@/services/schemas/joi/env';
 
 /**
@@ -15,7 +15,8 @@ import { getEnv, isOtpBypassEnabled } from '@/services/schemas/joi/env';
  *   · resend after 60 seconds, max 3 per hour per identifier+purpose
  *
  * Only the HMAC of the code is stored, so a database leak cannot be replayed
- * into logins. Comparison is constant-time.
+ * into logins. Comparison is constant-time. Challenges share otp_challenge with
+ * customer login; no IP address is stored for partner or caretaker codes.
  */
 
 export const DEV_CODE = '123456';
@@ -44,6 +45,14 @@ function timingSafeEqualHex(a, b) {
   return crypto.timingSafeEqual(ba, bb);
 }
 
+/** Caretaker identifiers are `staff:<phone>`; everything else here is a client login. */
+const principalOf = (identifier) => (String(identifier).startsWith('staff:') ? 'staff' : 'client');
+const scope = (identifier, purpose) => and(
+  eq(otpChallenge.principalKind, principalOf(identifier)),
+  eq(otpChallenge.identifier, identifier),
+  eq(otpChallenge.purpose, purpose),
+);
+
 export function normaliseEmail(value) {
   return String(value ?? '').trim().toLowerCase();
 }
@@ -66,14 +75,14 @@ export function normalisePhone(value) {
  * @returns {Promise<{ok: true, cooldownMs: number, code?: string}
  *                 | {ok: false, reason: 'cooldown'|'hourly_limit', retryInMs: number}>}
  */
-export async function issueOtp({ identifier, channel, purpose, ip, __returnCodeForTests }) {
+export async function issueOtp({ identifier, channel, purpose, __returnCodeForTests }) {
   const now = Date.now();
 
   const [latest] = await db
-    .select({ createdAt: otpToken.createdAt })
-    .from(otpToken)
-    .where(and(eq(otpToken.identifier, identifier), eq(otpToken.purpose, purpose)))
-    .orderBy(desc(otpToken.createdAt))
+    .select({ createdAt: otpChallenge.createdAt })
+    .from(otpChallenge)
+    .where(scope(identifier, purpose))
+    .orderBy(desc(otpChallenge.createdAt))
     .limit(1);
 
   if (latest) {
@@ -85,11 +94,10 @@ export async function issueOtp({ identifier, channel, purpose, ip, __returnCodeF
 
   const [{ n } = { n: 0 }] = await db
     .select({ n: raw`count(*)::int`.as('n') })
-    .from(otpToken)
+    .from(otpChallenge)
     .where(and(
-      eq(otpToken.identifier, identifier),
-      eq(otpToken.purpose, purpose),
-      gt(otpToken.createdAt, new Date(now - 60 * 60 * 1000)),
+      scope(identifier, purpose),
+      gt(otpChallenge.createdAt, new Date(now - 60 * 60 * 1000)),
     ));
 
   if (n >= MAX_PER_HOUR) {
@@ -98,16 +106,18 @@ export async function issueOtp({ identifier, channel, purpose, ip, __returnCodeF
 
   const code = generateCode();
 
-  await db.insert(otpToken).values({
+  const [challenge] = await db.insert(otpChallenge).values({
+    principalKind: principalOf(identifier),
     identifier,
     channel,
     purpose,
     codeHash: hashCode(code),
+    deliveryMode: getEnv().NODE_ENV === 'production' ? 'provider' : 'development',
     expiresAt: new Date(now + TTL_MS),
-    requestIp: ip ?? null,
-  });
+  }).returning({ id: otpChallenge.id });
 
   await deliverOtp({ identifier, channel, code });
+  await db.update(otpChallenge).set({ delivered: true }).where(eq(otpChallenge.id, challenge.id));
 
   return {
     ok: true,
@@ -158,13 +168,12 @@ export async function verifyOtp({ identifier, purpose, code }) {
 
   const [token] = await db
     .select()
-    .from(otpToken)
+    .from(otpChallenge)
     .where(and(
-      eq(otpToken.identifier, identifier),
-      eq(otpToken.purpose, purpose),
-      isNull(otpToken.consumedAt),
+      scope(identifier, purpose),
+      isNull(otpChallenge.consumedAt),
     ))
-    .orderBy(desc(otpToken.createdAt))
+    .orderBy(desc(otpChallenge.createdAt))
     .limit(1);
 
   if (!token) return { ok: false, reason: 'no_code' };
@@ -177,17 +186,17 @@ export async function verifyOtp({ identifier, purpose, code }) {
 
   if (!timingSafeEqualHex(hashCode(submitted), token.codeHash)) {
     await db
-      .update(otpToken)
+      .update(otpChallenge)
       .set({ attempts: token.attempts + 1 })
-      .where(eq(otpToken.id, token.id));
+      .where(eq(otpChallenge.id, token.id));
     return { ok: false, reason: 'wrong_code' };
   }
 
   // Single-use: consume before returning, so a replayed submit fails.
   await db
-    .update(otpToken)
+    .update(otpChallenge)
     .set({ consumedAt: new Date() })
-    .where(eq(otpToken.id, token.id));
+    .where(eq(otpChallenge.id, token.id));
 
   return { ok: true, viaBypass: false };
 }

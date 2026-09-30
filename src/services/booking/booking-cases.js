@@ -185,11 +185,12 @@ export async function addCaseUpdate(database, actor, input) {
 /** The effects of cancelling a case's visits right now, under the listing lock. */
 async function casePlan(tx, current, basis) {
   const [{ now }] = await tx`SELECT clock_timestamp() now`;
-  const visits = await tx`SELECT b.* FROM booking_case_visit cv JOIN booking b ON b.id=cv.booking_id
-    WHERE cv.case_id=${current.id} ORDER BY b.item_position NULLS LAST,b.day,b.id`;
+  const visits = await tx`SELECT b.*,o.policy_snapshot FROM booking_case_visit cv JOIN booking b ON b.id=cv.booking_id
+    JOIN booking_order o ON o.id=b.order_id
+    WHERE cv.case_id=${current.id} ORDER BY b.item_position,b.local_day,b.id`;
   const allocations = await capturedAllocations(tx, visits.map((v) => v.id));
   const plans = visits.map((visit) => {
-    const base = { id: visit.id, reference: visit.reference, date: day(visit.local_day ?? visit.day), slot: visit.slot, state: visit.state, provenance: visit.visit_provenance };
+    const base = { id: visit.id, reference: visit.reference, date: day(visit.local_day), slot: visit.slot, state: visit.state, provenance: visit.visit_provenance };
     const reason = uncancellableReason(visit, now);
     if (reason) return { ...base, action: 'unchanged', reason, refundMinor: 0, refunds: [] };
     let entitlement;
@@ -318,7 +319,7 @@ export async function resolveBookingCase(database, actor, input) {
         requestHash,
       });
       const ids = cancelling.map((v) => v.id);
-      const changed = await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by=NULL,
+      const changed = await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by_kind='admin',
         cancellation_reason=${`Rentra booking case ${fresh.reference}`},lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp()
         WHERE id IN ${tx(ids)} AND state='confirmed' AND starts_at>clock_timestamp() RETURNING id`;
       if (changed.length !== ids.length) throw new CaseError('PREVIEW_CHANGED', 'The effects changed since the preview.', { status: 409 });
@@ -432,12 +433,12 @@ export async function readBookingCase(database, actor, caseId) {
       LEFT JOIN admin_user a ON a.id=c.assignee_id LEFT JOIN admin_user rb ON rb.id=c.resolved_by LEFT JOIN booking_cancellation bc ON bc.id=c.cancellation_id
       WHERE c.id=${caseId}`;
     if (!c) throw new CaseError('CASE_NOT_FOUND', 'Case not found', { status: 404 });
-    const visits = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,b.visit_provenance,
+    const visits = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,b.visit_provenance,
       b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.cancellation_reason,
       (SELECT count(*)::int FROM visit_evidence e WHERE e.booking_id=b.id) evidence_count,
       (SELECT count(*)::int FROM visit_incident i WHERE i.booking_id=b.id AND i.state='open') open_incidents,
       (SELECT count(*)::int FROM visit_attachment x WHERE x.booking_id=b.id) photo_count
-      FROM booking_case_visit cv JOIN booking b ON b.id=cv.booking_id WHERE cv.case_id=${c.id} ORDER BY b.item_position NULLS LAST,b.day,b.id`;
+      FROM booking_case_visit cv JOIN booking b ON b.id=cv.booking_id WHERE cv.case_id=${c.id} ORDER BY b.item_position NULLS LAST,b.local_day,b.id`;
     const admins = await tx`SELECT id,name FROM admin_user WHERE is_active=true ORDER BY name,id`;
     const updates = await updatesFor(tx, [c.id]);
     return {
@@ -471,7 +472,7 @@ export async function readBookingCase(database, actor, caseId) {
         id: v.id,
         reference: v.reference,
         state: v.state,
-        date: day(v.local_day ?? v.day),
+        date: day(v.local_day),
         slot: v.slot,
         guests: v.guests,
         startsAt: v.hours_known ? instant(v.starts_at) : null,

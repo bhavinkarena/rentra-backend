@@ -74,7 +74,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
     const count = filters.tab === 'all' ? summary.total : summary[filters.tab];
     const pages = Math.max(1, Math.ceil(count / size)), page = Math.min(filters.page, pages);
     const rows = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
-      (SELECT min(v.day)::text FROM booking v WHERE v.order_id=o.id) first_visit,
+      (SELECT min(v.local_day)::text FROM booking v WHERE v.order_id=o.id) first_visit,
       (SELECT count(*)::int FROM booking v WHERE v.order_id=o.id) visit_count,
       (SELECT jsonb_agg(DISTINCT v.state) FROM booking v WHERE v.order_id=o.id) visit_states,
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
@@ -93,11 +93,11 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       WHERE o.id=${orderId} AND ${allowed}`;
     if (!order) throw new BookingRecordError();
     const [{now}] = await tx`SELECT clock_timestamp() now`;
-    const rows = await tx`SELECT id,reference,state,local_day,day,slot,guests,starts_at,ends_at,hours_known,
+    const rows = await tx`SELECT id,reference,state,local_day,slot,guests,starts_at,ends_at,hours_known,
       amount_rent_minor,amount_fee_minor,amount_deposit_minor,created_at,confirmed_at,cancelled_at,updated_at,lifecycle_version,visit_provenance
-      FROM booking WHERE order_id=${order.id} ORDER BY item_position NULLS LAST,day,id`;
+      FROM booking WHERE order_id=${order.id} ORDER BY item_position NULLS LAST,local_day,id`;
     const visits = rows.map(row => ({ ...(actor.kind === 'customer' ? {} : {operation:visitOperation(row,now)}), id: row.id, reference: row.reference, state: row.state,
-      date: (row.local_day || row.day) instanceof Date ? (row.local_day || row.day).toISOString().slice(0, 10) : String(row.local_day || row.day).slice(0, 10), slot: row.slot, guests: row.guests,
+      date: row.local_day instanceof Date ? row.local_day.toISOString().slice(0, 10) : String(row.local_day).slice(0, 10), slot: row.slot, guests: row.guests,
       startsAt: row.hours_known ? instant(row.starts_at) : null, endsAt: row.hours_known ? instant(row.ends_at) : null,
       rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor),
       version: row.lifecycle_version, provenance: row.visit_provenance,

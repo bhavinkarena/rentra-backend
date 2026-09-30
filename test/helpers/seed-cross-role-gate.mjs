@@ -32,8 +32,8 @@ try {
     .sign(new TextEncoder().encode(process.env.SESSION_SECRET));
   const [customer] = await sql`INSERT INTO "user"(email,role,account_status,name)
     VALUES ('foreign-customer@fixture.invalid','customer','active','Foreign Customer') RETURNING id`;
-  await sql`INSERT INTO customer_profile(user_id) VALUES (${customer.id})`;
-  const [session] = await sql`INSERT INTO customer_session(user_id,expires_at)
+  await sql`UPDATE "user" SET profile_completed_at=now(),profile_version=1,consent_updated_at=now() WHERE id=${customer.id}`;
+  const [session] = await sql`INSERT INTO auth_session(user_id,expires_at)
     VALUES (${customer.id},now()+interval '1 day') RETURNING id`;
   fixture.tokens.foreignCustomer = await encryptSession({
     userId: customer.id,

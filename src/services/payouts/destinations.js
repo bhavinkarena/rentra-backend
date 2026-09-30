@@ -80,13 +80,9 @@ async function lockClient(tx, clientId) {
   return client;
 }
 
-/** Keep the legacy application/user columns in step for onboarding and Gate 1 review. */
-async function mirrorLegacy(tx, clientId, d) {
-  const masked = d.method === 'bank' ? `••••${d.account_last4}` : null;
-  const match = d.name_check === 'same' ? true : d.name_check === 'different' ? false : null;
-  await tx`UPDATE client_application SET payout_upi_id=${d.upi_id},payout_account_ref=${masked},payout_ifsc=${d.ifsc},
-    payout_holder_name=${d.holder_name},payout_name_match=${match},updated_at=now() WHERE user_id=${clientId}`;
-  await tx`UPDATE "user" SET payout_upi_id=${d.upi_id},payout_bank_ref=${masked},updated_at=now() WHERE id=${clientId}`;
+/** Gate 1 review fingerprints read client_application.updated_at; a new destination moves it. */
+async function touchApplication(tx, clientId) {
+  await tx`UPDATE client_application SET updated_at=now() WHERE user_id=${clientId}`;
 }
 
 async function supersede(tx, clientId, states) {
@@ -197,7 +193,7 @@ export async function saveClientDestination(database, actor, input) {
     }
     await supersede(tx, client.id, ['submitted', 'verified']);
     const row = await insertVersion(tx, client, d, { state: 'submitted', source: 'settings', requestKey: meta.requestKey, hash });
-    await mirrorLegacy(tx, client.id, row);
+    await touchApplication(tx, client.id);
     await audit(tx, 'client', client.id, row.id, 'payout_destination_submitted', { version: row.version, masked: maskedDestination(row), nameCheck: row.name_check },
       current ? { version: current.version, masked: maskedDestination(current), state: current.state } : null);
     return { state: 'submitted', version: row.version, reauthRequired: false };
@@ -226,7 +222,7 @@ export async function submitClientDraft(database, actor, input) {
     const [current] = await tx`SELECT * FROM payout_destination WHERE client_id=${client.id} AND state IN ('submitted','verified')`;
     await supersede(tx, client.id, ['submitted', 'verified']);
     const [row] = await tx`UPDATE payout_destination SET state='submitted',submitted_at=now(),updated_at=now() WHERE id=${draft.id} RETURNING *`;
-    await mirrorLegacy(tx, client.id, row);
+    await touchApplication(tx, client.id);
     await audit(tx, 'client', client.id, row.id, 'payout_destination_submitted', { version: row.version, masked: maskedDestination(row), nameCheck: row.name_check, fromDraft: true },
       current ? { version: current.version, masked: maskedDestination(current), state: current.state } : null);
     return { replayed: false, state: 'submitted', version: row.version };
@@ -272,7 +268,7 @@ export async function failDestination(database, actor, input) {
     const [d] = await tx`SELECT * FROM payout_destination WHERE id=${value.destinationId} FOR UPDATE`;
     if (!d) throw new DestinationError('DESTINATION_NOT_FOUND', 'Not found', { status: 404 });
     if (d.state !== value.expectedState) throw new DestinationError('DESTINATION_CHANGED', 'This destination changed. Reload to see its current state.', { status: 409 });
-    const [impact] = await tx`SELECT count(*)::int count,coalesce(sum(net),0)::int net FROM payout WHERE destination_id=${d.id} AND status IN ('pending','processing','frozen')`;
+    const [impact] = await tx`SELECT count(*)::int count,coalesce(sum(net_minor)/100,0)::int net FROM payout WHERE destination_id=${d.id} AND status IN ('pending','processing','frozen')`;
     const auth = await recentAuthentication(tx, { kind: 'admin', principalId: actor.id, sessionId: actor.sessionId });
     const preview = {
       version: d.version,

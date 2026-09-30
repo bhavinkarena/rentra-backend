@@ -18,14 +18,14 @@ function fixture({ active = true, version = 3 } = {}) {
     uploads = [];
   const tx = async (strings, ...values) => {
     const query = strings.join('?');
-    if (query.includes('FROM "user"')) return [{ id: session.userId }];
-    if (query.includes('FROM customer_session')) return active ? [{ id: session.sessionId }] : [];
     if (query.includes('SELECT photo_public_id'))
       return [{ photo_public_id: 'profile-photos/old', version }];
-    if (query.startsWith('UPDATE customer_profile')) {
+    if (query.startsWith('UPDATE "user" SET photo_public_id')) {
       writes.push(values);
       return [];
     }
+    if (query.includes('FROM "user"')) return [{ id: session.userId }];
+    if (query.includes('FROM auth_session')) return active ? [{ id: session.sessionId }] : [];
     throw new Error(`Unexpected query: ${query}`);
   };
   return {

@@ -27,7 +27,7 @@ test(
         b = await seedConfirmedBooking(sql, f.listing);
       const [visit] = await sql`SELECT id FROM booking WHERE order_id=${b.order}`;
       const [session] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${b.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${b.customer},now()+interval '1 day') RETURNING id`;
       const owner = { kind: 'owner', id: f.owner },
         admin = { kind: 'admin', id: f.admin },
         other = { kind: 'owner', id: f.other },
@@ -227,7 +227,7 @@ test(
       await sql`UPDATE rentable SET client_id=${f.other} WHERE id=${f.listing}`;
       assert.equal((await readDispute(sql, owner, c.id)).bookingLinkAvailable, false);
       await assert.rejects(readDispute(sql, other, c.id), { statusCode: 404 });
-      await sql`UPDATE customer_session SET revoked_at=now() WHERE id=${session.id}`;
+      await sql`UPDATE auth_session SET revoked_at=now() WHERE id=${session.id}`;
       await assert.rejects(readDispute(sql, customer, c.id));
     } finally {
       await db.drop();

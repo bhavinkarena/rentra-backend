@@ -36,7 +36,7 @@ test(
       const [readonly] =
         await db`INSERT INTO admin_user(email,name,password_hash,permissions) VALUES ('privacy-read@fixture.invalid','Read','fixture','["admin.privacy.read"]') RETURNING id`;
       const [session] =
-        await db`INSERT INTO customer_session(user_id,expires_at) VALUES (${booking.customer},now()+interval '1 day') RETURNING id`;
+        await db`INSERT INTO auth_session(user_id,expires_at) VALUES (${booking.customer},now()+interval '1 day') RETURNING id`;
       const customer = {
         kind: 'customer',
         session: { role: 'customer', userId: booking.customer, sessionId: session.id },
@@ -44,7 +44,7 @@ test(
       const [foreign] =
         await db`INSERT INTO "user"(role,account_status,name,email) VALUES ('customer','active','Foreign PRIVATE','foreign@fixture.invalid') RETURNING id`;
       const [otherSession] =
-        await db`INSERT INTO customer_session(user_id,expires_at) VALUES (${foreign.id},now()+interval '1 day') RETURNING id`;
+        await db`INSERT INTO auth_session(user_id,expires_at) VALUES (${foreign.id},now()+interval '1 day') RETURNING id`;
       const other = {
         kind: 'customer',
         session: { role: 'customer', userId: foreign.id, sessionId: otherSession.id },
@@ -90,9 +90,9 @@ test(
         cmd(access.id, 'review', { authority: 'self', identityReference: 'verified-identity' }),
         { statusCode: 422 },
       );
-      await db`UPDATE portal_session SET created_at=now()-interval '16 minutes' WHERE id=${actor.sessionId}`;
+      await db`UPDATE auth_session SET created_at=now()-interval '16 minutes' WHERE id=${actor.sessionId}`;
       await assert.rejects(review(access.id), { code: 'RECENT_AUTH_REQUIRED' });
-      await db`UPDATE portal_session SET created_at=now() WHERE id=${actor.sessionId}`;
+      await db`UPDATE auth_session SET created_at=now() WHERE id=${actor.sessionId}`;
       await review(access.id);
       const version = (await detail()).request.version;
       await assert.rejects(
@@ -111,7 +111,7 @@ test(
         { code: 'PRIVACY_CHANGED' },
       );
       let p = await cmd(access.id, 'preview');
-      await db`UPDATE customer_profile SET version=version+1 WHERE user_id=${booking.customer}`;
+      await db`UPDATE "user" SET profile_version=profile_version+1 WHERE id=${booking.customer}`;
       await assert.rejects(cmd(access.id, 'queue', { previewToken: p.previewToken }), {
         code: 'PRIVACY_PREVIEW_CHANGED',
       });
@@ -191,7 +191,7 @@ test(
       await assert.rejects(cmd(deletion.id, 'preview'), { code: 'ACTIVE_OBLIGATIONS' });
       await db`UPDATE booking SET state='cancelled' WHERE order_id=${booking.order}`;
       await db`INSERT INTO customer_favourite(customer_id,rentable_id) VALUES (${booking.customer},${f.listing})`;
-      await db`UPDATE customer_profile SET photo_public_id='profile-photos/fixture',marketing_consent=true,version=version+1 WHERE user_id=${booking.customer}`;
+      await db`UPDATE "user" SET photo_public_id='profile-photos/fixture',marketing_consent=true,profile_version=profile_version+1 WHERE id=${booking.customer}`;
       const history = JSON.stringify(
         await db`SELECT * FROM booking WHERE order_id=${booking.order}`,
       );
@@ -213,14 +213,13 @@ test(
       await assert.rejects(privacyDownload(db, customer, access.id, true, env));
       assert.equal(
         (
-          await db`SELECT revoked_at IS NOT NULL revoked FROM customer_session WHERE id=${session.id}`
+          await db`SELECT revoked_at IS NOT NULL revoked FROM auth_session WHERE id=${session.id}`
         )[0].revoked,
         true,
       );
       assert.equal(
-        (
-          await db`SELECT marketing_consent FROM customer_profile WHERE user_id=${booking.customer}`
-        )[0].marketing_consent,
+        (await db`SELECT marketing_consent FROM "user" WHERE id=${booking.customer}`)[0]
+          .marketing_consent,
         false,
       );
       await assert.rejects(
@@ -306,11 +305,10 @@ test(
         financial,
       );
       const [user] =
-        await db`SELECT name,email,phone,person_id,account_status,privacy_erasure_pending,privacy_erased_at FROM "user" WHERE id=${booking.customer}`;
+        await db`SELECT name,email,phone,account_status,privacy_erasure_pending,privacy_erased_at FROM "user" WHERE id=${booking.customer}`;
       assert.equal(user.name, null);
       assert.equal(user.email, null);
       assert.equal(user.phone, null);
-      assert.equal(user.person_id, null);
       assert.equal(user.account_status, 'blocked');
       assert.equal(user.privacy_erasure_pending, false);
       assert(user.privacy_erased_at);

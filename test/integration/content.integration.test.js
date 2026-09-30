@@ -128,7 +128,7 @@ test(
         env,
       );
       const [sessionRow] =
-        await sql`INSERT INTO customer_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES (${booked.customer},now()+interval '1 day') RETURNING id`;
       const session = { role: 'customer', userId: booked.customer, sessionId: sessionRow.id };
       const selection = { rentableId: f.listing, dates: [day], slot: 'day', guests: 2 };
       const quote = () =>

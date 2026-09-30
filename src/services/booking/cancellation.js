@@ -47,7 +47,7 @@ export async function createRefundObligations(tx, visits, { reason, idempotencyK
 }
 async function estimate(tx, order, value) {
   const [{now}]=await tx`SELECT clock_timestamp() now`;
-  const visits=await tx`SELECT * FROM booking WHERE order_id=${order.id} AND id IN ${tx(value.visitIds)} ORDER BY id`;
+  const visits=await tx`SELECT b.*,o.policy_snapshot FROM booking b JOIN booking_order o ON o.id=b.order_id WHERE b.order_id=${order.id} AND b.id IN ${tx(value.visitIds)} ORDER BY b.id`;
   if(visits.length!==value.visitIds.length) throw new CheckoutError('VISIT_NOT_FOUND');
   const allocations=await capturedAllocations(tx, value.visitIds);
   const plans=[];
@@ -83,7 +83,7 @@ export async function commitCancellation(database,session,input,env=process.env)
     if(preview.hash!==parsed.hash) throw new CheckoutError('CANCELLATION_CHANGED');
     const id=randomUUID();
     const refundIds=await createRefundObligations(tx, preview.visits, { reason:'Customer visit cancellation', idempotencyKey:id, requestHash });
-    const changed=await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by='customer',
+    const changed=await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by_kind='customer',
       cancellation_reason=${parsed.reason||'Customer cancellation'},lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp()
       WHERE order_id=${order.id} AND id IN ${tx(value.visitIds)} AND state='confirmed' AND starts_at>clock_timestamp() RETURNING id`;
     if(changed.length!==value.visitIds.length) throw new CheckoutError('CANCELLATION_CHANGED');

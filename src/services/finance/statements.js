@@ -251,7 +251,7 @@ export async function financePayouts(database, actor, query = {}) {
       rows.map((row) => row.id),
     );
     const properties =
-      await tx`SELECT DISTINCT b.rentable_id id, coalesce(bo.listing_snapshot->>'title',b.listing_snapshot->>'title','Historical property') title FROM payout p JOIN booking b ON b.id=p.booking_id LEFT JOIN booking_order bo ON bo.id=b.order_id WHERE (${owner}='' OR p.client_id::text=${owner}) ORDER BY title,id LIMIT 1000`;
+      await tx`SELECT DISTINCT b.rentable_id id, coalesce(bo.listing_snapshot->>'title','Historical property') title FROM payout p JOIN booking b ON b.id=p.booking_id JOIN booking_order bo ON bo.id=b.order_id WHERE (${owner}='' OR p.client_id::text=${owner}) ORDER BY title,id LIMIT 1000`;
     return {
       filters,
       properties,
@@ -265,7 +265,7 @@ export async function financePayouts(database, actor, query = {}) {
 async function payoutDetails(tx, actor, ids) {
   if (!ids.length) return [];
   const rows =
-    await tx`SELECT p.*,b.order_id,b.reference,r.client_id current_owner_id,coalesce(bo.listing_snapshot->>'title',b.listing_snapshot->>'title','Historical property') title,
+    await tx`SELECT p.*,b.order_id,b.reference,r.client_id current_owner_id,coalesce(bo.listing_snapshot->>'title','Historical property') title,
     d.version destination_version,d.state destination_state,d.method,d.account_last4,d.ifsc,d.upi_id,
     EXISTS(SELECT 1 FROM captured_payment_allocation c WHERE c.id=p.funding_allocation_id) live
     FROM payout p JOIN booking b ON b.id=p.booking_id LEFT JOIN booking_order bo ON bo.id=b.order_id JOIN rentable r ON r.id=b.rentable_id
@@ -284,11 +284,11 @@ async function payoutDetails(tx, actor, ids) {
     status: p.status,
     amountMinor: p.live ? String(p.actual_net_minor) : '0',
     legacyQuote: {
-      grossRupees: p.gross,
-      commissionRupees: p.commission,
-      tdsRupees: p.tds_194o,
-      gstTcsRupees: p.gst_tcs,
-      netRupees: p.net,
+      grossRupees: Number(p.gross_minor) / 100,
+      commissionRupees: Number(p.commission_minor) / 100,
+      tdsRupees: Number(p.tds_194o_minor) / 100,
+      gstTcsRupees: Number(p.gst_tcs_minor) / 100,
+      netRupees: Number(p.net_minor) / 100,
     },
     deductionNotice:
       'Legacy gross, commission and tax fields are quoted rupee values; they are not proof of collection or verified deductions from the funded amount.',

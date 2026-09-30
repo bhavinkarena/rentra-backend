@@ -54,7 +54,7 @@ app.get('/__fixture/expire/:id', async (req, res) => {
   res.json({ ok: true });
 });
 app.get('/__fixture/revoke', async (_req, res) => {
-  await fixture.sql`UPDATE portal_session SET revoked_at=now() WHERE id=${sessions.admin}`;
+  await fixture.sql`UPDATE auth_session SET revoked_at=now() WHERE id=${sessions.admin}`;
   res.json({ ok: true });
 });
 app.use(createApp());

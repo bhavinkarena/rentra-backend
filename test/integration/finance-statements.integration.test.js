@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { insertFixtureOrder } from '../helpers/fixture-order.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
@@ -99,13 +100,22 @@ test(
         0,
       );
       assert.equal((await financeStatement(sql, owner, { ...query, period: '2000-01' })).count, 0);
+      // A pre-checkout visit: since 0047 it sits in a 'legacy' order.
+      const [source] =
+        await sql`SELECT rentable_id,customer_id FROM booking WHERE id=${fixture.live.bookingId}`;
+      const legacyOrder = await insertFixtureOrder(sql, {
+        customerId: source.customer_id,
+        rentableId: source.rentable_id,
+        state: 'legacy',
+      });
       const [legacyVisit] =
-        await sql`INSERT INTO booking(reference,rentable_id,customer_id,day,slot,amount_rent,amount_fee,state) SELECT ${randomUUID().slice(0, 16)},rentable_id,customer_id,current_date,'day',1000,80,'completed' FROM booking WHERE id=${fixture.live.bookingId} RETURNING id`;
+        await sql`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor)
+        VALUES (${randomUUID().slice(0, 16)},${source.rentable_id},${source.customer_id},${legacyOrder},1,current_date,'day','completed','INR','Asia/Kolkata',100000,8000,0) RETURNING id`;
       const [oldPayout] =
-        await sql`INSERT INTO payout(booking_id,client_id,gross,commission,net,status) VALUES (${legacyVisit.id},${f.owner},1000,80,920,'paid') RETURNING id`;
+        await sql`INSERT INTO payout(booking_id,client_id,gross_minor,commission_minor,net_minor,status) VALUES (${legacyVisit.id},${f.owner},100000,8000,92000,'paid') RETURNING id`;
       const legacyDetail = await financePayout(sql, owner, oldPayout.id);
-      assert.equal(legacyDetail.orderId, null);
-      assert.equal(legacyDetail.bookingLinkAvailable, false);
+      assert.equal(legacyDetail.orderId, legacyOrder);
+      assert.equal(legacyDetail.bookingLinkAvailable, true);
       assert.equal(legacyDetail.amountMinor, '0');
       assert.equal(
         (await financePayouts(sql, owner, { ...query, environment: 'legacy_unknown' })).count,
@@ -113,7 +123,7 @@ test(
       );
       const heldSource = await fixture.add('live', { createdAt: '2000-01-01T00:00:00Z' });
       const [pendingPayout] =
-        await sql`INSERT INTO payout(booking_id,client_id,funding_allocation_id,actual_net_minor,gross,commission,net,status,destination_id,created_at) VALUES (${heldSource.bookingId},${f.owner},${heldSource.allocationId},60000,1000,80,920,'pending',${fixture.destinationId},'2000-01-01') RETURNING id`;
+        await sql`INSERT INTO payout(booking_id,client_id,funding_allocation_id,actual_net_minor,gross_minor,commission_minor,net_minor,status,destination_id,created_at) VALUES (${heldSource.bookingId},${f.owner},${heldSource.allocationId},60000,100000,8000,92000,'pending',${fixture.destinationId},'2000-01-01') RETURNING id`;
       let bucket = await financeAllocation(sql, owner, heldSource.allocationId);
       assert.equal(bucket.pendingMinor, '60000');
       assert.equal(bucket.eligibleMinor, '40000');

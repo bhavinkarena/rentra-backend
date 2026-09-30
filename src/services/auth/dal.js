@@ -45,8 +45,6 @@ export const getCurrentUser = cache(async () => {
       preferredLocale: users.preferredLocale,
       clientType: users.clientType,
       kycStatus: users.kycStatus,
-      payoutUpiId: users.payoutUpiId,
-      personId: users.personId,
     })
     .from(users)
     .where(eq(users.id, session.userId))

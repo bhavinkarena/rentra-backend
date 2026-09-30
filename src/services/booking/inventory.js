@@ -134,7 +134,7 @@ export async function expireInventoryHolds(tx, rentableId, now) {
     FROM booking b WHERE r.booking_id = b.id AND b.order_id IN ${tx(expiredIds)}
     AND r.rentable_id = ${rentableId} AND r.source = 'booking' AND r.state = 'held'
     RETURNING r.id`;
-  await tx`UPDATE booking SET state = 'cancelled', cancelled_at = ${clock.toISOString()},
+  await tx`UPDATE booking SET state = 'cancelled', cancelled_at = ${clock.toISOString()}, cancelled_by_kind = 'system',
     cancellation_reason = 'Inventory hold expired', lifecycle_version = lifecycle_version + 1, updated_at = ${clock.toISOString()}
     WHERE order_id IN ${tx(expiredIds)} AND state = 'requested'`;
   await tx`INSERT INTO booking_lifecycle_event(order_id,kind,payload)
@@ -165,22 +165,23 @@ export async function getInventoryState(tx, listing) {
         AND state IN ('held', 'committed')
     ) r), '[]'::json) AS reservations,
     COALESCE((SELECT json_agg(a ORDER BY a.day,a.slot) FROM (
-      SELECT day::text AS day, slot, units_available, blocked_by_client, price_override
+      SELECT day::text AS day, slot, units_available
       FROM availability WHERE rentable_id = ${listing.id}
     ) a), '[]'::json) AS availability`;
   return state;
 }
 
-function legacyOwnerIntervals(listing, rows, now) {
+/** Closed calendar dates as occupied intervals. Owner blocks live in inventory_reservation. */
+function closedDateIntervals(listing, rows, now) {
   const intervals = [];
   const today = propertyToday(now);
   for (const row of rows) {
-    if (!row.blocked_by_client && row.units_available > 0) continue;
+    if (row.units_available > 0) continue;
     const schedule = listing.booking_config?.slots?.[row.slot];
     try {
       // Disabling sales of a configured slot does not erase its owner block.
       const interval = visitInterval({ date: row.day, slot: row.slot, schedule: schedule && { ...schedule, enabled: true } });
-      if (instant(interval.blockedEndAt) > now) intervals.push({ ...interval, ownerBlocked: row.blocked_by_client });
+      if (instant(interval.blockedEndAt) > now) intervals.push(interval);
     } catch {
       // An old, undated-in-hours owner row is not a permanent global block.
       // Keep a conservative two-day tail for overnight access/turnover; current
@@ -218,7 +219,7 @@ export async function auditInventoryReadiness(tx, listing, state) {
       throw new InventoryError('INVENTORY_REMEDIATION_REQUIRED', 'An owner block has an invalid state.');
     }
   }
-  legacyOwnerIntervals(listing, current.availability, context.now);
+  closedDateIntervals(listing, current.availability, context.now);
   return { ready: true };
 }
 
@@ -256,7 +257,7 @@ export async function prepareInventoryCheck(tx, listing) {
     state = await getInventoryState(tx, listing);
   }
   await auditInventoryReadiness(tx, listing, state);
-  const ownerIntervals = legacyOwnerIntervals(listing, state.availability, context.now);
+  const closedIntervals = closedDateIntervals(listing, state.availability, context.now);
   return (visits) => {
   contextFor(tx, listing.id);
   validateVisits(visits);
@@ -268,9 +269,8 @@ export async function prepareInventoryCheck(tx, listing) {
     const rows = halves.map((slot) => state.availability.find((row) => row.day === visit.date && row.slot === slot));
     if (rows.some((row) => !row)) code = 'INVENTORY_MISSING';
     else if (rows.some((row) => row.units_available <= 0)) code = 'INVENTORY_UNAVAILABLE';
-    if (ownerIntervals.some((interval) => !interval.ownerBlocked && intervalsOverlap(visit, interval))) code = 'INVENTORY_UNAVAILABLE';
-    if (ownerIntervals.some((interval) => interval.ownerBlocked && intervalsOverlap(visit, interval))
-      || state.reservations.some((row) => row.source === 'owner_block' && intervalsOverlap(visit, occupied(row)))) code = 'OWNER_BLOCKED';
+    if (closedIntervals.some((interval) => intervalsOverlap(visit, interval))) code = 'INVENTORY_UNAVAILABLE';
+    if (state.reservations.some((row) => row.source === 'owner_block' && intervalsOverlap(visit, occupied(row)))) code = 'OWNER_BLOCKED';
     else if (state.reservations.some((row) => row.source === 'booking' && intervalsOverlap(visit, occupied(row)))) code = 'INVENTORY_UNAVAILABLE';
     if (visits.some((other, otherIndex) => otherIndex !== index && intervalsOverlap(visit, other))) code = 'VISITS_OVERLAP';
     if (code) conflicts.push({ date: visit.date, slot: visit.slot, code });

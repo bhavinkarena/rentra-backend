@@ -3,7 +3,7 @@ import { db, sql } from './index.js';
 import { getBookingAvailability } from '../booking/quotes.js';
 import {
   rentable, rentablePrice, rentableAmenity, amenity, verificationVisit,
-  area, city, category, availability, review, users,
+  area, city, category, review, users,
 } from './schema/index.js';
 import { listingPath } from '@/services/domain/listing-url';
 import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
@@ -70,8 +70,9 @@ const cardColumns = {
   areaSlug: area.slug,
   cityName: city.name,
   citySlug: city.slug,
-  nightWeekday: rentablePrice.weekday,
-  nightWeekend: rentablePrice.weekend,
+  // Stored in paise; the public API keeps whole rupees.
+  nightWeekday: raw`(${rentablePrice.weekdayMinor}/100)::int`.mapWith(Number).as('night_weekday'),
+  nightWeekend: raw`(${rentablePrice.weekendMinor}/100)::int`.mapWith(Number).as('night_weekend'),
 };
 
 const nightPrice = and(
@@ -154,9 +155,8 @@ export async function getListingByCode(publicCode) {
     .select({
       ...cardColumns,
       description: rentable.description,
-      amenities: rentable.amenities,
       houseRules: rentable.houseRules,
-      depositAmount: rentable.depositAmount,
+      depositAmount: raw`(${rentable.depositMinor}/100)::int`.mapWith(Number).as('deposit_amount'),
       cancellationTier: rentable.cancellationTier,
       clientName: users.name,
       clientResponseRate: users.responseRate,
@@ -199,7 +199,7 @@ export async function getListingByCode(publicCode) {
   );
 
   const [prices, selectedAmenities, amenityCatalogue, physicalVisits, reviews, subScoreRows] = await Promise.all([
-    db.select({ slot: rentablePrice.slot, weekday: rentablePrice.weekday, weekend: rentablePrice.weekend })
+    db.select({ slot: rentablePrice.slot, weekday: raw`(${rentablePrice.weekdayMinor}/100)::int`.mapWith(Number).as('weekday'), weekend: raw`(${rentablePrice.weekendMinor}/100)::int`.mapWith(Number).as('weekend') })
       .from(rentablePrice)
       .where(eq(rentablePrice.rentableId, row.id)),
     db.select({
@@ -248,7 +248,6 @@ export async function getListingByCode(publicCode) {
   const amenities = amenityStates({
     selected: selectedAmenities,
     catalogue: amenityCatalogue,
-    legacy: row.amenities,
   });
 
   return {
@@ -320,24 +319,6 @@ export async function getListingIdByCode(publicCode) {
     .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
     .limit(1);
   return row?.id ?? null;
-}
-
-/** Open slots for a date range. Drives the SlotSelector and the calendar. */
-export async function getAvailability({ rentableId, from, to }) {
-  return db
-    .select({
-      day: availability.day,
-      slot: availability.slot,
-      unitsAvailable: availability.unitsAvailable,
-      priceOverride: availability.priceOverride,
-      blockedByClient: availability.blockedByClient,
-    })
-    .from(availability)
-    .where(and(
-      eq(availability.rentableId, rentableId),
-      raw`${availability.day} between ${from} and ${to}`,
-    ))
-    .orderBy(asc(availability.day), asc(availability.slot));
 }
 
 /**

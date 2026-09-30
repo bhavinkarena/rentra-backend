@@ -63,7 +63,7 @@ async function authorize(tx, actor, write = false, dataset = 'audit_events') {
   const [operator] =
     await tx`SELECT is_active,permissions FROM admin_user WHERE id=${actor.id} FOR SHARE`;
   const [session] =
-    await tx`SELECT id FROM portal_session WHERE id=${uuid.safeParse(actor.sessionId).success ? actor.sessionId : null} AND admin_id=${actor.id} AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR SHARE`;
+    await tx`SELECT id FROM auth_session WHERE id=${uuid.safeParse(actor.sessionId).success ? actor.sessionId : null} AND admin_id=${actor.id} AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR SHARE`;
   if (!session) throw unauthorized('SESSION_ENDED');
   const grants = operator
     ? capabilitiesFor({ isActive: operator.is_active, permissions: operator.permissions }, 'admin')

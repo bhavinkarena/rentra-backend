@@ -148,7 +148,7 @@ test(
       assert.deepEqual(race.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
       const [live] =
         await sql`SELECT status, content_version, published_submission_id, published_by,
-          verified_at, approved_snapshot->'listing'->>'title' AS title FROM rentable WHERE id=${id}`;
+          verified_at, (SELECT s.snapshot->'listing'->>'title' FROM listing_submission s WHERE s.id=published_submission_id) AS title FROM rentable WHERE id=${id}`;
       assert.equal(live.status, 'live');
       assert.equal(
         live.content_version,
