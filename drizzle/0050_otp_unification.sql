@@ -32,8 +32,12 @@ CREATE INDEX otp_challenge_purge_idx ON otp_challenge (created_at);--> statement
 
 DROP TABLE otp_token;--> statement-breakpoint
 DROP TABLE customer_otp_challenge;--> statement-breakpoint
-DROP TYPE otp_channel;--> statement-breakpoint
-DROP TYPE otp_purpose;--> statement-breakpoint
+-- Kept (with a notice) if another schema, e.g. a backup copy, still uses the type.
+DO $$ BEGIN DROP TYPE otp_channel; EXCEPTION WHEN dependent_objects_still_exist THEN
+  RAISE NOTICE 'type otp_channel kept: still used outside the public tables'; END $$;--> statement-breakpoint
+-- Kept (with a notice) if another schema, e.g. a backup copy, still uses the type.
+DO $$ BEGIN DROP TYPE otp_purpose; EXCEPTION WHEN dependent_objects_still_exist THEN
+  RAISE NOTICE 'type otp_purpose kept: still used outside the public tables'; END $$;--> statement-breakpoint
 
 -- Rate events: HMAC identifiers only, never a phone number or IP in clear.
 ALTER TABLE customer_auth_rate RENAME TO auth_rate_event;--> statement-breakpoint
