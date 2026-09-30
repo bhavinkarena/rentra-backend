@@ -65,7 +65,9 @@ ALTER TABLE booking
   DROP COLUMN price_snapshot,
   DROP COLUMN pricing_version,
   DROP COLUMN policy_version;--> statement-breakpoint
-DROP TYPE balance_mode;--> statement-breakpoint
+-- Kept (with a notice) if another schema, e.g. a backup copy, still uses the type.
+DO $$ BEGIN DROP TYPE balance_mode; EXCEPTION WHEN dependent_objects_still_exist THEN
+  RAISE NOTICE 'type balance_mode kept: still used outside the public tables'; END $$;--> statement-breakpoint
 CREATE INDEX booking_rentable_day_idx ON booking (rentable_id, local_day);--> statement-breakpoint
 
 CREATE OR REPLACE FUNCTION rentra_checkout_terms_immutable() RETURNS trigger LANGUAGE plpgsql AS $$

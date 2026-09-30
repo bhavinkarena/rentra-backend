@@ -27,7 +27,9 @@ ALTER TABLE booking ALTER COLUMN cancelled_by_kind TYPE varchar(16) USING cancel
 -- Historical NULLs stay NULL (unknown); new writers always record the kind.
 ALTER TABLE booking ADD CONSTRAINT booking_cancelled_by_kind_chk
   CHECK (cancelled_by_kind IS NULL OR cancelled_by_kind IN ('customer', 'client', 'admin', 'system'));--> statement-breakpoint
-DROP TYPE user_role;--> statement-breakpoint
+-- Kept (with a notice) if another schema, e.g. a backup copy, still uses the type.
+DO $$ BEGIN DROP TYPE user_role; EXCEPTION WHEN dependent_objects_still_exist THEN
+  RAISE NOTICE 'type user_role kept: still used outside the public tables'; END $$;--> statement-breakpoint
 
 ALTER TABLE "user" ADD CONSTRAINT user_role_fk FOREIGN KEY (role) REFERENCES role(code) ON UPDATE RESTRICT ON DELETE RESTRICT;--> statement-breakpoint
 ALTER TABLE review ADD CONSTRAINT review_author_role_fk FOREIGN KEY (author_role) REFERENCES role(code) ON UPDATE RESTRICT ON DELETE RESTRICT;--> statement-breakpoint
