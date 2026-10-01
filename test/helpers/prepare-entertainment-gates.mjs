@@ -11,6 +11,7 @@ if (
   throw new Error('Disposable local fixture required');
 const sql = postgres(fixture.url);
 try {
+  await sql`UPDATE rentable SET photos=${sql.json(Array.from({ length: 6 }, (_, i) => ({ url: '/images/partner-login.jpg', alt: 'Fixture photo ' + (i + 1) })))}`;
   const [customer] = await sql`SELECT id FROM "user" WHERE phone='9898981234'`;
   const order = await insertFixtureOrder(sql, {
     customerId: customer.id,

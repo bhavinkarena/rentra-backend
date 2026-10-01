@@ -31,6 +31,7 @@
     "ci": "npm run lint && npm run format:check && npm run db:check && npm test",
     "prettier:check": "npm run format:check",
     "db:check": "node src/scripts/checkMigrations.js",
+    "release:entertainment": "node --import ./loader/register.mjs --env-file=.env src/scripts/entertainment-release-check.js",
     "payments:enable-test": "node --import ./loader/register.mjs --env-file=.env src/scripts/enableTestPayments.js"
   },
   "dependencies": {

@@ -69,7 +69,7 @@ for (const [slug, label] of [
 const [parking] = await sql`SELECT id FROM amenity WHERE slug='parking'`;
 await sql`INSERT INTO amenity_vertical(amenity_id,vertical_code) VALUES (${parking.id},'entertainment')`;
 await sql`INSERT INTO rentable_amenity(rentable_id,amenity_id) VALUES (${v.venue},${parking.id})`;
-await sql`UPDATE rentable SET photos=${JSON.stringify(['lawn-1557296440', 'lawn-1571129618841', 'lawn-1584304474743', 'lawn-1595037935521', 'pool-1593029015621', 'pool-1603033825246'].map((f, i) => ({ url: '/seed/' + f + '.jpg', alt: 'Photo ' + (i + 1) })))}::text::jsonb`;
+await sql`UPDATE rentable SET photos=${sql.json(Array.from({ length: 6 }, (_, i) => ({ url: '/images/partner-login.jpg', alt: 'Fixture venue photo ' + (i + 1) })))}`;
 const { setPaymentGatewayConfiguration } =
   await import('../../src/services/payments/gateway-settings.js');
 const { encryptSession } = await import('@/services/auth/session-crypto.js');
