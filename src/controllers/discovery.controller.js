@@ -16,6 +16,7 @@ import {
   searchDiscovery,
   countDiscoveryRoute,
   getDiscoveryRegistry,
+  getLandingRoutes,
 } from '@/services/db/discovery.js';
 import { parseDiscoveryQuery, resolveDiscoveryRoute } from '@/services/domain/discovery.js';
 import { getBookingAvailability } from '@/services/booking/quotes.js';
@@ -104,7 +105,10 @@ function resolveRoute(registryData, path) {
 
 export const cities = asyncHandler(async (_req, res) => ok(res, await getCities()));
 export const areas = asyncHandler(async (req, res) => ok(res, await getAreas(req.params.citySlug)));
-export const sitemap = asyncHandler(async (_req, res) => ok(res, await getSitemapEntries()));
+export const sitemap = asyncHandler(async (_req, res) => {
+  const [entries, routes] = await Promise.all([getSitemapEntries(), getLandingRoutes(sql)]);
+  return ok(res, { ...entries, routes });
+});
 
 export const areaCount = asyncHandler(async (req, res) =>
   ok(res, { count: await countLiveInArea(req.params) }),

@@ -3,7 +3,7 @@ import { sql } from './index.js';
 import { previewBookingQuote } from '../booking/quotes.js';
 import { listingPath } from '../domain/listing-url.js';
 import { savedListingHref } from '../domain/saved-places.js';
-import { validRouteSlug, sortDiscoveryCards } from '../domain/discovery.js';
+import { validRouteSlug, sortDiscoveryCards, resolveDiscoveryRoute, DISCOVERY_INTENTS } from '../domain/discovery.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { DEFAULT_VERTICAL } from '../domain/verticals.js';
 import { getSearchTimeSlots } from '../booking/time-slots.js';
@@ -232,6 +232,49 @@ async function searchVenues({ filters, city, area, category, vertical, amenities
 }
 
 /** Undated landing pages need enough live places before they are indexable. */
+/**
+ * Every landing route (city × category or vertical × area or intent) with at
+ * least 3 live listings, for the sitemap. One read, counted in memory with the
+ * same rules as countDiscoveryRoute: asking per route was 1,500+ requests.
+ */
+export async function getLandingRoutes(database = sql) {
+  const registry = await getDiscoveryRegistry(database);
+  const rows = await database`SELECT r.city_id,r.area_id,r.category_id,r.rental_unit::text AS unit,cat.vertical_code AS vertical,
+      COALESCE((SELECT array_agg(ra.category_id::text) FROM rentable_resource_activity ra WHERE ra.rentable_id=r.id), '{}') AS activities,
+      COALESCE((SELECT array_agg(am.slug) FROM rentable_amenity ram JOIN amenity am ON am.id=ram.amenity_id WHERE ram.rentable_id=r.id AND am.is_active=true), '{}') AS amenities
+    FROM rentable r
+    JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
+    JOIN vertical v ON v.code=cat.vertical_code AND v.status='public'
+    WHERE r.status='live' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'`;
+  const scopes = [
+    ...registry.categories.map((row) => row.slug),
+    ...registry.verticals.map((row) => row.slug).filter((slug) => !registry.categories.some((row) => row.slug === slug)),
+  ];
+  const routes = [];
+  for (const city of registry.cities) {
+    const inCity = rows.filter((row) => row.city_id === city.id);
+    if (inCity.length < 3) continue;
+    for (const scope of scopes) {
+      const base = [city.slug, scope];
+      for (const parts of [
+        base,
+        ...registry.areas.filter((a) => a.cityId === city.id).map((a) => [...base, 'area', a.slug]),
+        ...DISCOVERY_INTENTS.map((i) => [...base, 'intent', i.slug]),
+      ]) {
+        const route = resolveDiscoveryRoute(registry, parts);
+        if (!route) continue;
+        const vertical = route.verticalCode ?? DEFAULT_VERTICAL;
+        const count = inCity.filter((row) => row.vertical === vertical
+          && (!route.category || row.category_id === route.category.id || (row.unit === 'hour' && row.activities.includes(route.category.id)))
+          && (!route.area || row.area_id === route.area.id)
+          && (!route.intent?.amenity || row.amenities.includes(route.intent.amenity))).length;
+        if (count >= 3) routes.push({ path: route.path, count });
+      }
+    }
+  }
+  return routes;
+}
+
 export async function countDiscoveryRoute(route, database = sql) {
   const vertical = route.verticalCode ?? DEFAULT_VERTICAL;
   const [row] = await database`SELECT count(*)::int AS n FROM rentable r

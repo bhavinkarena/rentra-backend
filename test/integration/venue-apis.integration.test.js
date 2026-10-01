@@ -8,6 +8,7 @@ import {
   getDiscoveryRegistry,
   searchDiscovery,
   countDiscoveryRoute,
+  getLandingRoutes,
 } from '../../src/services/db/discovery.js';
 import { parseDiscoveryQuery, resolveDiscoveryRoute } from '../../src/services/domain/discovery.js';
 import { listVerticals, verticalCommand } from '../../src/services/catalogues/verticals.js';
@@ -179,6 +180,7 @@ test(
       const verticalRoute = resolveDiscoveryRoute(registry, ['surat', 'entertainment']);
       assert.equal(await countDiscoveryRoute(activityRoute, sql), 1);
       assert.equal(await countDiscoveryRoute(verticalRoute, sql), 1);
+      assert.deepEqual(await getLandingRoutes(sql), [], 'one venue is a thin page, not a sitemap route');
       assert.equal(
         resolveDiscoveryRoute(registry, ['surat', 'box-cricket', 'intent', 'with-pool']),
         null,
