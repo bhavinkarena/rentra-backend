@@ -4,6 +4,7 @@ import { venueResourcesSchema } from '../schemas/zod/listing.js';
 import { bookingModel } from '../domain/verticals.js';
 import { conflict, notFound, unprocessable } from '../../utils/apiError.js';
 import { withListingInventory } from './inventory.js';
+import { ownerEditEffect } from '../domain/listing-lifecycle.js';
 
 /**
  * Courts, lanes and stations of a time-booked venue (entertainment plan, Phase 4).
@@ -30,7 +31,7 @@ export async function saveVenueResources(database, ownerId, { rentableId, expect
     const activityId = new Map(activities.map((row) => [row.slug, row.id]));
     const unknown = [...new Set(input.flatMap((row) => row.activities))].filter((slug) => !activityId.has(slug));
     if (unknown.length) throw unprocessable({ resources: [`Unknown activity: ${unknown.join(', ')}`] });
-    const existing = await tx`SELECT r.id, r.is_active,
+    const existing = await tx`SELECT r.id, r.is_active, r.name, r.capacity, r.is_indoor, r.details,
         COALESCE(json_agg(a.category_id) FILTER (WHERE a.category_id IS NOT NULL), '[]'::json) AS activities
       FROM rentable_resource r LEFT JOIN rentable_resource_activity a ON a.resource_id=r.id
       WHERE r.rentable_id=${rentableId} GROUP BY r.id`;
@@ -80,9 +81,19 @@ export async function saveVenueResources(database, ownerId, { rentableId, expect
     if (!primaryOffered) throw unprocessable({ resources: ['At least one active court must offer the venue’s main activity.'] });
     // Denormalised like rating_avg: generic capacity filters keep working for venues.
     await tx`UPDATE rentable SET capacity=${maxCapacity ?? 1},updated_at=now() WHERE id=${rentableId}`;
+    // Courts are trust content, like photos and capacity: a change on a live venue goes back to review.
+    // Reordering alone is not a change of facts.
+    const facts = (rows) => JSON.stringify(rows.filter((r) => r.isActive).map((r) => [r.name, r.capacity, r.isIndoor ?? null, r.details ?? {}, [...r.activities].sort()])
+      .sort((a, b) => a[0].localeCompare(b[0])));
+    const byId = new Map(activities.map((row) => [row.id, row.slug]));
+    const beforeFacts = facts(existing.map((r) => ({ name: r.name, capacity: r.capacity, isIndoor: r.is_indoor, details: r.details, isActive: r.is_active, activities: r.activities.map((id) => byId.get(id) ?? id) })));
+    const effect = ownerEditEffect({ status: listing.status, priorStatus: listing.prior_status }, beforeFacts !== facts(input));
+    if (effect.sentBack) {
+      await tx`UPDATE rentable SET status=${effect.patch.status ?? listing.status}, prior_status=${effect.patch.priorStatus ?? listing.prior_status}, updated_at=now() WHERE id=${rentableId}`;
+    }
     const [after] = await tx`SELECT content_version FROM rentable WHERE id=${rentableId}`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after")
       VALUES ('client',${ownerId},'rentable',${rentableId},'venue_resources_changed',${JSON.stringify({ resources: input, deactivated: missing })}::text::jsonb)`;
-    return { ok: true, contentVersion: after.content_version, resourceIds: saved };
+    return { ok: true, contentVersion: after.content_version, resourceIds: saved, sentBack: effect.sentBack };
   });
 }

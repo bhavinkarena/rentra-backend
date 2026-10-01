@@ -216,6 +216,11 @@ test(
         resources: courts,
       });
       assert.equal(saved.resourceIds.length, 3);
+      // Courts are trust content: changing them on a live venue sends it back to review (Phase 5).
+      assert.equal(saved.sentBack, true);
+      const [{ status: reviewStatus }] = await sql`SELECT status FROM rentable WHERE id=${v.venue}`;
+      assert.equal(reviewStatus, 'pending_review');
+      await sql`UPDATE rentable SET status='live' WHERE id=${v.venue}`; // re-approved, for the steps below
       const [{ capacity, active }] =
         await sql`SELECT r.capacity, (SELECT count(*)::int FROM rentable_resource WHERE rentable_id=r.id AND is_active) active FROM rentable r WHERE r.id=${v.venue}`;
       assert.deepEqual(

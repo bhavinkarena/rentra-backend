@@ -4,7 +4,7 @@ import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { listingCompletion } from '../domain/listing-completion.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { rentable } from '../db/schema/index.js';
-import { CHECKLIST, listVerifications, publicationState } from './verification.js';
+import { checklistFor, listVerifications, publicationState } from './verification.js';
 import { clientLifecycle, lifecycleState, propertyActivity } from './property-lifecycle.js';
 
 export const REVIEW_SECTIONS = [
@@ -66,11 +66,11 @@ async function snapshot(tx, row) {
   const documents =
     await tx`SELECT id,doc_type,side,status,review_note,name_on_document,issued_at,uploaded_at FROM document WHERE owner_type='rentable' AND owner_id=${row.id} AND deleted_at IS NULL AND status<>'superseded' ORDER BY id`;
   const [place] =
-    await tx`SELECT c.name AS city,a.name AS area,cat.name AS category FROM rentable r LEFT JOIN city c ON c.id=r.city_id LEFT JOIN area a ON a.id=r.area_id LEFT JOIN category cat ON cat.id=r.category_id WHERE r.id=${row.id}`;
+    await tx`SELECT c.name AS city,a.name AS area,cat.name AS category,cat.slug AS "categorySlug" FROM rentable r LEFT JOIN city c ON c.id=r.city_id LEFT JOIN area a ON a.id=r.area_id LEFT JOIN category cat ON cat.id=r.category_id WHERE r.id=${row.id}`;
   // No storage keys, signed links, account credentials or financial history in snapshots.
   // Snapshots keep their historical rupee fields so old and new revisions diff correctly.
   const { depositMinor, extraGuestChargeMinor, ...content } = camel(row);
-  const listing = { ...content, depositAmount: Number(depositMinor) / 100, extraGuestCharge: Number(extraGuestChargeMinor) / 100 };
+  const listing = { ...content, ...(row.rental_unit === 'hour' ? { categorySlug: place.categorySlug } : {}), depositAmount: Number(depositMinor) / 100, extraGuestCharge: Number(extraGuestChargeMinor) / 100 };
   if (typeof row.location === 'string' && /^[0-9a-f]+$/i.test(row.location))
     listing.location = rentable.location.mapFromDriverValue(row.location);
   // Admin bookkeeping, not submitted content.
@@ -107,6 +107,8 @@ export async function submitProperty(database, { id, clientId, ip = null }) {
       await tx`SELECT * FROM listing_submission WHERE rentable_id=${id} ORDER BY pass_number DESC LIMIT 1`;
     if (row.status === 'pending_review' && latest?.content_version === row.content_version)
       throw conflict('ALREADY_SUBMITTED', 'This revision is already waiting for review.');
+    const [vertical] = await tx`SELECT v.status FROM vertical v JOIN category c ON c.vertical_code=v.code WHERE c.id=${row.category_id} FOR SHARE OF v`;
+    if (vertical?.status === 'hidden') throw conflict('VERTICAL_CLOSED', 'This kind of listing is not accepting submissions right now.');
     const data = await snapshot(tx, row);
     const readiness = listingCompletion(data.listing, data);
     if (readiness.remaining.length)
@@ -178,7 +180,7 @@ export async function listPropertyReviews(database, adminId, input) {
 
 export async function readPropertyReview(database, id) {
   const [owner] =
-    await database`SELECT r.id,r.title,r.slug,r.public_code,r.status,r.content_version,r.client_id,u.name,u.email,u.account_status,
+    await database`SELECT r.id,r.title,r.slug,r.public_code,r.status,r.content_version,r.client_id,r.rental_unit::text AS rental_unit,u.name,u.email,u.account_status,
     (SELECT id FROM client_application WHERE user_id=u.id) AS application_id FROM rentable r JOIN "user" u ON u.id=r.client_id WHERE r.id=${id}`;
   if (!owner) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
   const submissions =
@@ -201,7 +203,7 @@ export async function readPropertyReview(database, id) {
     readiness: current ? listingCompletion(current.snapshot.listing, current.snapshot) : null,
     verifications: await listVerifications(database, id),
     publication: await publicationState(database, id),
-    checklist: CHECKLIST.map(([key, label]) => ({ key, label })),
+    checklist: checklistFor(owner.rental_unit).map(([key, label]) => ({ key, label })),
     lifecycle: await lifecycleState(database, id),
     activity: await propertyActivity(database, id),
   };

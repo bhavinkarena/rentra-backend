@@ -205,11 +205,11 @@ export async function getListingForEdit(id, clientId = null) {
       .orderBy(asc(listingReview.passNumber)),
   ]);
 
-  const [{ vertical }] = await sql`SELECT vertical_code AS vertical FROM category WHERE id=${row.categoryId}`;
+  const [{ vertical, categorySlug }] = await sql`SELECT slug AS "categorySlug", vertical_code AS vertical FROM category WHERE id=${row.categoryId}`;
   const venue = row.rentalUnit === 'hour' ? await venueForEdit(id) : { resources: [], hourlyRates: [] };
   return {
     // Money is stored in paise; the editor keeps its whole-rupee fields.
-    listing: { ...row, vertical, depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
+    listing: { ...row, vertical, categorySlug, depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
     prices,
     ...venue,
     amenities: tags,

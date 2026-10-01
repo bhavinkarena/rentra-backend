@@ -17,7 +17,7 @@ import { audit } from '@/services/audit';
 import { fieldErrors } from '@/services/schemas/zod';
 import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
-  ownershipDocSchema,
+  ownershipDocSchema, venueRulesSchema,
 } from '@/services/schemas/zod/listing';
 import { MAX_PHOTOS } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
@@ -257,7 +257,6 @@ export async function saveLocation(_prev, formData) {
     lat: formData.get('lat'),
     lng: formData.get('lng'),
     exactAddress: formData.get('exactAddress'),
-    approachNote: formData.get('approachNote') ?? '',
   });
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
@@ -321,6 +320,7 @@ export async function saveAmenities(_prev, formData) {
 
 export async function saveRules(_prev, formData) {
   const { listing } = await load(String(formData.get('id')));
+  if (listing.rentalUnit === 'hour') return saveVenueRules(listing, formData);
   const parsed = rulesSchema.safeParse({
     checkInFrom: formData.get('checkInFrom'),
     checkOutBy: formData.get('checkOutBy'),
@@ -354,6 +354,30 @@ export async function saveRules(_prev, formData) {
     houseRules,
   }, ['houseRules'], { expected: expectedVersion(formData) });
 
+  return { ok: true, contentVersion, sentBack };
+}
+
+/** Venue rules: what players wear, age, food, smoking, alcohol, notes. No check-in window. */
+async function saveVenueRules(listing, formData) {
+  const parsed = venueRulesSchema.safeParse({
+    footwear: formData.get('footwear') ?? '',
+    minAge: formData.get('minAge') ?? '',
+    foodAllowed: formData.get('foodAllowed') ?? 'yes',
+    smokingAllowed: formData.get('smokingAllowed') ?? 'no',
+    alcoholAllowed: formData.get('alcoholAllowed') ?? 'no',
+    extraRules: formData.get('extraRules') ?? '',
+  });
+  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
+  const d = parsed.data;
+  const houseRules = {
+    footwear: d.footwear || null,
+    minAge: d.minAge === '' ? null : d.minAge,
+    foodAllowed: d.foodAllowed,
+    smokingAllowed: d.smokingAllowed === 'yes',
+    alcoholAllowed: d.alcoholAllowed === 'yes',
+    notes: d.extraRules || null,
+  };
+  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules }, ['houseRules'], { expected: expectedVersion(formData) });
   return { ok: true, contentVersion, sentBack };
 }
 

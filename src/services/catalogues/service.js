@@ -143,11 +143,18 @@ export async function readCatalogue(database, actor, type, id) {
         record.centre = point.latitude == null ? null : point;
       }
     }
+    if (record && type === 'amenities')
+      record.verticals = (await tx`SELECT vertical_code FROM amenity_vertical WHERE amenity_id=${id} ORDER BY vertical_code`).map((row) => row.vertical_code);
+    // Categories and amenities are scoped by vertical (entertainment plan); the editor needs the list.
+    const verticals = ['categories', 'amenities'].includes(type)
+      ? await tx`SELECT code,name,status FROM vertical ORDER BY sort_order,code`
+      : [];
     return {
       type,
       record,
       canWrite,
       cities,
+      verticals,
       replacements,
       impact: record ? await impact(tx, type, id) : null,
     };

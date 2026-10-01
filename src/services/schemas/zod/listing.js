@@ -78,7 +78,6 @@ export const locationSchema = z.object({
   lat: z.coerce.number().min(6).max(37, 'Pin must be inside India'),
   lng: z.coerce.number().min(68).max(98, 'Pin must be inside India'),
   exactAddress: z.string().trim().min(10, 'Give the full address').max(500),
-  approachNote: z.string().trim().max(300).optional().or(z.literal('')),
 });
 
 export const capacitySchema = z.object({
@@ -104,6 +103,16 @@ export const rulesSchema = z.object({
   extraRules: z.string().trim().max(1000).optional().or(z.literal('')),
 });
 
+/** Venue rules (time-booked listings). Structured, like house rules; notes go through moderation. */
+export const venueRulesSchema = z.object({
+  footwear: z.enum(['non_marking', 'no_studs', 'studs_ok', 'any', '']).default(''),
+  minAge: z.union([z.literal(''), z.coerce.number().int().min(1).max(99)]).default(''),
+  foodAllowed: z.enum(['yes', 'no', 'seating_only']).default('yes'),
+  smokingAllowed: z.enum(['yes', 'no']).default('no'),
+  alcoholAllowed: z.enum(['yes', 'no']).default('no'),
+  extraRules: z.string().trim().max(1000).optional().or(z.literal('')),
+}).refine((d) => d.footwear || d.extraRules, { message: 'Say what players should wear, or add a rule', path: ['footwear'] });
+
 const rupees = z.coerce.number().int().min(0).max(500000);
 
 export const pricingSchema = z.object({
@@ -127,6 +136,8 @@ export const ownershipDocSchema = z.object({
   docType: z.enum([
     'extract_7_12', 'electricity_bill', 'property_tax', 'index_ii',
     'extract_8a', 'sale_deed', 'authorisation_letter',
+    // Venues (often leased commercial premises).
+    'rent_agreement', 'shop_establishment', 'gst_certificate', 'noc',
   ]),
   nameOnDocument: z.string().trim().min(3, 'Enter the name printed on it').max(160),
   issuedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'When was it issued?').optional().or(z.literal('')),
