@@ -103,6 +103,20 @@ async function audit(tx, { adminId, id, action, after, reason = null, ip = null 
 /** Saleable inventory facts shared by the admin publish panel and the owner overview. */
 export async function listingInventory(database, id, row) {
   const config = row.booking_config;
+  if (config?.model === 'hourly') {
+    // A time-booked venue opens by weekly hours: it needs a court and hourly prices instead of open dates.
+    const [{ courts, priced }] = await database`SELECT
+      (SELECT count(*)::int FROM rentable_resource WHERE rentable_id=${id} AND is_active) AS courts,
+      (SELECT count(*)::int FROM rentable_rate WHERE rentable_id=${id}) AS priced`;
+    const scheduleReady = config.inventoryReady === true;
+    const bookable = scheduleReady && courts > 0 && priced > 0;
+    return {
+      scheduleReady, openDates: null, courts, bookable,
+      note: !scheduleReady ? 'Not bookable yet: the owner has not confirmed opening hours.'
+        : !courts ? 'Not bookable yet: no active court.'
+          : !priced ? 'Not bookable yet: no hourly prices.' : 'Bookable during the published opening hours.',
+    };
+  }
   const [{ open }] = await database`SELECT count(*)::int AS open FROM availability
     WHERE rentable_id=${id} AND day >= (now() AT TIME ZONE ${TIME_ZONE})::date
       AND units_available > 0`;

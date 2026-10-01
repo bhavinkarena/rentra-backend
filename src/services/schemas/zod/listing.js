@@ -131,3 +131,47 @@ export const ownershipDocSchema = z.object({
   nameOnDocument: z.string().trim().min(3, 'Enter the name printed on it').max(160),
   issuedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'When was it issued?').optional().or(z.literal('')),
 });
+
+/* --------------- time-booked venues (entertainment plan, Phase 4) --------------- */
+const activitySlug = z.string().max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
+
+/** One court, lane, turf or station. `id` present = an existing resource. */
+export const venueResourceSchema = z.object({
+  id: z.string().uuid().optional(),
+  name: z.string().trim().min(1, 'Name each court').max(60),
+  capacity: z.number().int().min(1).max(500),
+  isIndoor: z.boolean().nullable().default(null),
+  details: z.object({
+    size: z.string().trim().max(40).optional(),
+    surface: z.string().trim().max(40).optional(),
+    format: z.string().trim().max(40).optional(),
+    equipment: z.string().trim().max(60).optional(),
+  }).strict().default({}),
+  activities: z.array(activitySlug).min(1, 'Choose at least one activity').max(10),
+  sortOrder: z.number().int().min(0).max(1000),
+  isActive: z.boolean().default(true),
+}).strict();
+
+export const venueResourcesSchema = z.object({
+  resources: z.array(venueResourceSchema).min(1, 'Add at least one court').max(30),
+}).strict().superRefine((value, ctx) => {
+  const names = value.resources.map((row) => row.name.toLowerCase());
+  names.forEach((name, index) => {
+    if (names.indexOf(name) !== index) ctx.addIssue({ code: 'custom', path: ['resources', index, 'name'], message: 'Each court needs a different name' });
+  });
+});
+
+/** One hourly band: activity × weekday/weekend × [from, to). `toNextDay` for bands past midnight. */
+export const hourlyRateSchema = z.object({
+  activity: activitySlug,
+  dayKind: z.enum(['weekday', 'weekend']),
+  from: clock,
+  to: clock,
+  toNextDay: z.boolean().default(false),
+  hourlyRate: z.number().int().min(0).max(500_000),
+}).strict();
+
+export const hourlyRatesSchema = z.object({
+  rates: z.array(hourlyRateSchema).min(1, 'Add at least one price').max(100),
+}).strict();

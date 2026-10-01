@@ -7,8 +7,9 @@
  *   npm run seed:amenities
  */
 import postgres from 'postgres';
+import { seedDatabaseUrl } from './seed-guard.js';
 
-const sql = postgres(process.env.DATABASE_URL, { prepare: false, max: 1, onnotice: () => {} });
+const sql = postgres(seedDatabaseUrl('seed-amenities'), { prepare: false, max: 1, onnotice: () => {} });
 
 /**
  * [slug, en, hi, gu, valueType, filterable]
@@ -101,6 +102,9 @@ for (const [group, tags] of GROUPS) {
         is_filterable = EXCLUDED.is_filterable,
         sort_order = EXCLUDED.sort_order,
         is_active = true`;
+    // Every tag in this farmhouse taxonomy is scoped to the farmhouse vertical (0052).
+    await sql`INSERT INTO amenity_vertical (amenity_id, vertical_code)
+      SELECT id, 'farmhouse' FROM amenity WHERE slug = ${slug} ON CONFLICT DO NOTHING`;
     if (before) updated += 1; else inserted += 1;
   }
 }

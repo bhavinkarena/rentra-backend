@@ -36,9 +36,9 @@ npm run worker                # payments, notifications, inventory expiry
 Verify it:
 
 ```bash
-npm test      # 52 unit and integration tests, no database needed for most
+npm test      # 158 tests; DB integration tests run only with PORTAL_TEST_DATABASE_URL (local Postgres)
 npm run smoke # boots the app against the real database and checks the contract
-npm run routes # prints all 142 routes
+npm run routes # prints every route (291 on 1 Oct 2026)
 ```
 
 ## The response contract
@@ -95,7 +95,7 @@ Validated at boot; the process refuses to start on an invalid value rather than
   here**. Both codebases must agree about `DATABASE_URL`, `SESSION_SECRET` and
   the Razorpay keys.
 - `src/config/env.js` — what only a standalone server needs: `PORT`,
-  `TRUST_PROXY_HOPS`, `API_PREFIX`, cookie policy. CORS accepts all origins.
+  `TRUST_PROXY_HOPS`, `API_PREFIX`, cookie policy. CORS allows only the origins in `CORS_ALLOWED_ORIGINS`.
 
 Two values need care:
 

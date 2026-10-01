@@ -17,6 +17,9 @@ export const REVIEW_SECTIONS = [
   'terms',
   'photos',
   'ownership',
+  // Time-booked venues (entertainment plan): courts and opening hours.
+  'venue',
+  'hours',
 ];
 export const listingQueueQuery = z.object({
   status: z
@@ -74,8 +77,19 @@ async function snapshot(tx, row) {
   // clientRole is a constant integrity column, not content.
   for (const key of ['restrictedAt', 'restrictedBy', 'restrictionReason', 'lifecycleVersion', 'clientRole'])
     delete listing[key];
+  // Time-booked venues: the courts and hourly bands are reviewed content too (hours live in listing.bookingConfig).
+  const venue = row.rental_unit === 'hour' ? {
+    resources: (await tx`SELECT r.id,r.name,r.capacity,r.is_indoor,r.details,r.sort_order,r.is_active,
+        COALESCE(json_agg(c.slug ORDER BY c.slug) FILTER (WHERE c.id IS NOT NULL), '[]'::json) AS activities
+      FROM rentable_resource r LEFT JOIN rentable_resource_activity a ON a.resource_id=r.id LEFT JOIN category c ON c.id=a.category_id
+      WHERE r.rentable_id=${row.id} GROUP BY r.id ORDER BY r.sort_order,r.name,r.id`).map(camel),
+    hourlyRates: (await tx`SELECT c.slug AS activity,rr.day_kind,rr.start_minute,rr.end_minute,(rr.hourly_rate_minor/100)::int AS hourly_rate
+      FROM rentable_rate rr JOIN category c ON c.id=rr.category_id WHERE rr.rentable_id=${row.id}
+      ORDER BY c.slug,rr.day_kind,rr.start_minute`).map(camel),
+  } : {};
   return {
     listing,
+    ...venue,
     prices: prices.map(camel),
     amenities: amenities.map(camel),
     documents: documents.map(camel),

@@ -1,9 +1,14 @@
 import 'server-only';
 
 import { addLocalDays, intervalsOverlap, isLocalDate, propertyToday, visitInterval } from '../domain/booking-dates.js';
+import { bookingModel } from '../domain/verticals.js';
 
 const lockContexts = new WeakMap();
 const ACTIVE_BOOKINGS = ['requested', 'confirmed', 'handed_over', 'returned', 'disputed'];
+/** Orders whose rows any inventory writer may still change; terminal history is never locked. */
+const LIVE_ORDERS = ['draft', 'held', 'confirmed', 'partially_cancelled'];
+const SLOT_VISITS = ['day', 'night', 'full_day', 'hourly'];
+const DAY_MS = 86_400_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class InventoryError extends Error {
@@ -66,9 +71,14 @@ export async function withListingInventory(database, rentableId, run) {
     try { return await database.begin(async (tx) => {
     const [listing] = await tx`UPDATE rentable SET updated_at = updated_at WHERE id = ${rentableId} RETURNING *`;
     if (!listing) throw new InventoryError('NOT_FOUND', 'Listing unavailable.');
-    await tx`SELECT id FROM booking_order WHERE rentable_id = ${rentableId} ORDER BY id FOR UPDATE`;
-    await tx`SELECT id FROM booking WHERE rentable_id = ${rentableId} ORDER BY id FOR UPDATE`;
-    await tx`SELECT id FROM inventory_reservation WHERE rentable_id = ${rentableId} ORDER BY id FOR UPDATE`;
+    // Only rows a writer can still change (P3): locking a venue's whole booking
+    // history on every write grows without bound. The listing mutex above still
+    // serialises every writer; the order of the three statements is unchanged.
+    await tx`SELECT id FROM booking_order WHERE rentable_id = ${rentableId} AND state IN ${tx(LIVE_ORDERS)} ORDER BY id FOR UPDATE`;
+    await tx`SELECT b.id FROM booking b WHERE b.rentable_id = ${rentableId} AND (b.state IN ${tx(ACTIVE_BOOKINGS)}
+      OR EXISTS (SELECT 1 FROM inventory_reservation r WHERE r.booking_id = b.id AND r.state IN ('held', 'committed')))
+      ORDER BY b.id FOR UPDATE OF b`;
+    await tx`SELECT id FROM inventory_reservation WHERE rentable_id = ${rentableId} AND state IN ('held', 'committed') ORDER BY id FOR UPDATE`;
     const [{ now }] = await tx`SELECT clock_timestamp() AS now`;
     lockContexts.set(tx, { rentableId, now: instant(now) });
     try {
@@ -101,6 +111,21 @@ export async function withListingSnapshot(database, rentableId, run) {
       lockContexts.delete(tx);
     }
   });
+}
+
+/** True inside withListingSnapshot: callers must not write (e.g. expire holds). */
+export function isReadOnlyInventory(tx, rentableId) {
+  return contextFor(tx, rentableId).readOnly === true;
+}
+
+/**
+ * The time window an inventory decision needs (P2): the visits' blocked range
+ * widened by two days, so overnight neighbours and closed-date rows are seen.
+ */
+export function inventoryWindow(visits) {
+  const starts = visits.map((visit) => instant(visit.blockedStartAt ?? visit.startsAt).getTime());
+  const ends = visits.map((visit) => instant(visit.blockedEndAt ?? visit.endsAt).getTime());
+  return { from: new Date(Math.min(...starts) - 2 * DAY_MS).toISOString(), to: new Date(Math.max(...ends) + 2 * DAY_MS).toISOString() };
 }
 
 /** What expireInventoryHolds would release, applied to a read-only snapshot. */
@@ -145,28 +170,40 @@ export async function expireInventoryHolds(tx, rentableId, now) {
   return { ordersExpired: orders.length, reservationsExpired: reservations.length };
 }
 
-/** Internal-only rows; never serialize this state into public API responses. */
-export async function getInventoryState(tx, listing) {
+/**
+ * Internal-only rows; never serialize this state into public API responses.
+ * With `window` ({ from, to } instants) only rows overlapping it are loaded (P2).
+ * Bookings with unknown hours are always included, so the readiness audit still
+ * refuses them rather than treating absent data as free.
+ */
+export async function getInventoryState(tx, listing, window = null) {
   contextFor(tx, listing.id);
+  const range = window ? tx`tstzrange(${window.from}::timestamptz, ${window.to}::timestamptz, '[)')` : null;
+  const bookingWindow = range ? tx`AND (b.blocked_start_at IS NULL OR b.blocked_end_at IS NULL
+    OR tstzrange(b.blocked_start_at, b.blocked_end_at, '[)') && ${range})` : tx``;
+  const reservationWindow = range ? tx`AND tstzrange(blocked_start_at, blocked_end_at, '[)') && ${range}` : tx``;
+  const dayWindow = window ? tx`AND day BETWEEN (${window.from}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date - 2
+    AND (${window.to}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date + 2` : tx``;
   // Completion retains the paid interval. Include its visit while that ledger
   // entry remains active, without requiring inventory for old completed history.
   const [state] = await tx`SELECT
     COALESCE((SELECT json_agg(b ORDER BY b.id) FROM (
-      SELECT b.id, b.order_id, b.state, b.hours_known, b.units_booked,
+      SELECT b.id, b.order_id, b.state, b.hours_known, b.units_booked, b.resource_id,
         b.starts_at, b.ends_at, b.blocked_start_at, b.blocked_end_at,
         o.state AS order_state, o.hold_expires_at AS order_hold_expires_at
       FROM booking b LEFT JOIN booking_order o ON o.id = b.order_id
       WHERE b.rentable_id = ${listing.id} AND (b.state IN ${tx(ACTIVE_BOOKINGS)}
         OR (b.state='completed' AND EXISTS(SELECT 1 FROM inventory_reservation r
           WHERE r.booking_id=b.id AND r.source='booking' AND r.state IN ('held','committed'))))
+        ${bookingWindow}
     ) b), '[]'::json) AS bookings,
     COALESCE((SELECT json_agg(r ORDER BY r.id) FROM (
       SELECT * FROM inventory_reservation WHERE rentable_id = ${listing.id}
-        AND state IN ('held', 'committed')
+        AND state IN ('held', 'committed') ${reservationWindow}
     ) r), '[]'::json) AS reservations,
     COALESCE((SELECT json_agg(a ORDER BY a.day,a.slot) FROM (
       SELECT day::text AS day, slot, units_available
-      FROM availability WHERE rentable_id = ${listing.id}
+      FROM availability WHERE rentable_id = ${listing.id} ${dayWindow}
     ) a), '[]'::json) AS availability`;
   return state;
 }
@@ -203,6 +240,9 @@ export async function auditInventoryReadiness(tx, listing, state) {
     const matching = current.reservations.filter((row) => row.booking_id === booking.id && row.source === 'booking');
     const reservation = matching[0];
     if (!booking.hours_known || booking.units_booked !== 1 || matching.length !== 1
+      // A court booking and its reservation hold the same court (NULL = whole listing).
+      || (booking.resource_id ?? null) !== (reservation?.resource_id ?? null)
+      || (bookingModel(listing) === 'hourly') !== (booking.resource_id != null)
       || !sameInstant(booking.blocked_start_at, reservation?.blocked_start_at)
       || !sameInstant(booking.blocked_end_at, reservation?.blocked_end_at)
       || (reservation?.state === 'committed' && booking.state === 'requested')
@@ -226,7 +266,7 @@ export async function auditInventoryReadiness(tx, listing, state) {
 function validateVisits(visits) {
   if (!Array.isArray(visits) || !visits.length || visits.length > 10) throw new InventoryError('INVALID_INPUT', 'Choose 1–10 visits.');
   for (const visit of visits) {
-    if (!isLocalDate(visit.date) || !['day', 'night', 'full_day'].includes(visit.slot)) {
+    if (!isLocalDate(visit.date) || !SLOT_VISITS.includes(visit.slot)) {
       throw new InventoryError('INVALID_INPUT', 'Invalid visit selection.');
     }
     const start = instant(visit.startsAt);
@@ -239,23 +279,25 @@ function validateVisits(visits) {
 
 /** Advisory until a writer inserts every reservation in this same transaction. */
 export async function findInventoryConflicts(tx, listing, visits) {
-  const check = await prepareInventoryCheck(tx, listing);
+  const check = await prepareInventoryCheck(tx, listing, visits.length ? inventoryWindow(visits) : null);
   return check(visits);
 }
 
-/** Load once for an entire calendar; the snapshot stays protected by the mutex. */
-export async function prepareInventoryCheck(tx, listing) {
+async function loadInventory(tx, listing, window) {
   const context = contextFor(tx, listing.id);
   if (listing.booking_config?.inventoryReady !== true) {
     throw new InventoryError('INVENTORY_NOT_READY', 'This listing is awaiting inventory setup.');
   }
-  let state;
-  if (context.readOnly) {
-    state = withoutExpiredHolds(await getInventoryState(tx, listing), context.now);
-  } else {
-    await expireInventoryHolds(tx, listing.id);
-    state = await getInventoryState(tx, listing);
-  }
+  if (context.readOnly) return withoutExpiredHolds(await getInventoryState(tx, listing, window), context.now);
+  await expireInventoryHolds(tx, listing.id);
+  return getInventoryState(tx, listing, window);
+}
+
+/** Load once for an entire calendar; the snapshot stays protected by the mutex. Slot listings only. */
+export async function prepareInventoryCheck(tx, listing, window = null) {
+  const context = contextFor(tx, listing.id);
+  if (bookingModel(listing) === 'hourly') throw new InventoryError('UNSUPPORTED_INVENTORY', 'Use the time-slot check for this venue.');
+  const state = await loadInventory(tx, listing, window);
   await auditInventoryReadiness(tx, listing, state);
   const closedIntervals = closedDateIntervals(listing, state.availability, context.now);
   return (visits) => {
@@ -279,6 +321,28 @@ export async function prepareInventoryCheck(tx, listing) {
   };
 }
 
+/**
+ * Time-booked venues: which of the candidate courts are free for a visit. A
+ * reservation blocks a court when it holds that court or the whole listing
+ * (resource_id NULL: a venue-wide closure). The opening-hours whitelist replaces
+ * `availability` rows for these listings.
+ */
+export async function prepareHourlyInventoryCheck(tx, listing, window = null) {
+  if (bookingModel(listing) !== 'hourly') throw new InventoryError('UNSUPPORTED_INVENTORY', 'Use the slot check for this listing.');
+  const state = await loadInventory(tx, listing, window);
+  await auditInventoryReadiness(tx, listing, state);
+  return (visit, candidateIds) => {
+    validateVisits([visit]);
+    const overlapping = state.reservations.filter((row) => intervalsOverlap(visit, occupied(row)));
+    const venueBlocked = overlapping.filter((row) => row.resource_id == null);
+    const free = venueBlocked.length ? [] : candidateIds.filter((id) => !overlapping.some((row) => row.resource_id === id));
+    let code = null;
+    if (visit.requestedResourceId && !free.includes(visit.requestedResourceId)) code = 'RESOURCE_UNAVAILABLE';
+    else if (!free.length) code = venueBlocked.some((row) => row.source === 'owner_block') ? 'OWNER_BLOCKED' : 'NO_RESOURCE_AVAILABLE';
+    return { code, freeResourceIds: free };
+  };
+}
+
 async function requireListingOwner(tx, listing, ownerId) {
   assertId(ownerId);
   const [owner] = await tx`SELECT id FROM "user" WHERE id = ${ownerId} AND role = 'client' AND account_status = 'active' FOR SHARE`;
@@ -286,7 +350,8 @@ async function requireListingOwner(tx, listing, ownerId) {
 }
 
 /** Owner blocks share the ledger/exclusion constraint with customer bookings. */
-export async function createOwnerBlock(database, ownerId, { rentableId, blockedStartAt, blockedEndAt, reason }) {
+export async function createOwnerBlock(database, ownerId, { rentableId, resourceId = null, blockedStartAt, blockedEndAt, reason }) {
+  if (resourceId != null) assertId(resourceId);
   const start = instant(blockedStartAt);
   const end = instant(blockedEndAt);
   if (start >= end || typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 500) {
@@ -297,17 +362,23 @@ export async function createOwnerBlock(database, ownerId, { rentableId, blockedS
     await expireInventoryHolds(tx, listing.id);
     const state = await getInventoryState(tx, listing);
     await auditInventoryReadiness(tx, listing, state);
+    if (resourceId != null) {
+      const [resource] = await tx`SELECT id FROM rentable_resource WHERE id = ${resourceId} AND rentable_id = ${rentableId}`;
+      if (!resource) throw new InventoryError('NOT_FOUND', 'Court unavailable.');
+    }
     const interval = { blockedStartAt: start, blockedEndAt: end };
-    if (state.reservations.some((row) => intervalsOverlap(interval, occupied(row)))) {
+    // A court block meets reservations on that court or on the whole listing; a venue-wide block meets all.
+    const clashes = (row) => resourceId == null || row.resource_id == null || row.resource_id === resourceId;
+    if (state.reservations.some((row) => clashes(row) && intervalsOverlap(interval, occupied(row)))) {
       throw new InventoryError('INVENTORY_CONFLICT', 'That interval already has a reservation or owner block.');
     }
     const [block] = await tx`INSERT INTO inventory_reservation
-      (rentable_id, source, blocked_start_at, blocked_end_at, state, created_by, reason)
-      VALUES (${rentableId}, 'owner_block', ${start.toISOString()}, ${end.toISOString()}, 'committed', ${ownerId}, ${reason.trim()}) RETURNING *`;
+      (rentable_id, resource_id, source, blocked_start_at, blocked_end_at, state, created_by, reason)
+      VALUES (${rentableId}, ${resourceId}, 'owner_block', ${start.toISOString()}, ${end.toISOString()}, 'committed', ${ownerId}, ${reason.trim()}) RETURNING *`;
     await tx`INSERT INTO audit_log (actor_type, actor_id, entity, entity_id, action, "after", reason)
       VALUES ('client', ${ownerId}, 'inventory_reservation', ${block.id}, 'owner_block_created',
-        ${JSON.stringify({ rentableId, blockedStartAt: start.toISOString(), blockedEndAt: end.toISOString() })}::jsonb, ${reason.trim()})`;
-    return { id: block.id, blockedStartAt: start.toISOString(), blockedEndAt: end.toISOString(), state: block.state };
+        ${JSON.stringify({ rentableId, resourceId, blockedStartAt: start.toISOString(), blockedEndAt: end.toISOString() })}::text::jsonb, ${reason.trim()})`;
+    return { id: block.id, resourceId, blockedStartAt: start.toISOString(), blockedEndAt: end.toISOString(), state: block.state };
   });
 }
 

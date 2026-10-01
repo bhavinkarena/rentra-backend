@@ -1,8 +1,9 @@
 import 'server-only';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { DISCOVERY_INTENTS } from '../domain/discovery.js';
+import { intentsFor } from '../domain/discovery.js';
 import { badRequest, forbidden, notFound, conflict } from '@/utils/apiError.js';
+import { clearDiscoveryRegistryCache } from '../db/discovery.js';
 
 const types = {
   cities: { table: 'city', label: 'name', reference: 'city_id' },
@@ -25,7 +26,7 @@ function typeOf(type) {
   if (!Object.hasOwn(types, type)) throw notFound();
   return types[type];
 }
-async function authorize(tx, actor, write = false) {
+export async function authorize(tx, actor, write = false) {
   if (actor?.kind !== 'admin' || !uuid.safeParse(actor.id).success) throw forbidden();
   const [row] =
     await tx`SELECT permissions FROM admin_user WHERE id=${actor.id} AND is_active FOR SHARE`;
@@ -54,14 +55,14 @@ async function impact(tx, type, id) {
   const routeRows =
     type === 'amenities'
       ? []
-      : await tx`SELECT c.slug city,cat.slug category,a.slug area FROM city c CROSS JOIN category cat LEFT JOIN area a ON a.city_id=c.id AND a.is_active WHERE c.is_active AND cat.is_active AND ${type === 'cities' ? tx`c.id=${id}` : type === 'categories' ? tx`cat.id=${id}` : tx`a.id=${id}`} ORDER BY c.slug,cat.slug,a.slug`;
+      : await tx`SELECT c.slug city,cat.slug category,cat.vertical_code vertical,a.slug area FROM city c CROSS JOIN category cat LEFT JOIN area a ON a.city_id=c.id AND a.is_active WHERE c.is_active AND cat.is_active AND ${type === 'cities' ? tx`c.id=${id}` : type === 'categories' ? tx`cat.id=${id}` : tx`a.id=${id}`} ORDER BY c.slug,cat.slug,a.slug`;
   const paths = new Set(
     rows.flatMap((r) => [`/${r.city}/${r.category}`, `/${r.city}/${r.category}/area/${r.area}`]),
   );
   for (const r of routeRows) {
     if (type !== 'areas') {
       paths.add(`/${r.city}/${r.category}`);
-      for (const intent of DISCOVERY_INTENTS)
+      for (const intent of intentsFor(r.vertical))
         paths.add(`/${r.city}/${r.category}/intent/${intent.slug}`);
     }
     if (r.area) paths.add(`/${r.city}/${r.category}/area/${r.area}`);
@@ -191,14 +192,24 @@ function fieldsFor(type, creating) {
       .object({
         ...common,
         ...structural,
+        iconKey: z.string().regex(/^[a-z0-9_]{1,40}$/).nullable().optional(),
         ...(creating
           ? {
               form: z.enum(['fixed', 'movable']),
-              rentalUnit: z.enum(['slot', 'night', 'day', 'week', 'month']),
+              rentalUnit: z.enum(['slot', 'night', 'day', 'week', 'month', 'hour']),
+              // The vertical is immutable after create, like the booking model. The default keeps
+              // the pre-entertainment admin form working until it sends the vertical.
+              verticalCode: z.string().regex(/^[a-z][a-z0-9_]{0,23}$/).default('farmhouse'),
             }
           : {}),
       })
-      .strict();
+      .strict()
+      .superRefine((value, ctx) => {
+        // V1 booking model per vertical: farmhouse sells slots, entertainment sells hours.
+        const allowed = { farmhouse: ['slot'], entertainment: ['hour'] }[value.verticalCode];
+        if (creating && allowed && !allowed.includes(value.rentalUnit))
+          ctx.addIssue({ code: 'custom', path: ['rentalUnit'], message: `${value.verticalCode} categories use ${allowed.join('/')} booking` });
+      });
   return z
     .object({
       ...common,
@@ -211,11 +222,19 @@ function fieldsFor(type, creating) {
         .max(40)
         .regex(/^[a-z0-9_]+$/),
       isFilterable: z.boolean(),
+      verticals: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,23}$/)).min(1).max(10).optional(),
       ...(creating ? { valueType: z.enum(['none', 'count', 'dimensions', 'area', 'charge']) } : {}),
     })
     .strict();
 }
+/** Saves, then drops this process's cached public registry once the write has committed. */
 export async function catalogueCommand(database, actor, type, id, input) {
+  const result = await saveCatalogue(database, actor, type, id, input);
+  if (result?.ok) clearDiscoveryRegistryCache(database);
+  return result;
+}
+
+async function saveCatalogue(database, actor, type, id, input) {
   const c = typeOf(type),
     creating = id === 'new';
   const v = parse(
@@ -266,6 +285,13 @@ export async function catalogueCommand(database, actor, type, id, input) {
         blocked += ` Value type changes from ${before.value_type} to ${replacement.value_type}; values cannot be copied in place.`;
     } else {
       fields = parse(fieldsFor(type, creating), v.fields);
+      if (type === 'categories' && creating) {
+        const [vertical] = await tx`SELECT code FROM vertical WHERE code=${fields.verticalCode}`;
+        if (!vertical) throw badRequest('INVALID_CATALOGUE', 'verticalCode: choose an existing vertical');
+        // /{city}/{slug} resolves a category before a vertical landing; never let one shadow another vertical.
+        const [shadow] = await tx`SELECT code FROM vertical WHERE slug=${fields.slug} AND code<>${fields.verticalCode}`;
+        if (shadow) throw badRequest('RESERVED_SLUG', 'This slug is the landing page of another vertical.');
+      }
       const cityId = before?.city_id ?? fields.cityId;
       if (type === 'areas') {
         const [parent] = await tx`SELECT id,is_active FROM city WHERE id=${cityId}`;
@@ -317,7 +343,8 @@ export async function catalogueCommand(database, actor, type, id, input) {
       if (
         type === 'amenities' &&
         !fields.isActive &&
-        ['swimming_pool', 'bonfire', 'open_lawn', 'banquet_lawn'].includes(
+        // Entertainment intents (plan Phase 4) use the last three; guarded from the start.
+        ['swimming_pool', 'bonfire', 'open_lawn', 'banquet_lawn', 'floodlights', 'air_conditioned', 'equipment_rental'].includes(
           before?.slug ?? fields.slug,
         )
       )
@@ -362,7 +389,8 @@ export async function catalogueCommand(database, actor, type, id, input) {
     if (type === 'cities') values.state = fields.state;
     if (type === 'areas' && creating) values.city_id = fields.cityId;
     if (type === 'categories' && creating)
-      Object.assign(values, { form: fields.form, default_rental_unit: fields.rentalUnit });
+      Object.assign(values, { form: fields.form, default_rental_unit: fields.rentalUnit, vertical_code: fields.verticalCode });
+    if (type === 'categories' && fields.iconKey !== undefined) values.icon_key = fields.iconKey;
     if (type === 'amenities')
       Object.assign(values, {
         label_hi: fields.labelHi || null,
@@ -374,6 +402,18 @@ export async function catalogueCommand(database, actor, type, id, input) {
     const [saved] = creating
       ? await tx`INSERT INTO ${tx(c.table)} ${tx(values)} RETURNING id,version`
       : await tx`UPDATE ${tx(c.table)} SET ${tx(values)},version=version+1 WHERE id=${id} RETURNING id,version`;
+    // Which verticals may use the amenity. New amenities default to farmhouse until a vertical is chosen.
+    if (type === 'amenities' && (creating || fields.verticals)) {
+      const wanted = fields.verticals ?? ['farmhouse'];
+      const known = await tx`SELECT code FROM vertical WHERE code IN ${tx(wanted)}`;
+      if (known.length !== new Set(wanted).size) throw badRequest('INVALID_CATALOGUE', 'verticals: choose existing verticals');
+      const dropped = await tx`SELECT DISTINCT c.vertical_code FROM rentable_amenity ra JOIN rentable r ON r.id=ra.rentable_id
+        JOIN category c ON c.id=r.category_id WHERE ra.amenity_id=${saved.id} AND NOT (c.vertical_code = ANY(${wanted}::text[]))`;
+      if (dropped.length) throw conflict('MIGRATION_REQUIRED', `Listings in ${dropped.map((r) => r.vertical_code).join(', ')} use this amenity; keep that vertical.`);
+      await tx`DELETE FROM amenity_vertical WHERE amenity_id=${saved.id} AND NOT (vertical_code = ANY(${wanted}::text[]))`;
+      for (const code of wanted)
+        await tx`INSERT INTO amenity_vertical(amenity_id,vertical_code) VALUES (${saved.id},${code}) ON CONFLICT DO NOTHING`;
+    }
     if (type === 'areas' && fields.centre)
       await tx`UPDATE area SET centre=ST_SetSRID(ST_MakePoint(${fields.centre.longitude},${fields.centre.latitude}),4326) WHERE id=${saved.id}`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES ('admin',${actor.id},${'catalogue.' + type},${saved.id},${creating ? 'catalogue.create' : 'catalogue.update'},${JSON.stringify(before)}::text::jsonb,${JSON.stringify({ ...values, version: saved.version, centre: fields.centre ?? null, reason: v.reason, impactCount: usage.count })}::text::jsonb)`;

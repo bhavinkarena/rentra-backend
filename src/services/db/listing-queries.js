@@ -43,9 +43,12 @@ function listingFilters(clientId, { query = '', status = 'all' } = {}) {
         AND s.content_version=${rentable.contentVersion})`);
   } else if (status === 'unbookable') {
     // Live is not bookable until hours are confirmed and a future date is open (CP09).
+    // Venues (time-booked) instead need an active court and hourly prices; they open by weekly hours.
     filters.push(eq(rentable.status, 'live'), raw`NOT (coalesce(${rentable.bookingConfig}->>'inventoryReady','')='true'
-      AND EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=${rentable.id}
-        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0))`);
+      AND (EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=${rentable.id}
+        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0)
+        OR (${rentable.rentalUnit}::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource rs WHERE rs.rentable_id=${rentable.id} AND rs.is_active)
+          AND EXISTS (SELECT 1 FROM rentable_rate rr WHERE rr.rentable_id=${rentable.id}))))`);
   } else if (FILTERABLE_STATUSES.has(status)) {
     filters.push(eq(rentable.status, status));
   }
@@ -87,8 +90,10 @@ export async function getClientListingSummary(clientId) {
   // Live is not bookable: hours must be confirmed and dates opened (CP09).
   const [{ bookable }] = await sql`SELECT count(*)::int AS bookable FROM rentable r
     WHERE r.client_id=${clientId} AND r.status='live' AND r.booking_config->>'inventoryReady'='true'
-      AND EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=r.id
-        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0)`;
+      AND (EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=r.id
+        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0)
+        OR (r.rental_unit::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource rs WHERE rs.rentable_id=r.id AND rs.is_active)
+          AND EXISTS (SELECT 1 FROM rentable_rate rr WHERE rr.rentable_id=r.id)))`;
   const counts = Object.fromEntries(grouped.map((row) => [row.status, Number(row.value)]));
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
 
@@ -200,10 +205,13 @@ export async function getListingForEdit(id, clientId = null) {
       .orderBy(asc(listingReview.passNumber)),
   ]);
 
+  const [{ vertical }] = await sql`SELECT vertical_code AS vertical FROM category WHERE id=${row.categoryId}`;
+  const venue = row.rentalUnit === 'hour' ? await venueForEdit(id) : { resources: [], hourlyRates: [] };
   return {
     // Money is stored in paise; the editor keeps its whole-rupee fields.
-    listing: { ...row, depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
+    listing: { ...row, vertical, depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
     prices,
+    ...venue,
     amenities: tags,
     photos: Array.isArray(row.photos) ? row.photos : [],
     documents: docs,
@@ -211,8 +219,29 @@ export async function getListingForEdit(id, clientId = null) {
   };
 }
 
-/** The fixed taxonomy, grouped, in display order. */
-export async function getAmenityCatalogue() {
+/** Courts (all, including inactive) and hourly bands of a time-booked venue, for the owner's editor. */
+async function venueForEdit(id) {
+  const [resources, hourlyRates] = await Promise.all([
+    sql`SELECT r.id, r.name, r.capacity, r.is_indoor AS "isIndoor", r.details, r.sort_order AS "sortOrder", r.is_active AS "isActive",
+        COALESCE(json_agg(c.slug ORDER BY c.sort_order) FILTER (WHERE c.id IS NOT NULL), '[]'::json) AS activities
+      FROM rentable_resource r LEFT JOIN rentable_resource_activity a ON a.resource_id = r.id LEFT JOIN category c ON c.id = a.category_id
+      WHERE r.rentable_id = ${id} GROUP BY r.id ORDER BY r.sort_order, r.name, r.id`,
+    sql`SELECT c.slug AS activity, rr.day_kind AS "dayKind", rr.start_minute AS "startMinute", rr.end_minute AS "endMinute",
+        (rr.hourly_rate_minor / 100)::int AS "hourlyRate"
+      FROM rentable_rate rr JOIN category c ON c.id = rr.category_id WHERE rr.rentable_id = ${id}
+      ORDER BY c.sort_order, rr.day_kind, rr.start_minute`,
+  ]);
+  return { resources, hourlyRates };
+}
+
+/** Verticals an owner may list in: open to partners, or public. */
+export async function getPartnerVerticals(database = sql) {
+  return database`SELECT code, slug, name, status, sort_order AS "sortOrder" FROM vertical
+    WHERE status IN ('partners','public') ORDER BY sort_order, code`;
+}
+
+/** The fixed taxonomy, grouped, in display order. With `vertical`, only that vertical's amenities. */
+export async function getAmenityCatalogue({ vertical = null } = {}) {
   const rows = await db
     .select({
       id: amenity.id,
@@ -225,7 +254,9 @@ export async function getAmenityCatalogue() {
       isFilterable: amenity.isFilterable,
     })
     .from(amenity)
-    .where(eq(amenity.isActive, true))
+    .where(vertical
+      ? and(eq(amenity.isActive, true), raw`exists (select 1 from amenity_vertical av where av.amenity_id=${amenity.id} and av.vertical_code=${vertical})`)
+      : eq(amenity.isActive, true))
     .orderBy(asc(amenity.sortOrder));
 
   const groups = new Map();
@@ -236,12 +267,12 @@ export async function getAmenityCatalogue() {
   return [...groups.entries()].map(([slug, items]) => ({ slug, items }));
 }
 
-export async function getCategories() {
-  return db
-    .select({ id: category.id, slug: category.slug, name: category.name })
-    .from(category)
-    .where(eq(category.isActive, true))
-    .orderBy(asc(category.sortOrder), asc(category.name));
+/** Categories an owner may pick: active, in a vertical open to partners; optionally one vertical. */
+export async function getCategories({ vertical = null } = {}, database = sql) {
+  return database`SELECT c.id, c.slug, c.name, c.vertical_code AS vertical, c.icon_key AS "iconKey", c.default_rental_unit::text AS "rentalUnit"
+    FROM category c JOIN vertical v ON v.code = c.vertical_code AND v.status IN ('partners','public')
+    WHERE c.is_active AND (${!vertical} OR c.vertical_code = ${vertical})
+    ORDER BY v.sort_order, c.sort_order, c.name`;
 }
 
 export async function getCitiesWithAreas() {

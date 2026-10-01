@@ -93,14 +93,20 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       WHERE o.id=${orderId} AND ${allowed}`;
     if (!order) throw new BookingRecordError();
     const [{now}] = await tx`SELECT clock_timestamp() now`;
-    const rows = await tx`SELECT id,reference,state,local_day,slot,guests,starts_at,ends_at,hours_known,
-      amount_rent_minor,amount_fee_minor,amount_deposit_minor,created_at,confirmed_at,cancelled_at,updated_at,lifecycle_version,visit_provenance
-      FROM booking WHERE order_id=${order.id} ORDER BY item_position NULLS LAST,local_day,id`;
+    const rows = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,
+      b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.created_at,b.confirmed_at,b.cancelled_at,b.updated_at,b.lifecycle_version,b.visit_provenance,
+      b.resource_id,rs.name AS resource_name,b.slot_snapshot->'activity' AS activity
+      FROM booking b LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
+      WHERE b.order_id=${order.id} ORDER BY b.item_position NULLS LAST,b.local_day,b.id`;
+    const [{ vertical }] = await tx`SELECT c.vertical_code AS vertical FROM rentable r JOIN category c ON c.id=r.category_id WHERE r.id=${order.rentable_id}`;
     const visits = rows.map(row => ({ ...(actor.kind === 'customer' ? {} : {operation:visitOperation(row,now)}), id: row.id, reference: row.reference, state: row.state,
       date: row.local_day instanceof Date ? row.local_day.toISOString().slice(0, 10) : String(row.local_day).slice(0, 10), slot: row.slot, guests: row.guests,
       startsAt: row.hours_known ? instant(row.starts_at) : null, endsAt: row.hours_known ? instant(row.ends_at) : null,
       rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor),
       version: row.lifecycle_version, provenance: row.visit_provenance,
+      // Time-booked visits (courts): which court and activity. Null for slot visits.
+      resource: row.resource_id ? { id: row.resource_id, name: row.resource_name } : null,
+      activity: row.activity?.slug ? { slug: row.activity.slug, name: row.activity.name } : null,
       timeline: [{ kind: 'created', at: instant(row.created_at) }, ...(row.confirmed_at ? [{ kind: 'confirmed', at: instant(row.confirmed_at) }] : []),
         ...(row.cancelled_at ? [{ kind: 'cancelled', at: instant(row.cancelled_at) }] : [])], updatedAt: instant(row.updated_at) }));
     const records = await visitEvidenceRecords(tx, order.id, actor.kind);
@@ -136,7 +142,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       relationships={propertyId:order.rentable_id,...(actor.kind==='admin'?{customerId:order.customer_id,clientId:property.client_id}:{})};
     }
     const cases = await casesForOrder(tx, order.id, actor.kind);
-    return { ...orderDTO(order), ...(relationships ? {relationships} : {}), visits, arrival, cases,
+    return { ...orderDTO(order), vertical, ...(relationships ? {relationships} : {}), visits, arrival, cases,
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
       policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,

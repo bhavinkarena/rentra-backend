@@ -4,6 +4,7 @@ import {
   getListingsNearby,
   getListingByCode,
   getListingIdByCode,
+  getListingRefByCode,
   getNextAvailableDates,
   getSimilarListings,
   getCities,
@@ -18,12 +19,17 @@ import {
 } from '@/services/db/discovery.js';
 import { parseDiscoveryQuery, resolveDiscoveryRoute } from '@/services/domain/discovery.js';
 import { getBookingAvailability } from '@/services/booking/quotes.js';
-import { availabilityQuerySchema } from '@/services/schemas/zod/booking';
+import { getHourlyAvailability, getTimeSlots } from '@/services/booking/time-slots.js';
+import {
+  availabilityQuerySchema,
+  hourlyAvailabilityQuerySchema,
+  timesQuerySchema,
+} from '@/services/schemas/zod/booking';
 import { availabilityDateRange } from '@/services/domain/booking-availability.js';
 import { BOOKING_POLICY } from '@/services/domain/booking-policy.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
-import { notFound, badRequest, unavailable } from '@/utils/apiError.js';
+import { notFound, badRequest, unavailable, conflict } from '@/utils/apiError.js';
 
 /** Public discovery. No actor, no cookies — safe to cache at the edge. */
 export const listings = asyncHandler(async (req, res) =>
@@ -123,8 +129,92 @@ export const nextDates = asyncHandler(async (req, res) => {
  *
  * `no-store` for the same reason.
  */
+/** Codes after which a public calendar says "not bookable yet" instead of failing. */
+const ADVISORY_CODES = [
+  'INVENTORY_NOT_READY',
+  'INVENTORY_REMEDIATION_REQUIRED',
+  'SCHEDULE_UNAVAILABLE',
+  'LISTING_UNAVAILABLE',
+  'UNSUPPORTED_INVENTORY',
+];
+/** Selection problems a guest can fix (wrong activity, too many players, unpriced). */
+const TIME_SELECTION_CODES = [
+  'ACTIVITY_UNAVAILABLE',
+  'CAPACITY_EXCEEDED',
+  'PRICE_MISSING',
+  'DURATION_INVALID',
+];
+
+/**
+ * Time-booked venue date strip: GET …/availability?activity=&duration=&from=&days=≤30.
+ * Same advisory behaviour as the slot calendar below.
+ */
+async function hourlyAvailability(req, res, listingId) {
+  const parsed = hourlyAvailabilityQuerySchema.safeParse(req.query);
+  if (!parsed.success)
+    throw badRequest('BAD_DATE_RANGE', 'Choose an activity, a duration and up to 30 days.');
+  try {
+    return ok(
+      res,
+      await getHourlyAvailability(sql, {
+        rentableId: listingId,
+        ...parsed.data,
+        durationMinutes: parsed.data.duration,
+      }),
+    );
+  } catch (error) {
+    if (TIME_SELECTION_CODES.includes(error.code)) throw conflict(error.code, error.message);
+    if (!ADVISORY_CODES.includes(error.code))
+      throw unavailable('AVAILABILITY_UNAVAILABLE', 'Availability is temporarily unavailable.');
+    return ok(res, {
+      timeZone: BOOKING_POLICY.timeZone,
+      advisory: true,
+      days: {},
+      message: 'The venue needs to confirm its booking hours.',
+    });
+  }
+}
+
+/**
+ * GET /discovery/listings/:code/times?date=&activity=&duration=&guests= — the
+ * start-time grid of a time-booked venue. no-store, like availability.
+ */
+export const times = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const parsed = timesQuerySchema.safeParse(req.query);
+  if (!parsed.success)
+    throw badRequest('BAD_TIMES_QUERY', 'Choose a date, an activity and a duration.');
+  const ref = await getListingRefByCode(req.params.code);
+  if (!ref) throw notFound('LISTING_NOT_FOUND', 'Not found.');
+  if (ref.rentalUnit !== 'hour')
+    throw badRequest('UNSUPPORTED_INVENTORY', 'This listing is booked by slot.');
+  try {
+    return ok(
+      res,
+      await getTimeSlots(sql, {
+        rentableId: ref.id,
+        ...parsed.data,
+        durationMinutes: parsed.data.duration,
+      }),
+    );
+  } catch (error) {
+    if (TIME_SELECTION_CODES.includes(error.code)) throw conflict(error.code, error.message);
+    if (!ADVISORY_CODES.includes(error.code))
+      throw unavailable('AVAILABILITY_UNAVAILABLE', 'Times are temporarily unavailable.');
+    return ok(res, {
+      date: parsed.data.date,
+      timeZone: BOOKING_POLICY.timeZone,
+      advisory: true,
+      times: [],
+      message: 'The venue needs to confirm its booking hours.',
+    });
+  }
+});
+
 export const availability = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'no-store');
+  const ref = await getListingRefByCode(req.params.code);
+  if (ref?.rentalUnit === 'hour') return hourlyAvailability(req, res, ref.id);
 
   const parsed = availabilityQuerySchema.safeParse({
     from: req.query.from ?? undefined,

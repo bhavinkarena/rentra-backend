@@ -106,8 +106,12 @@ export async function createBookingCase(database, actor, input) {
     requestedOutcome: parsed.requestedOutcome || null,
   };
   const hash = quoteDigest(value);
-  const [order] = await database`SELECT o.id,o.rentable_id,r.client_id FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE o.id=${value.orderId}`;
+  const [order] = await database`SELECT o.id,o.rentable_id,r.client_id,r.rental_unit::text AS rental_unit FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE o.id=${value.orderId}`;
   if (!order) throw new CaseError('BOOKING_NOT_FOUND', 'Booking not found', { status: 404 });
+  // V1: date/slot change requests exist for slot listings only; a court booking is cancelled and rebooked.
+  if (value.requestedChange && order.rental_unit === 'hour') {
+    throw new CaseError('CASE_ACTION_UNSUPPORTED', 'Change requests are not available for time-booked venues. Cancel and rebook instead.', { status: 409, field: 'type' });
+  }
   return withListingInventory(database, order.rentable_id, async (tx) => {
     if (!(await lockActor(tx, actor, order.client_id))) throw new CaseError('BOOKING_NOT_FOUND', 'Booking not found', { status: 404 });
     const [replay] = await tx`SELECT id,reference,order_id,request_hash FROM booking_case WHERE created_by_kind=${actor.kind} AND created_by_id=${actor.id} AND request_key=${value.requestKey}`;

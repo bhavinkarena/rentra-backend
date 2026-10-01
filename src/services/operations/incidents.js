@@ -47,7 +47,9 @@ async function linkedRecords(tx, code) {
   if (code === 'negative_inventory') return tx`SELECT rentable_id::text id,rentable_id::text label,concat('/admin/properties/',rentable_id) href,'negative' state
     FROM availability WHERE units_available<0 LIMIT 25`;
   if (code === 'overlapping_inventory') return tx`SELECT a.id::text id,a.rentable_id::text label,concat('/admin/properties/',a.rentable_id) href,'overlap' state
-    FROM inventory_reservation a JOIN inventory_reservation b ON a.id<b.id AND a.rentable_id=b.rentable_id AND a.resource_key=b.resource_key
+    FROM inventory_reservation a JOIN inventory_reservation b ON a.id<b.id AND a.rentable_id=b.rentable_id
+        -- Same court, or either side is the whole listing (farmhouse rows, venue-wide closures).
+        AND (a.resource_id IS NOT DISTINCT FROM b.resource_id OR a.resource_id IS NULL OR b.resource_id IS NULL)
     AND a.blocked_start_at<b.blocked_end_at AND b.blocked_start_at<a.blocked_end_at
     WHERE (a.state='committed' OR (a.state='held' AND a.hold_expires_at>clock_timestamp()))
     AND (b.state='committed' OR (b.state='held' AND b.hold_expires_at>clock_timestamp())) LIMIT 25`;

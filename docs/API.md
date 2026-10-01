@@ -62,10 +62,60 @@ rendering the null.
 | Admin login                       | 15 min | 10    |
 | Uploads                           | 10 min | 40    |
 | Checkout holds and payment starts | 1 min  | 30    |
+| Venue times and calendars        | 1 min  | 120   |
 
 Keyed by client IP, which depends on `TRUST_PROXY_HOPS` being the real hop
 count. The OTP limiter is the one that matters: without it the API is a free
 SMS pump and an account-enumeration oracle.
+
+## Farmhouse and Entertainment (verticals)
+
+Added by the entertainment plan (`Rentra/docs/ENTERTAINMENT-PLAN.md`, Phase 4). Every addition is backward compatible: a request without `vertical` means `farmhouse`, and farmhouse responses are unchanged apart from additive keys (`vertical`, `rentalUnit` on cards; `verticals`, category `vertical`/`iconKey`/`rentalUnit`, amenity `verticals` in the registry).
+
+**Launch switch.** `vertical.status` is `hidden` → `partners` → `public`. Only `public` verticals reach any public read (registry, cards, detail, availability, times, sitemap, quotes). `partners` lets owners create and submit listings.
+
+**Public discovery**
+
+| Route | Change |
+|---|---|
+| `GET /discovery/registry` | + `verticals[]` (public). Categories carry `vertical`, `iconKey`, `rentalUnit`; amenities carry `verticals`. Cached in-process for 60 s. |
+| `GET /discovery/listings`, `/listings/nearby` | + `vertical` (default `farmhouse`). Venue cards: `unit: 'hour'`, `price` (from, per hour), `activities[]`, `resourceCount`, `maxPlayers`, `isIndoor` (`true`/`false`/`'mixed'`). |
+| `GET /discovery/listings/:id/similar` | Same vertical as the listing; same category first. |
+| `GET /discovery/search` | + `vertical`. Venues: `category` (activity), `date` (one day), `start` (`HH:mm`, earliest), `duration` (minutes), `players`, `indoor` (`true`/`false`). Dated venue cards carry up to three `times` and the price for the duration. `min`/`max` are per hour for venues. A category from another vertical gives an error message (VERTICAL_MISMATCH). |
+| `GET /discovery/route-count?path=/{city}/{vertical}` | Vertical landing pages (all activities in a city). Intents exist only within their vertical. |
+| `GET /discovery/listings/:code` | Venues: `rentalUnit: 'hour'`, `resources[]`, `activities[]`, `openingHours`, `rates[]` (rupees per hour, `from`/`to` `HH:mm`), `venueRules`; `prices` and `slotSchedules` are empty. |
+| `GET /discovery/listings/:code/times?date=&activity=&duration=&guests=` **(new)** | Start-time grid of a venue: `times[{start,end,endsNextDay,rentMinor,peak,freeResourceIds}]`, `resources`, `durations`, `open`, `nextOpenDate`. `no-store`, rate limited (120/min/IP). Codes: `BAD_TIMES_QUERY`, `ACTIVITY_UNAVAILABLE`, `CAPACITY_EXCEEDED`, `UNSUPPORTED_INVENTORY`. |
+| `GET /discovery/listings/:code/availability` | Venues: requires `activity` and `duration`, `days` ≤ 30; answers `days[iso] = { open, freeStarts }`. Rate limited. |
+| `GET /discovery/listings/:code/next-dates` | Venues: `{ hourly: [dates] }`. |
+
+**Quoting and checkout**
+
+- `POST /bookings/quote` accepts the slot body as before, or `{ kind: 'hourly', rentableId, activity, date, start, durationMinutes, resourceId|null, guests }`. Policy snapshots of venues carry `cancellation.bandUnit: 'hours'`.
+- `POST /bookings/checkout/hold` is unchanged; a venue hold is assigned a court (the requested one, else the first free by court order). A fourth live hold per customer gives `TOO_MANY_HOLDS` (both kinds).
+- Codes: `OUTSIDE_OPENING_HOURS`, `DURATION_INVALID`, `START_INVALID`, `OUTSIDE_BOOKING_WINDOW`, `RESOURCE_UNAVAILABLE`, `PRICE_MISSING`; `AVAILABILITY_CONFLICT.conflicts[].code` may be `NO_RESOURCE_AVAILABLE` or `OWNER_BLOCKED`. Book-again on a venue booking gives `REBOOK_UNSUPPORTED` with the venue URL; change-request cases on venues give `CASE_ACTION_UNSUPPORTED`.
+- Booking records carry `vertical`, and per visit `resource {id,name}` and `activity {slug,name}`.
+
+**Partner**
+
+| Route | Change |
+|---|---|
+| `GET /partner/catalogue/verticals` **(new)** | Verticals open to partners. |
+| `GET /partner/catalogue/categories?vertical=`, `/catalogue/amenities?vertical=` | Vertical-scoped. Categories carry `vertical`, `iconKey`, `rentalUnit`. |
+| `POST /partner/listings` | The category must be in a vertical open to partners. |
+| `POST /partner/listings/:id/basics` | The category must stay in the listing's vertical. |
+| `POST /partner/listings/:id/venue` **(new)** | Form: `id`, `contentVersion`, `resources` (JSON array of courts). Codes: `LISTING_CHANGED`, `RESOURCE_HAS_BOOKINGS`, `RESOURCE_NOT_FOUND`, `UNSUPPORTED_INVENTORY`. |
+| `POST /partner/listings/:id/pricing` | Venues: `rates` (JSON array of `{activity, dayKind, from, to, toNextDay, hourlyRate}`), preview then apply. Codes: `PRICE_GAP`, `HOURS_REQUIRED`, `PREVIEW_REQUIRED`. |
+| `POST /partner/listings/:id/calendar/schedule` | Venues: `model=hourly` and `configuration` (JSON). The result lists `outsideHours` bookings (kept, never cancelled). |
+| `POST /partner/listings/:id/calendar/block` | + optional `resourceId` (one court); empty = the whole venue. |
+| `POST /partner/listings/:id/calendar/open-dates` | Venues: `UNSUPPORTED_INVENTORY` (they open by weekly hours). |
+| `GET /partner/calendar`, `/partner/listings/:id/calendar` | + `rentalUnit`, `resources`; intervals and blocks carry their court. |
+| `GET /partner/listings/:id` | + `listing.vertical`, `resources`, `hourlyRates`. |
+
+**Admin**
+
+- `GET /admin/catalogues/verticals`, `GET/POST /admin/catalogues/verticals/:code`: name, order and status, with reason and preview hash (`STALE_PREVIEW`). Farmhouse stays public (`MIGRATION_REQUIRED`).
+- Categories: create takes `verticalCode` (default `farmhouse`, immutable) and `iconKey`; farmhouse categories use `slot`, entertainment categories use `hour`. Amenities take `verticals[]`.
+- Property review snapshots of venues include `resources` and `hourlyRates`; review sections add `venue` and `hours`.
 
 ## Routes
 
@@ -264,4 +314,4 @@ POST   /api/v1/measurement/
 POST   /webhooks/razorpay
 ```
 
-142 routes. Regenerate this list with `npm run routes`.
+This list is incomplete. `npm run routes` prints the authoritative list (291 routes on 1 Oct 2026).

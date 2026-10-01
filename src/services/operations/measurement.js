@@ -3,9 +3,9 @@ import { measurementSchema } from '../domain/measurement.js';
 
 export async function recordMeasurement(database, input) {
   const event = measurementSchema.parse(input);
-  await database`INSERT INTO customer_measurement(day,event,source,device,visits,count)
-    VALUES((clock_timestamp() AT TIME ZONE 'UTC')::date,${event.event},${event.source},${event.device},${event.visits},1)
-    ON CONFLICT(day,event,source,device,visits) DO UPDATE
+  await database`INSERT INTO customer_measurement(day,event,source,device,visits,vertical,count)
+    VALUES((clock_timestamp() AT TIME ZONE 'UTC')::date,${event.event},${event.source},${event.device},${event.visits},${event.vertical},1)
+    ON CONFLICT(day,event,source,device,visits,vertical) DO UPDATE
     SET count=least(customer_measurement.count+1,1000000)`;
 }
 

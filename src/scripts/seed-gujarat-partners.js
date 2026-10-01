@@ -3,8 +3,9 @@ import postgres from 'postgres';
 import { readFile } from 'node:fs/promises';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import * as s from '@/services/db/schema/index.js';
+import { seedDatabaseUrl } from './seed-guard.js';
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_Om65hHJxGsPF@ep-frosty-haze-ayd7hzah-pooler.c-5.us-east-2.aws.neon.tech/rentra?sslmode=require&channel_binding=require';
+const DATABASE_URL = seedDatabaseUrl('seed-gujarat-partners');
 
 const client = postgres(DATABASE_URL, {
   prepare: false,

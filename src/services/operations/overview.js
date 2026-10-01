@@ -17,7 +17,9 @@ export async function readOperations(database, adminId, env = process.env) {
       (SELECT count(*)::int FROM otp_challenge WHERE principal_kind='customer' AND delivery_mode<>'development' AND NOT delivered AND created_at>clock_timestamp()-interval '1 hour') AS otp_delivery_failures,
       (SELECT count(*)::int FROM support_request WHERE state<>'resolved' AND updated_at<clock_timestamp()-interval '24 hours') AS support_backlog,
       (SELECT count(*)::int FROM availability WHERE units_available<0) AS negative_inventory,
-      (SELECT count(*)::int FROM inventory_reservation a JOIN inventory_reservation b ON a.id<b.id AND a.rentable_id=b.rentable_id AND a.resource_key=b.resource_key
+      (SELECT count(*)::int FROM inventory_reservation a JOIN inventory_reservation b ON a.id<b.id AND a.rentable_id=b.rentable_id
+        -- Same court, or either side is the whole listing (farmhouse rows, venue-wide closures).
+        AND (a.resource_id IS NOT DISTINCT FROM b.resource_id OR a.resource_id IS NULL OR b.resource_id IS NULL)
         AND a.blocked_start_at<b.blocked_end_at AND b.blocked_start_at<a.blocked_end_at
         WHERE (a.state='committed' OR (a.state='held' AND a.hold_expires_at>clock_timestamp()))
           AND (b.state='committed' OR (b.state='held' AND b.hold_expires_at>clock_timestamp()))) AS overlapping_inventory,
