@@ -54,6 +54,8 @@ export function parseDiscoveryQuery(input = {}, today = propertyToday()) {
     mode: choose('mode', ['single', 'consecutive', 'separate'], 'single'),
     slot: choose('slot', ['day', 'night', 'full_day'], 'night'),
     guests: number('guests', 1, 1, 500), min: number('min', null, 0, 100000000), max: number('max', null, 0, 100000000),
+    bedrooms: number('bedrooms', null, 1, 50),
+    verified: choose('verified', ['1'], ''),
     cancellation: choose('cancellation', ['flexible', 'moderate', 'strict'], ''),
     sort: choose('sort', Object.keys(SEARCH_SORTS), 'recommended'), page: number('page', 1, 1, 1000000),
     amenities: [], dates: [],
@@ -87,7 +89,7 @@ export function parseDiscoveryQuery(input = {}, today = propertyToday()) {
 export function discoveryQuery(filters, changes = {}) {
   const values = { ...filters, ...changes };
   const params = new URLSearchParams();
-  for (const key of ['q', 'city', 'area', 'category', 'mode', 'slot', 'guests', 'min', 'max', 'cancellation', 'sort', 'page', 'dates', 'amenities']) {
+  for (const key of ['q', 'city', 'area', 'category', 'mode', 'slot', 'guests', 'min', 'max', 'bedrooms', 'verified', 'cancellation', 'sort', 'page', 'dates', 'amenities']) {
     let value = values[key];
     if (Array.isArray(value)) value = value.join(',');
     if (value !== '' && value != null) params.set(key, String(value));

@@ -66,6 +66,8 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
       ORDER BY r.id LIMIT 100`;
     for (let offset = 0; offset < rows.length; offset += 4) {
       const batch = await Promise.all(rows.slice(offset, offset + 4).map(async row => {
+        if (filters.bedrooms != null && (row.bedrooms == null || Number(row.bedrooms) < filters.bedrooms)) return null;
+        if (filters.verified === '1' && !row.physically_verified) return null;
         let selection = null, totals = null;
         if (filters.dates.length) {
           selection = { rentableId: row.id, dates: filters.dates, slot: filters.slot, guests: filters.guests };
