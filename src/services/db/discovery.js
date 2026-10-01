@@ -122,7 +122,7 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
           title: row.title, area: `${row.area_name}, ${row.city_name}`, capacity: row.capacity, bedrooms: row.bedrooms,
           highlight: row.highlight, price, priceMinor: totals?.totalMinor ?? null, isFromPrice: !totals, unit: totals ? `${filters.dates.length} visit${filters.dates.length === 1 ? '' : 's'}` : filters.slot.replace('_', ' '),
           priceNote: totals ? `Includes platform fee. Refundable deposit ₹${(totals.depositMinor / 100).toLocaleString('en-IN')} separate. Availability can change.` : 'Base rent; guest charges, platform fee and refundable deposit extra. Select dates for a total.',
-          rating: row.rating_avg == null ? null : Number(row.rating_avg), reviewCount: Number(row.review_count), badge: row.physically_verified ? 'verified' : null, photo: photos[0] ?? null, photoCount: photos.length,
+          rating: row.rating_avg == null ? null : Number(row.rating_avg), reviewCount: Number(row.review_count), badge: row.physically_verified ? 'verified' : null, photos, photo: photos[0] ?? null, photoCount: photos.length,
           createdAt: new Date(row.created_at).toISOString() };
       }));
       cards.push(...batch.filter(Boolean));
@@ -219,7 +219,7 @@ async function searchVenues({ filters, city, area, category, vertical, amenities
           price, priceMinor: cheapest, isFromPrice: !times, unit: times ? `${duration / 60} hr` : 'hour',
           priceNote: times ? 'Court rent for the time shown; platform fee added at checkout. Availability can change.' : 'Per hour; platform fee added at checkout. Choose a date and time for a total.',
           rating: row.rating_avg == null ? null : Number(row.rating_avg), reviewCount: Number(row.review_count), badge: row.physically_verified ? 'verified' : null,
-          photo: photos[0] ?? null, photoCount: photos.length, createdAt: new Date(row.created_at).toISOString() };
+          photos, photo: photos[0] ?? null, photoCount: photos.length, createdAt: new Date(row.created_at).toISOString() };
       }));
       cards.push(...batch.filter(Boolean));
     }
