@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 
 /**
@@ -70,7 +71,7 @@ export async function migrateWithDrizzle(url, appliedThroughWhen) {
     await client`CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)`;
     await client`INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('fixture', ${appliedThroughWhen})`;
     await migrate(drizzle(client), {
-      migrationsFolder: new URL('../../drizzle/', import.meta.url).pathname,
+      migrationsFolder: fileURLToPath(new URL('../../drizzle/', import.meta.url)),
     });
   } finally {
     await client.end();

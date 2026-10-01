@@ -19,7 +19,7 @@ import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
   ownershipDocSchema, venueRulesSchema,
 } from '@/services/schemas/zod/listing';
-import { MAX_PHOTOS } from '@/services/domain/listing-completion';
+import { MAX_PHOTOS, ownershipDocTypesFor } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
@@ -562,6 +562,9 @@ export async function uploadOwnershipDocument(_prev, formData) {
     issuedAt: formData.get('issuedAt') ?? '',
   });
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
+  // A venue proves a lease or business; a farmhouse proves land. Each takes only its own list.
+  if (!ownershipDocTypesFor(listing.rentalUnit).some((type) => type.id === parsed.data.docType))
+    return { errors: { docType: 'Choose one of the listed documents' } };
 
   const file = formData.get('file');
   if (!file || file.size === 0) return { errors: { file: 'Choose the document' } };

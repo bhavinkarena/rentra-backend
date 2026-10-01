@@ -50,7 +50,9 @@ export async function saveVenueResources(database, ownerId, { rentableId, expect
       if (!next || !next.isActive || !keepsActivity) stranded.push(row.resource_id);
     }
     if (stranded.length) {
-      throw conflict('RESOURCE_HAS_BOOKINGS', 'A court with upcoming bookings must stay active with its booked activities. Cancel or finish those bookings first.');
+      const ids = [...new Set(stranded)];
+      const names = ids.map((id) => known.get(id)?.name ?? 'A court').join(', ');
+      throw conflict('RESOURCE_HAS_BOOKINGS', `${names}: upcoming bookings keep ${ids.length === 1 ? 'this court' : 'these courts'} active with the booked activities. Cancel or finish those bookings first.`);
     }
 
     const saved = [];

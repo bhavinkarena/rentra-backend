@@ -223,6 +223,9 @@ export async function getListingForEdit(id, clientId = null) {
 async function venueForEdit(id) {
   const [resources, hourlyRates] = await Promise.all([
     sql`SELECT r.id, r.name, r.capacity, r.is_indoor AS "isIndoor", r.details, r.sort_order AS "sortOrder", r.is_active AS "isActive",
+        -- Held or confirmed visits still ahead: the editor cannot remove these courts (RESOURCE_HAS_BOOKINGS).
+        (SELECT count(*)::int FROM booking b JOIN inventory_reservation ir ON ir.booking_id = b.id AND ir.state IN ('held', 'committed')
+          WHERE b.resource_id = r.id AND b.ends_at > now()) AS "upcomingBookings",
         COALESCE(json_agg(c.slug ORDER BY c.sort_order) FILTER (WHERE c.id IS NOT NULL), '[]'::json) AS activities
       FROM rentable_resource r LEFT JOIN rentable_resource_activity a ON a.resource_id = r.id LEFT JOIN category c ON c.id = a.category_id
       WHERE r.rentable_id = ${id} GROUP BY r.id ORDER BY r.sort_order, r.name, r.id`,
