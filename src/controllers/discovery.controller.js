@@ -28,7 +28,7 @@ import {
 import { availabilityDateRange } from '@/services/domain/booking-availability.js';
 import { BOOKING_POLICY } from '@/services/domain/booking-policy.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
-import { ok } from '@/utils/respond.js';
+import { ok, fail } from '@/utils/respond.js';
 import { notFound, badRequest, unavailable, conflict } from '@/utils/apiError.js';
 
 /** Public discovery. No actor, no cookies — safe to cache at the edge. */
@@ -71,6 +71,13 @@ export const search = asyncHandler(async (req, res) => {
   }
 
   const result = await searchDiscovery(filters, route, sql, registryData);
+  if (result.code === 'VERTICAL_MISMATCH')
+    return fail(res, {
+      status: 422,
+      code: result.code,
+      message: result.errors[0],
+      data: { ...result, route, filters },
+    });
   return ok(res, { ...result, route, filters });
 });
 

@@ -6,7 +6,7 @@ import { savedListingHref } from '../domain/saved-places.js';
 import { validRouteSlug, sortDiscoveryCards } from '../domain/discovery.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { DEFAULT_VERTICAL } from '../domain/verticals.js';
-import { getTimeSlots } from '../booking/time-slots.js';
+import { getSearchTimeSlots } from '../booking/time-slots.js';
 
 /** In-process registry cache (P5): it was 4 queries on every search request. */
 const REGISTRY_TTL_MS = 60_000;
@@ -55,7 +55,10 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
   if (!verticals.some(r => r.code === vertical)) errors.push('Choose an available kind of place.');
   const chosen = category && registry.categories.find(r => r.slug === category);
   // VERTICAL_MISMATCH: a category always implies its vertical.
-  if (chosen && (chosen.vertical ?? DEFAULT_VERTICAL) !== vertical) errors.push(`${chosen.name} is not in this kind of place. Switch the tab or clear the category.`);
+  if (chosen && (chosen.vertical ?? DEFAULT_VERTICAL) !== vertical) return {
+    items: [], total: 0, page: 1, totalPages: 1, code: 'VERTICAL_MISMATCH',
+    errors: [`${chosen.name} is not in this kind of place. Switch the tab or clear the category.`],
+  };
   for (const key of ['city', 'area', 'category']) {
     if (route?.[key] && filters[key] && filters[key] !== route[key].slug) errors.push(`This page is limited to ${route[key].name}; clear the conflicting ${key} filter or use Search all places.`);
   }
@@ -133,10 +136,8 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
 /**
  * Time-booked venues (any non-farmhouse vertical). Undated: "from ₹X / hr".
  * Dated: up to three free start times at or after `start`, from the same grid
- * the venue page shows. Each candidate reads its own read-only snapshot, never
- * the listing write lock.
- * ponytail: one snapshot per dated candidate (≤100 per batch, 4 in parallel); batch
- * reservations for a whole candidate page in one query when venue counts grow (plan P4).
+ * the venue page shows. One statement loads each candidate batch in a shared
+ * snapshot, then the same grid algorithm runs in memory without write locks.
  */
 async function searchVenues({ filters, city, area, category, vertical, amenities, database }) {
   const term = `%${filters.q.replace(/[\\%_]/g, '\\$&')}%`;
@@ -177,6 +178,10 @@ async function searchVenues({ filters, city, area, category, vertical, amenities
           SELECT 1 FROM rentable_amenity ra JOIN amenity am ON am.id=ra.amenity_id
           WHERE ra.rentable_id=r.id AND am.slug=wanted.slug AND am.is_active=true))
       ORDER BY r.id LIMIT 100`;
+    const grids = date ? await getSearchTimeSlots(database, rows.map((row) => ({
+      rentableId: row.id, date, activity: category?.slug ?? row.primary_activity,
+      durationMinutes: filters.duration ?? row.min_duration ?? 60, guests: players,
+    }))) : null;
     for (let offset = 0; offset < rows.length; offset += 4) {
       const batch = await Promise.all(rows.slice(offset, offset + 4).map(async row => {
         const activity = category?.slug ?? row.primary_activity;
@@ -184,7 +189,8 @@ async function searchVenues({ filters, city, area, category, vertical, amenities
         let times = null;
         if (date) {
           try {
-            const grid = await getTimeSlots(database, { rentableId: row.id, date, activity, durationMinutes: duration, guests: players });
+            const grid = grids.get(row.id);
+            if (grid.error) throw grid.error;
             times = grid.times.filter(t => !filters.start || t.start >= filters.start).slice(0, 3);
           } catch (error) {
             if (error instanceof RangeError || unavailable.has(error.code) || ['ACTIVITY_UNAVAILABLE', 'PRICE_MISSING'].includes(error.code)) return null;

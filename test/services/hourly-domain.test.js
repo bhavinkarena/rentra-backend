@@ -126,6 +126,12 @@ test('pricing splits at band edges, uses the operating day kind, rounds half up 
     280000,
     'Saturday 23:00–01:00 is all weekend',
   );
+  assert.equal(
+    priceHourlyVisit({ bands, date: '2030-01-07', startMinute: 1050, durationMinutes: 120 })
+      .rentMinor,
+    220000,
+    '17:30–19:30 prices 30 minutes off-peak and 90 minutes peak',
+  );
   assert.equal(dayKind('2030-01-12'), 'weekend');
   const odd = [{ dayKind: 'weekday', startMinute: 0, endMinute: 1440, hourlyRateMinor: 99900 }];
   assert.equal(
@@ -214,7 +220,7 @@ test('cancellation bands in hours for venues; day snapshots unchanged', () => {
     feeOnFullRefund: false,
   };
   assert.equal(cancellationEntitlement(visit(24, hourly), now).rate, 1);
-  assert.equal(cancellationEntitlement(visit(23.99, hourly), now).rate, 0.5);
+  assert.equal(cancellationEntitlement(visit(24 - 1 / 60, hourly), now).rate, 0.5);
   assert.equal(cancellationEntitlement(visit(5, hourly), now).rate, 0);
   const daily = {
     bands: [

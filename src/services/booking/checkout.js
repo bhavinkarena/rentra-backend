@@ -35,6 +35,13 @@ export async function checkoutStatus(tx, orderId) {
     holdExpiresAt: row.hold_expires_at ? new Date(row.hold_expires_at).toISOString() : null };
 }
 
+/** Shared deadline for either booking model; checkout can never reserve past arrival. */
+export function checkoutHoldDeadline(now, startsAt) {
+  const expires = new Date(Math.min(+new Date(now) + BOOKING_POLICY.holdMinutes * 60000, +new Date(startsAt)));
+  if (expires <= new Date(now)) throw new CheckoutError('VISIT_ALREADY_STARTED');
+  return expires;
+}
+
 /** Listing -> customer/session -> gateway mutex -> payment rows; no network. */
 export async function createCheckoutHold(database, session, input, env = process.env) {
   const value = inputSchema.parse(input);
@@ -66,8 +73,7 @@ export async function createCheckoutHold(database, session, input, env = process
     const [{ now }] = await tx`SELECT clock_timestamp() AS now`;
     const nowDate = new Date(now);
     if (new Date(quote.expiresAt) <= nowDate) throw new CheckoutError('QUOTE_EXPIRED');
-    const expires = new Date(Math.min(+nowDate + BOOKING_POLICY.holdMinutes * 60000, +new Date(quote.visits[0].startsAt)));
-    if (expires <= nowDate) throw new CheckoutError('VISIT_ALREADY_STARTED');
+    const expires = checkoutHoldDeadline(nowDate, quote.visits[0].startsAt);
     const orderId = randomUUID(), paymentId = randomUUID();
     const listingSnapshot = { ownerId: listing.client_id, photos: listing.photos ?? [], title: listing.title, publicCode: listing.public_code, rentableId: listing.id, purpose: value.purpose ?? null, contact: { name: customer.name, phone: customer.phone } };
     await tx`INSERT INTO booking_order(id,reference,customer_id,rentable_id,state,currency,time_zone,quote_id,quote_version,quote_hash,

@@ -10,7 +10,7 @@ import { BOOKING_POLICY } from '../domain/booking-policy.js';
 import { addLocalDays, buildVisitIntervals, propertyToday } from '../domain/booking-dates.js';
 import { priceVisitsMinor, sumVisitTotals, visitMoneyMinor } from '../domain/booking-money.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
-import { withListingInventory, withListingSnapshot, expireInventoryHolds, findInventoryConflicts, prepareInventoryCheck,
+import { withListingSnapshot, expireInventoryHolds, findInventoryConflicts, prepareInventoryCheck,
   prepareHourlyInventoryCheck, inventoryWindow, isReadOnlyInventory } from './inventory.js';
 
 export class BookingQuoteError extends Error {
@@ -28,7 +28,7 @@ export function listingConfiguration(listing) {
   const value = listing.booking_config;
   if (!value || !value.inventoryReady) throw new BookingQuoteError('SCHEDULE_UNAVAILABLE', 'The owner needs to confirm the booking hours and calendar.');
   if (bookingModel(listing) === 'hourly') {
-    const { inventoryReady, ...config } = value;
+    const { inventoryReady: _inventoryReady, ...config } = value;
     const parsed = hourlyBookingConfigSchema.safeParse(config);
     if (!parsed.success) throw new BookingQuoteError('SCHEDULE_UNAVAILABLE', 'The booking schedule needs attention.');
     return parsed.data;
@@ -168,7 +168,11 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
 
 /** Courts, their activities and the hourly bands of a time-booked venue. */
 export async function hourlyInputs(tx, listing) {
-  const [row] = await tx`SELECT
+  return (await hourlyInputsQuery(tx, listing))[0];
+}
+
+export function hourlyInputsQuery(tx, listing) {
+  return tx`SELECT
     COALESCE((SELECT json_agg(b ORDER BY b."categoryId", b."dayKind", b."startMinute") FROM (
       SELECT category_id AS "categoryId", day_kind AS "dayKind", start_minute AS "startMinute",
         end_minute AS "endMinute", hourly_rate_minor::text AS "hourlyRateMinor"
@@ -182,7 +186,6 @@ export async function hourlyInputs(tx, listing) {
       WHERE c.is_active AND c.default_rental_unit::text='hour'
         AND c.vertical_code=(SELECT vertical_code FROM category WHERE id=${listing.category_id})
         AND c.id IN (SELECT category_id FROM rentable_resource_activity WHERE rentable_id=${listing.id})) c), '[]'::json) AS activities`;
-  return row;
 }
 
 /** New quotes need an active owner and a public vertical; existing bookings are not affected. */
@@ -240,7 +243,7 @@ async function checkedQuote(tx, listing, selection, variables) {
  */
 export async function previewBookingQuote(database, input, variables = process.env) {
   const selection = bookingSelectionSchema.parse(input);
-  const { freeCourts, ...quote } = await withListingSnapshot(database, selection.rentableId, (tx, listing) => checkedQuote(tx, listing, selection, variables));
+  const { freeCourts: _freeCourts, ...quote } = await withListingSnapshot(database, selection.rentableId, (tx, listing) => checkedQuote(tx, listing, selection, variables));
   return quote;
 }
 
@@ -255,7 +258,7 @@ export async function createBookingQuote(database, input, { customerId = null, v
     const [customer] = await database`SELECT id FROM "user" WHERE id=${customerId} AND role='customer' AND account_status='active'`;
     if (!customer) throw new BookingQuoteError('CUSTOMER_REQUIRED', 'An active customer account is required.');
   }
-  const { freeCourts, ...quote } = await withListingSnapshot(database, selection.rentableId, (tx, listing) => checkedQuote(tx, listing, selection, variables));
+  const { freeCourts: _freeCourts, ...quote } = await withListingSnapshot(database, selection.rentableId, (tx, listing) => checkedQuote(tx, listing, selection, variables));
   const [saved] = await database`
     INSERT INTO booking_quote (customer_id,intent_hash,rentable_id,currency,time_zone,selection,visit_snapshots,
       policy_snapshot,payment_snapshot,pricing_version,policy_version,version,quote_hash,

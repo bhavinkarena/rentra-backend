@@ -5,7 +5,11 @@ import { createDisposableDatabase } from '../helpers/disposable-db.js';
 import { seedVenue } from '../helpers/venue-fixture.js';
 import { createBookingQuote } from '../../src/services/booking/quotes.js';
 import { createCheckoutHold } from '../../src/services/booking/checkout.js';
-import { createOwnerBlock } from '../../src/services/booking/inventory.js';
+import {
+  createOwnerBlock,
+  withListingInventory,
+  expireInventoryHolds,
+} from '../../src/services/booking/inventory.js';
 import { getTimeSlots, getHourlyAvailability } from '../../src/services/booking/time-slots.js';
 import { previewCancellation } from '../../src/services/booking/cancellation.js';
 import { setPaymentGatewayConfiguration } from '../../src/services/payments/gateway-settings.js';
@@ -129,6 +133,12 @@ test(
         );
       const courtOf = async (orderId) =>
         (await sql`SELECT resource_id FROM booking WHERE order_id=${orderId}`)[0].resource_id;
+
+      // Phase 13: stale prices must be accepted again before inventory can be held.
+      const stale = await quote(c, { start: '09:00' });
+      await sql`UPDATE rentable_rate SET hourly_rate_minor=hourly_rate_minor+100 WHERE rentable_id=${v.venue}`;
+      await rejectsWith(hold(c, stale), 'QUOTE_CHANGED');
+      await sql`UPDATE rentable_rate SET hourly_rate_minor=hourly_rate_minor-100 WHERE rentable_id=${v.venue}`;
 
       // Pricing: peak band, split across 18:00, fee on rent, hour bands in the policy, no court ids in the quote.
       const peak = await quote(a, { start: '18:00' });
@@ -263,6 +273,13 @@ test(
       });
       assert.deepEqual(grid.times.find((t) => t.start === '18:00')?.freeResourceIds, [v.court2]);
 
+      // The worker's expiry operation releases the order as well as the advisory grid.
+      await withListingInventory(sql, v.venue, (tx) => expireInventoryHolds(tx, v.venue));
+      assert.equal(
+        (await sql`SELECT state FROM booking_order WHERE id=${heldB.orderId}`)[0].state,
+        'expired',
+      );
+
       // The date strip counts free starts per day.
       const strip = await getHourlyAvailability(sql, {
         rentableId: v.venue,
@@ -308,6 +325,58 @@ test(
       });
       assert.equal(JSON.stringify(estimate).includes('"rate":1'), true, JSON.stringify(estimate));
 
+      // Phase 13: the same physical court cannot be sold for a second sport.
+      const [football] = await sql`INSERT INTO category(slug,name,vertical_code,default_rental_unit)
+        VALUES ('football','Football','entertainment','hour') RETURNING id`;
+      await sql`INSERT INTO rentable_resource_activity(resource_id,rentable_id,category_id)
+        VALUES (${v.court1},${v.venue},${football.id})`;
+      await sql`INSERT INTO rentable_rate(rentable_id,category_id,day_kind,start_minute,end_minute,hourly_rate_minor)
+        SELECT rentable_id,${football.id},day_kind,start_minute,end_minute,hourly_rate_minor
+        FROM rentable_rate WHERE rentable_id=${v.venue} AND category_id=(SELECT id FROM category WHERE slug='box-cricket')`;
+      await rejectsWith(
+        quote(c, { activity: 'football', start: '18:00' }),
+        'AVAILABILITY_CONFLICT',
+      );
+
+      // Late captured hourly payment must create a refund obligation, never reacquire a court.
+      const lateGuest = await customer(sql, 9);
+      const lateHold = await hold(lateGuest, await quote(lateGuest, { start: '15:00' }));
+      const lateStart = await startCheckoutPayment(sql, lateGuest.session, lateHold.orderId, opts);
+      await sql.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role=replica`;
+        await tx`UPDATE booking_order SET hold_expires_at=now()-interval '1 minute' WHERE id=${lateHold.orderId}`;
+        await tx`UPDATE inventory_reservation SET hold_expires_at=now()-interval '1 minute'
+          WHERE booking_id IN (SELECT id FROM booking WHERE order_id=${lateHold.orderId})`;
+      });
+      await withListingInventory(sql, v.venue, (tx) => expireInventoryHolds(tx, v.venue));
+      provider.capture(provider.orders.get(lateStart.providerOrderId), 'pay_HOURLYLATE');
+      await verifyCheckoutPayment(
+        sql,
+        lateGuest.session,
+        {
+          orderId: lateHold.orderId,
+          paymentId: 'pay_HOURLYLATE',
+          signature: createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+            .update(`${lateStart.providerOrderId}|pay_HOURLYLATE`)
+            .digest('hex'),
+        },
+        opts,
+      );
+      assert.equal(
+        (
+          await sql`SELECT count(*)::int AS n FROM booking_lifecycle_event
+        WHERE order_id=${lateHold.orderId} AND kind='refund_required'`
+        )[0].n,
+        1,
+      );
+      assert.equal(
+        (
+          await sql`SELECT count(*)::int AS n FROM inventory_reservation
+        WHERE booking_id IN (SELECT id FROM booking WHERE order_id=${lateHold.orderId}) AND state IN ('held','committed')`
+        )[0].n,
+        0,
+      );
+
       // Phase 10: refunds follow the moderate hour bands to the paisa (24h → 100%, 6h → 50%, then 0).
       const [{ amount_rent_minor: rentMinor }] =
         await sql`SELECT amount_rent_minor FROM booking WHERE id=${confirmed.id}`;
@@ -319,10 +388,10 @@ test(
         await sql.begin(async (tx) => {
           // Accepted visits are trigger-protected; move the start in a fixture-only transaction.
           await tx`SET LOCAL session_replication_role=replica`;
-          await tx`UPDATE booking SET starts_at=clock_timestamp()+make_interval(hours=>${hoursAhead}),
-            ends_at=clock_timestamp()+make_interval(hours=>${hoursAhead + 1}),
-            blocked_start_at=clock_timestamp()+make_interval(hours=>${hoursAhead}),
-            blocked_end_at=clock_timestamp()+make_interval(hours=>${hoursAhead + 1}) WHERE id=${confirmed.id}`;
+          await tx`UPDATE booking SET starts_at=statement_timestamp()+make_interval(hours=>${hoursAhead}),
+            ends_at=statement_timestamp()+make_interval(hours=>${hoursAhead + 1}),
+            blocked_start_at=statement_timestamp()+make_interval(hours=>${hoursAhead}),
+            blocked_end_at=statement_timestamp()+make_interval(hours=>${hoursAhead + 1}) WHERE id=${confirmed.id}`;
         });
         const preview = await previewCancellation(sql, a.session, {
           orderId: heldA.orderId,
@@ -330,7 +399,11 @@ test(
         });
         const visit = preview.visits[0];
         assert.equal(visit.rate, rate, `${hoursAhead}h ahead`);
-        assert.equal(visit.refundMinor, Math.floor(Number(rentMinor) * rate), `${hoursAhead}h refund`);
+        assert.equal(
+          visit.refundMinor,
+          Math.floor(Number(rentMinor) * rate),
+          `${hoursAhead}h refund`,
+        );
         assert.equal(visit.fee, 0, 'moderate keeps the fee');
       }
     } finally {

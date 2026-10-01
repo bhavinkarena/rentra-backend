@@ -3,8 +3,8 @@ import { addLocalDays, propertyToday } from '../domain/booking-dates.js';
 import { BOOKING_POLICY } from '../domain/booking-policy.js';
 import { HourlyError, buildHourlyVisit, candidateStarts, dayKind, minuteToHhmm, operatingWindows, priceHourlyVisit } from '../domain/hourly.js';
 import { bookingModel } from '../domain/verticals.js';
-import { prepareHourlyInventoryCheck, withListingSnapshot } from './inventory.js';
-import { BookingQuoteError, hourlyCandidates, hourlyInputs, listingConfiguration, requireBookableListing } from './quotes.js';
+import { hourlySnapshotCheck, inventoryStateQuery, prepareHourlyInventoryCheck, withListingSnapshot } from './inventory.js';
+import { BookingQuoteError, hourlyCandidates, hourlyInputs, hourlyInputsQuery, listingConfiguration, requireBookableListing } from './quotes.js';
 import { logger } from '@/utils/logger.js';
 
 /**
@@ -116,4 +116,36 @@ export async function getHourlyAvailability(database, { rentableId, from, days, 
     }
     return { from: first, to: last, today, timeZone: BOOKING_POLICY.timeZone, activity: chosen.slug, durationMinutes, advisory: true, days: result };
   });
+}
+
+/** One MVCC statement for a candidate batch; no per-venue database round trips. */
+export async function getSearchTimeSlots(database, selections) {
+  if (!selections.length) return new Map();
+  const date = selections[0].date;
+  if (selections.some((s) => s.date !== date) || selections.length > 100) throw new RangeError('Choose one date and at most 100 venues.');
+  const listingRef = { id: database`venue.id`, category_id: database`venue.category_id` };
+  const rows = await database`SELECT row_to_json(venue) AS listing, statement_timestamp() AS now,
+      row_to_json(inputs) AS inputs, row_to_json(inventory) AS inventory
+    FROM rentable venue
+    JOIN "user" owner ON owner.id=venue.client_id AND owner.role='client' AND owner.account_status='active'
+    JOIN category category ON category.id=venue.category_id
+    JOIN vertical vertical ON vertical.code=category.vertical_code AND vertical.status='public'
+    CROSS JOIN LATERAL (${hourlyInputsQuery(database, listingRef)}) inputs
+    CROSS JOIN LATERAL (${inventoryStateQuery(database, listingRef, windowForDays(date, date))}) inventory
+    WHERE venue.id IN ${database(selections.map((s) => s.rentableId))}
+      AND venue.status='live' AND venue.rental_unit::text='hour'`;
+  const byId = new Map(rows.map((row) => [row.listing.id, row]));
+  return new Map(selections.map((selection) => {
+    const row = byId.get(selection.rentableId);
+    try {
+      if (!row) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This venue is not available for booking.');
+      const inputs = { ...row.inputs, now: row.now, config: listingConfiguration(row.listing) };
+      const { activity, eligible } = hourlyCandidates(inputs, selection);
+      const check = hourlySnapshotCheck(row.listing, row.inventory, row.now);
+      return [selection.rentableId, { times: gridFor({ inputs, check, eligible, date,
+        durationMinutes: selection.durationMinutes, activityId: activity.id, rentableId: selection.rentableId }) }];
+    } catch (error) {
+      return [selection.rentableId, { error }];
+    }
+  }));
 }

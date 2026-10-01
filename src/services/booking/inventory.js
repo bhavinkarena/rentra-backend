@@ -178,6 +178,11 @@ export async function expireInventoryHolds(tx, rentableId, now) {
  */
 export async function getInventoryState(tx, listing, window = null) {
   contextFor(tx, listing.id);
+  return (await inventoryStateQuery(tx, listing, window))[0];
+}
+
+/** Composable snapshot query, shared by single-listing and batch reads. */
+export function inventoryStateQuery(tx, listing, window = null) {
   const range = window ? tx`tstzrange(${window.from}::timestamptz, ${window.to}::timestamptz, '[)')` : null;
   const bookingWindow = range ? tx`AND (b.blocked_start_at IS NULL OR b.blocked_end_at IS NULL
     OR tstzrange(b.blocked_start_at, b.blocked_end_at, '[)') && ${range})` : tx``;
@@ -186,7 +191,7 @@ export async function getInventoryState(tx, listing, window = null) {
     AND (${window.to}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date + 2` : tx``;
   // Completion retains the paid interval. Include its visit while that ledger
   // entry remains active, without requiring inventory for old completed history.
-  const [state] = await tx`SELECT
+  return tx`SELECT
     COALESCE((SELECT json_agg(b ORDER BY b.id) FROM (
       SELECT b.id, b.order_id, b.state, b.hours_known, b.units_booked, b.resource_id,
         b.starts_at, b.ends_at, b.blocked_start_at, b.blocked_end_at,
@@ -205,7 +210,6 @@ export async function getInventoryState(tx, listing, window = null) {
       SELECT day::text AS day, slot, units_available
       FROM availability WHERE rentable_id = ${listing.id} ${dayWindow}
     ) a), '[]'::json) AS availability`;
-  return state;
 }
 
 /** Closed calendar dates as occupied intervals. Owner blocks live in inventory_reservation. */
@@ -234,8 +238,12 @@ function closedDateIntervals(listing, rows, now) {
 /** Can run before inventoryReady is enabled; no missing history is inferred away. */
 export async function auditInventoryReadiness(tx, listing, state) {
   const context = contextFor(tx, listing.id);
-  if (listing.total_units !== 1) throw new InventoryError('UNSUPPORTED_INVENTORY', 'Only exclusive single-property inventory is supported.');
   const current = state ?? await getInventoryState(tx, listing);
+  return auditInventoryState(listing, current, context.now);
+}
+
+function auditInventoryState(listing, current, now) {
+  if (listing.total_units !== 1) throw new InventoryError('UNSUPPORTED_INVENTORY', 'Only exclusive single-property inventory is supported.');
   for (const booking of current.bookings) {
     const matching = current.reservations.filter((row) => row.booking_id === booking.id && row.source === 'booking');
     const reservation = matching[0];
@@ -259,7 +267,7 @@ export async function auditInventoryReadiness(tx, listing, state) {
       throw new InventoryError('INVENTORY_REMEDIATION_REQUIRED', 'An owner block has an invalid state.');
     }
   }
-  closedDateIntervals(listing, current.availability, context.now);
+  closedDateIntervals(listing, current.availability, now);
   return { ready: true };
 }
 
@@ -330,7 +338,14 @@ export async function prepareInventoryCheck(tx, listing, window = null) {
 export async function prepareHourlyInventoryCheck(tx, listing, window = null) {
   if (bookingModel(listing) !== 'hourly') throw new InventoryError('UNSUPPORTED_INVENTORY', 'Use the slot check for this listing.');
   const state = await loadInventory(tx, listing, window);
-  await auditInventoryReadiness(tx, listing, state);
+  return hourlySnapshotCheck(listing, state, contextFor(tx, listing.id).now);
+}
+
+/** The batch search and individual calendar use identical validation and conflicts. */
+export function hourlySnapshotCheck(listing, rawState, now = new Date()) {
+  if (listing.booking_config?.inventoryReady !== true) throw new InventoryError('INVENTORY_NOT_READY', 'This listing is awaiting inventory setup.');
+  const state = withoutExpiredHolds(rawState, instant(now));
+  auditInventoryState(listing, state, instant(now));
   return (visit, candidateIds) => {
     validateVisits([visit]);
     const overlapping = state.reservations.filter((row) => intervalsOverlap(visit, occupied(row)));

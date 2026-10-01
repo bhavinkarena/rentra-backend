@@ -160,6 +160,10 @@ test(
           .length,
         0,
       );
+      assert.equal(
+        (await search({ vertical: 'entertainment', category: 'farmhouse' })).code,
+        'VERTICAL_MISMATCH',
+      );
       assert.match(
         (await search({ vertical: 'entertainment', category: 'farmhouse' })).errors[0],
         /not in this kind of place/,
@@ -254,6 +258,22 @@ test(
         }),
         'RESOURCE_HAS_BOOKINGS',
       );
+
+      for (const resources of [
+        courts.map((court) => (court.id === v.court1 ? { ...court, isActive: false } : court)),
+        courts.map((court) =>
+          court.id === v.court1 ? { ...court, activities: ['pickleball'] } : court,
+        ),
+      ]) {
+        await rejectsWith(
+          saveVenueResources(sql, v.owner, {
+            rentableId: v.venue,
+            expectedVersion: v2,
+            resources,
+          }),
+          'RESOURCE_HAS_BOOKINGS',
+        );
+      }
 
       // Hourly prices: gaps are refused with the missing hours, then preview → apply.
       const weekdayOnly = [
