@@ -253,7 +253,9 @@ export async function getListingByCode(publicCode) {
       .orderBy(asc(amenity.sortOrder)),
     db.select({ id: amenity.id, label: amenity.labelEn, sortOrder: amenity.sortOrder })
       .from(amenity)
-      .where(and(eq(amenity.isActive, true), eq(amenity.isFilterable, true)))
+      // Only the listing's vertical: a venue page must not list "Private pool" as missing.
+      .where(and(eq(amenity.isActive, true), eq(amenity.isFilterable, true),
+        raw`exists (select 1 from amenity_vertical av where av.amenity_id=${amenity.id} and av.vertical_code=${row.vertical ?? DEFAULT_VERTICAL})`))
       .orderBy(asc(amenity.sortOrder)),
     db.select({ completedAt: verificationVisit.completedAt })
       .from(verificationVisit)
@@ -375,8 +377,10 @@ async function venueDetail(row) {
     activities: row.activities ?? [],
     resources,
     openingHours: config
-      ? { weeklyHours: config.weeklyHours, stepMinutes: config.stepMinutes, minDurationMinutes: config.minDurationMinutes, maxDurationMinutes: config.maxDurationMinutes }
+      ? { weeklyHours: config.weeklyHours, stepMinutes: config.stepMinutes, minDurationMinutes: config.minDurationMinutes, maxDurationMinutes: config.maxDurationMinutes, bookingHorizonDays: config.bookingHorizonDays }
       : null,
+    // Live but mid-change (inventory not rebuilt yet): the page shows facts, not times.
+    bookable: Boolean(config?.inventoryReady),
     rates: rates.map((r) => ({ activity: r.activity, dayKind: r.dayKind, from: minuteToHhmm(r.startMinute), to: minuteToHhmm(r.endMinute),
       endsNextDay: r.endMinute > 1440, hourlyRate: r.hourlyRate })),
     venueRules: row.houseRules ?? {},

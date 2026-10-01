@@ -1,4 +1,5 @@
 import 'server-only';
+import { visitLabel } from '../domain/booking-record.js';
 
 import { z } from 'zod';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
@@ -59,7 +60,7 @@ async function audit(tx, { adminId, id, action, before, after, reason: why, ip }
 const restoreTarget = (row) => row.prior_status ?? (row.published_at || row.verified_at ? 'paused' : 'draft');
 
 async function impact(database, id) {
-  const visits = await database`SELECT reference, local_day, slot, state, starts_at FROM booking
+  const visits = await database`SELECT reference, local_day, slot, state, starts_at, ends_at, hours_known, time_zone, slot_snapshot FROM booking
     WHERE rentable_id=${id} AND state IN ${database(UPCOMING)} AND ends_at > now()
     ORDER BY starts_at LIMIT 10`;
   const [{ upcoming, holds }] = await database`SELECT
@@ -72,6 +73,7 @@ async function impact(database, id) {
       reference: v.reference,
       day: String(v.local_day instanceof Date ? v.local_day.toISOString() : v.local_day).slice(0, 10),
       slot: v.slot,
+      label: visitLabel(v),
       state: v.state,
     })),
   };

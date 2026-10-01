@@ -307,6 +307,32 @@ test(
         visitIds: [confirmed.id],
       });
       assert.equal(JSON.stringify(estimate).includes('"rate":1'), true, JSON.stringify(estimate));
+
+      // Phase 10: refunds follow the moderate hour bands to the paisa (24h → 100%, 6h → 50%, then 0).
+      const [{ amount_rent_minor: rentMinor }] =
+        await sql`SELECT amount_rent_minor FROM booking WHERE id=${confirmed.id}`;
+      for (const [hoursAhead, rate] of [
+        [30, 1],
+        [12, 0.5],
+        [3, 0],
+      ]) {
+        await sql.begin(async (tx) => {
+          // Accepted visits are trigger-protected; move the start in a fixture-only transaction.
+          await tx`SET LOCAL session_replication_role=replica`;
+          await tx`UPDATE booking SET starts_at=clock_timestamp()+make_interval(hours=>${hoursAhead}),
+            ends_at=clock_timestamp()+make_interval(hours=>${hoursAhead + 1}),
+            blocked_start_at=clock_timestamp()+make_interval(hours=>${hoursAhead}),
+            blocked_end_at=clock_timestamp()+make_interval(hours=>${hoursAhead + 1}) WHERE id=${confirmed.id}`;
+        });
+        const preview = await previewCancellation(sql, a.session, {
+          orderId: heldA.orderId,
+          visitIds: [confirmed.id],
+        });
+        const visit = preview.visits[0];
+        assert.equal(visit.rate, rate, `${hoursAhead}h ahead`);
+        assert.equal(visit.refundMinor, Math.floor(Number(rentMinor) * rate), `${hoursAhead}h refund`);
+        assert.equal(visit.fee, 0, 'moderate keeps the fee');
+      }
     } finally {
       await fixture.drop();
     }

@@ -1,4 +1,5 @@
 import 'server-only';
+import { visitLabel } from '../domain/booking-record.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { withListingInventory } from './inventory.js';
@@ -194,7 +195,7 @@ async function casePlan(tx, current, basis) {
     WHERE cv.case_id=${current.id} ORDER BY b.item_position,b.local_day,b.id`;
   const allocations = await capturedAllocations(tx, visits.map((v) => v.id));
   const plans = visits.map((visit) => {
-    const base = { id: visit.id, reference: visit.reference, date: day(visit.local_day), slot: visit.slot, state: visit.state, provenance: visit.visit_provenance };
+    const base = { id: visit.id, reference: visit.reference, date: day(visit.local_day), slot: visit.slot, label: visitLabel(visit), state: visit.state, provenance: visit.visit_provenance };
     const reason = uncancellableReason(visit, now);
     if (reason) return { ...base, action: 'unchanged', reason, refundMinor: 0, refunds: [] };
     let entitlement;
@@ -437,7 +438,7 @@ export async function readBookingCase(database, actor, caseId) {
       LEFT JOIN admin_user a ON a.id=c.assignee_id LEFT JOIN admin_user rb ON rb.id=c.resolved_by LEFT JOIN booking_cancellation bc ON bc.id=c.cancellation_id
       WHERE c.id=${caseId}`;
     if (!c) throw new CaseError('CASE_NOT_FOUND', 'Case not found', { status: 404 });
-    const visits = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,b.visit_provenance,
+    const visits = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,b.visit_provenance,b.time_zone,b.slot_snapshot,
       b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.cancellation_reason,
       (SELECT count(*)::int FROM visit_evidence e WHERE e.booking_id=b.id) evidence_count,
       (SELECT count(*)::int FROM visit_incident i WHERE i.booking_id=b.id AND i.state='open') open_incidents,
@@ -478,6 +479,7 @@ export async function readBookingCase(database, actor, caseId) {
         state: v.state,
         date: day(v.local_day),
         slot: v.slot,
+        label: visitLabel(v),
         guests: v.guests,
         startsAt: v.hours_known ? instant(v.starts_at) : null,
         endsAt: v.hours_known ? instant(v.ends_at) : null,

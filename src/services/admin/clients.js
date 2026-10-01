@@ -1,4 +1,5 @@
 import 'server-only';
+import { visitLabel } from '../domain/booking-record.js';
 
 import { z } from 'zod';
 import { revalidateListing } from '@/services/cache/listing-cache.js';
@@ -123,7 +124,7 @@ async function impact(tx, clientId) {
 
 async function upcomingVisits(tx, clientId, limit) {
   const rows = await tx`SELECT v.id, v.reference, v.state, v.local_day AS day, v.slot, v.starts_at, v.ends_at,
-      coalesce(v.time_zone, o.time_zone, 'Asia/Kolkata') AS time_zone, v.guests,
+      coalesce(v.time_zone, o.time_zone, 'Asia/Kolkata') AS time_zone, v.guests, v.hours_known, v.slot_snapshot,
       o.id AS order_id, o.reference AS order_reference, r.title AS listing_title
     FROM booking v JOIN rentable r ON r.id=v.rentable_id LEFT JOIN booking_order o ON o.id=v.order_id
     WHERE r.client_id=${clientId} AND ${upcoming(tx)}
@@ -134,6 +135,7 @@ async function upcomingVisits(tx, clientId, limit) {
     state: v.state,
     day: v.day instanceof Date ? v.day.toISOString().slice(0, 10) : String(v.day),
     slot: v.slot,
+    label: visitLabel(v),
     startsAt: v.starts_at,
     endsAt: v.ends_at,
     timeZone: v.time_zone,

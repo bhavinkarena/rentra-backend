@@ -21,6 +21,12 @@ const CLIENT_LISTING_COLUMNS = {
   updatedAt: rentable.updatedAt,
   areaName: area.name,
   cityName: city.name,
+  // Entertainment plan, Phase 11: venues show "3 courts · 12 players" instead of guests.
+  rentalUnit: rentable.rentalUnit,
+  vertical: raw`(select c.vertical_code from category c where c.id=${rentable.categoryId})`.as('vertical'),
+  resourceCount: raw`(select count(*)::int from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.mapWith(Number).as('resource_count'),
+  maxPlayers: raw`(select max(rs.capacity) from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.mapWith(Number).as('max_players'),
+  mainActivityIcon: raw`(select c.icon_key from category c where c.id=${rentable.categoryId})`.as('main_activity_icon'),
 };
 
 const FILTERABLE_STATUSES = new Set([
@@ -28,8 +34,10 @@ const FILTERABLE_STATUSES = new Set([
   'rejected', 'paused', 'hidden',
 ]);
 
-function listingFilters(clientId, { query = '', status = 'all' } = {}) {
+function listingFilters(clientId, { query = '', status = 'all', vertical = '' } = {}) {
   const filters = [eq(rentable.clientId, clientId)];
+  if (['farmhouse', 'entertainment'].includes(vertical))
+    filters.push(raw`exists (select 1 from category c where c.id=${rentable.categoryId} and c.vertical_code=${vertical})`);
   const term = String(query).trim().slice(0, 100);
 
   if (status === 'review') {
@@ -105,17 +113,20 @@ export async function getClientListingSummary(clientId) {
     attention: (counts.draft ?? 0) + (counts.rejected ?? 0),
     counts,
     recent,
+    // Kinds of place this owner lists; the dashboard offers a filter only when there are two.
+    verticals: (await sql`SELECT DISTINCT c.vertical_code AS code FROM rentable r JOIN category c ON c.id=r.category_id
+      WHERE r.client_id=${clientId} ORDER BY 1`).map((row) => row.code),
   };
 }
 
 /** A filtered, URL-pageable slice for the owner property index. */
 export async function getClientListingsPage(
   clientId,
-  { query = '', status = 'all', page = 1, pageSize = 10 } = {},
+  { query = '', status = 'all', vertical = '', page = 1, pageSize = 10 } = {},
 ) {
   const safePageSize = Math.min(50, Math.max(5, Number(pageSize) || 10));
   const requestedPage = Math.max(1, Number(page) || 1);
-  const where = listingFilters(clientId, { query, status });
+  const where = listingFilters(clientId, { query, status, vertical });
 
   const [{ value }] = await db
     .select({ value: count() })

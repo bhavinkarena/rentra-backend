@@ -112,6 +112,8 @@ export function prepareHourlyQuote(selection, listing, inputs, now, publications
     ...visit, ...priced,
     activity: { id: activity.id, slug: activity.slug, name: activity.name },
     requestedResourceId: selection.resourceId ?? null,
+    // The court's name, so review screens can say which court was chosen before the hold.
+    requestedResourceName: selection.resourceId ? inputs.resources.find((r) => r.id === selection.resourceId)?.name ?? null : null,
     segments: price.segments,
   }];
   const rates = bands.map((band) => ({ ...band, hourlyRateMinor: Number(band.hourlyRateMinor) }));

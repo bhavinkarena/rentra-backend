@@ -15,7 +15,10 @@ export const guestSavedSchema = z.array(savedEntrySchema).max(SAVED_LIMIT)
   .refine(v => new Set(v.map(e => e.rentableId)).size === v.length && new Set(v.map(e => e.entryId)).size === v.length);
 export function validSavedSelection(value, rentableId, today = propertyToday()) {
   const parsed = bookingSelectionSchema.safeParse(value);
-  return parsed.success && parsed.data.rentableId === rentableId && parsed.data.dates.every(d => d >= today) ? parsed.data : null;
+  if (!parsed.success || parsed.data.rentableId !== rentableId) return null;
+  // Time-booked venues save one date; farmhouses a list.
+  const dates = parsed.data.kind === 'hourly' ? [parsed.data.date] : parsed.data.dates;
+  return dates.every(d => d >= today) ? parsed.data : null;
 }
 export function parseGuestSaved(raw) {
   if (!raw) return [];
@@ -25,7 +28,11 @@ export function parseGuestSaved(raw) {
   } catch { return []; }
 }
 export function savedListingHref(path, selection) {
-  return selection ? `${path}?${new URLSearchParams({ dates: selection.dates.join(','), slot: selection.slot, guests: String(selection.guests) })}` : path;
+  if (!selection) return path;
+  // The same parameters a venue search card links with, so the time picker pre-fills.
+  if (selection.kind === 'hourly') return `${path}?${new URLSearchParams({ activity: selection.activity, date: selection.date,
+    duration: String(selection.durationMinutes), players: String(selection.guests), ...(selection.start ? { start: selection.start } : {}), ...(selection.resourceId ? { court: selection.resourceId } : {}) })}`;
+  return `${path}?${new URLSearchParams({ dates: selection.dates.join(','), slot: selection.slot, guests: String(selection.guests) })}`;
 }
 export function selectionFromSavedUrl(search, rentableId) {
   const query = new URLSearchParams(search);

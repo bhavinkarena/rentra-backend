@@ -90,7 +90,13 @@ test(
     );
 
     // Detail: courts, activities, hours and rate bands; no slot prices.
+    // A farmhouse-only amenity never reaches a venue page, not even as "not confirmed".
+    const [pool] =
+      await fixture.sql`INSERT INTO amenity(slug,group_slug,label_en,is_filterable) VALUES ('venue-test-pool','outdoors','Venue test pool',true) RETURNING id`;
+    await fixture.sql`INSERT INTO amenity_vertical(amenity_id,vertical_code) VALUES (${pool.id},'farmhouse')`;
     const detail = (await get('/discovery/listings/venue001')).body.data;
+    assert.ok(!JSON.stringify(detail.amenities).includes('Venue test pool'));
+    assert.equal(detail.bookable, true);
     assert.equal(detail.rentalUnit, 'hour');
     assert.deepEqual(
       detail.resources.map((r) => r.name),

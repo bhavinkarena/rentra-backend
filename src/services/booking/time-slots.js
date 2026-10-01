@@ -5,6 +5,7 @@ import { HourlyError, buildHourlyVisit, candidateStarts, dayKind, minuteToHhmm, 
 import { bookingModel } from '../domain/verticals.js';
 import { prepareHourlyInventoryCheck, withListingSnapshot } from './inventory.js';
 import { BookingQuoteError, hourlyCandidates, hourlyInputs, listingConfiguration, requireBookableListing } from './quotes.js';
+import { logger } from '@/utils/logger.js';
 
 /**
  * Public time grid for a time-booked venue (entertainment plan, Phase 4/9).
@@ -27,8 +28,18 @@ function durationsFor(config) {
   return values;
 }
 
+// An owner data gap (open hours without a price band) hides those starts; say so once per process.
+// ponytail: per-process memory, so each server instance logs it once; move to a metric if it matters.
+const priceGapsLogged = new Set();
+function logPriceGap(rentableId, activityId, kind) {
+  const key = `${rentableId}:${activityId}:${kind}`;
+  if (priceGapsLogged.has(key)) return;
+  priceGapsLogged.add(key);
+  logger.warn('PRICE_MISSING advisory: opening hours without a price band', { rentableId, activityId, dayKind: kind });
+}
+
 /** Every bookable start on one operating day, with its price and free courts. */
-function gridFor({ inputs, check, eligible, date, durationMinutes, activityId }) {
+function gridFor({ inputs, check, eligible, date, durationMinutes, activityId, rentableId }) {
   const bands = inputs.bands.filter((band) => band.categoryId === activityId && band.dayKind === dayKind(date));
   const lowest = Math.min(...bands.map((band) => Number(band.hourlyRateMinor)));
   const times = [];
@@ -38,7 +49,11 @@ function gridFor({ inputs, check, eligible, date, durationMinutes, activityId })
       visit = buildHourlyVisit({ date, start: minuteToHhmm(startMinute), durationMinutes, config: inputs.config, now: inputs.now });
       price = priceHourlyVisit({ bands, date, startMinute, durationMinutes });
     } catch (error) {
-      if (error instanceof HourlyError) continue; // past lead time, outside horizon, or unpriced: not offered
+      if (error instanceof HourlyError) {
+        // Past lead time, outside the horizon or unpriced: not offered.
+        if (error.code === 'PRICE_MISSING') logPriceGap(rentableId, activityId, dayKind(date));
+        continue;
+      }
       throw error;
     }
     const { freeResourceIds } = check(visit, eligible.map((row) => row.id));
@@ -65,7 +80,7 @@ export async function getTimeSlots(database, { rentableId, date, activity, durat
     const inputs = await venueInputs(tx, listing);
     const { activity: chosen, eligible } = hourlyCandidates(inputs, { activity, guests, resourceId: null });
     const check = await prepareHourlyInventoryCheck(tx, listing, windowForDays(date, date));
-    const times = gridFor({ inputs, check, eligible, date, durationMinutes, activityId: chosen.id });
+    const times = gridFor({ inputs, check, eligible, date, durationMinutes, activityId: chosen.id, rentableId });
     const today = propertyToday(inputs.now);
     let nextOpenDate = null;
     for (let offset = 1; offset <= 30 && !times.length; offset += 1) {
@@ -97,7 +112,7 @@ export async function getHourlyAvailability(database, { rentableId, from, days, 
     const result = {};
     for (let date = first; date <= last; date = addLocalDays(date, 1)) {
       const open = operatingWindows(inputs.config, date).length > 0;
-      result[date] = { open, freeStarts: open ? gridFor({ inputs, check, eligible, date, durationMinutes, activityId: chosen.id }).length : 0 };
+      result[date] = { open, freeStarts: open ? gridFor({ inputs, check, eligible, date, durationMinutes, activityId: chosen.id, rentableId }).length : 0 };
     }
     return { from: first, to: last, today, timeZone: BOOKING_POLICY.timeZone, activity: chosen.slug, durationMinutes, advisory: true, days: result };
   });

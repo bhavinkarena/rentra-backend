@@ -43,6 +43,7 @@ function ledger(tx) {
   return tx`SELECT pa.id,pa.booking_id,pa.component,pa.actual_minor::text,pa.simulated_minor::text,pa.created_at,
     b.order_id,b.reference,b.rentable_id,b.state booking_state,b.amount_rent_minor::text quote_rent_minor,
     bo.listing_snapshot->>'title' title, r.client_id current_owner_id,
+    (SELECT c.vertical_code FROM category c WHERE c.id=r.category_id) vertical,
     CASE WHEN p.client_id IS NOT NULL AND bo.listing_snapshot->>'ownerId' IS NOT NULL AND p.client_id::text<>bo.listing_snapshot->>'ownerId' THEN NULL
       ELSE coalesce(bo.listing_snapshot->>'ownerId',p.client_id::text) END owner_id,
     CASE WHEN t.kind='simulated' AND t.mode='simulated' THEN 'simulated'
@@ -127,6 +128,7 @@ function allocation(row, actor) {
     orderId: row.order_id,
     reference: row.reference,
     propertyId: row.rentable_id,
+    vertical: row.vertical,
     title: row.title || 'Booked property',
     ownerId: row.owner_id,
     attribution: row.owner_id ? 'recorded' : 'unresolved',
@@ -336,6 +338,8 @@ export async function financeCsv(database, actor, query) {
       'createdAt',
       ...keys.filter((k) => k !== 'quotedRentMinor'),
     ];
+    // Owners with farmhouses and venues can split the export by kind (entertainment plan, Phase 11).
+    if (new Set(s.items.map((r) => r.vertical)).size > 1) fields.splice(4, 0, 'vertical');
     const cell = (v) =>
       '"' +
       String(v ?? '')

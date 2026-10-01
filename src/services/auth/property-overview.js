@@ -1,4 +1,7 @@
 import 'server-only';
+import { visitLabel } from '../domain/booking-record.js';
+import { operatingWindows } from '../domain/hourly.js';
+import { addLocalDays, propertyToday } from '../domain/booking-dates.js';
 
 import { z } from 'zod';
 import { listingInventory } from '../admin/verification.js';
@@ -42,6 +45,17 @@ function activityEntry(row) {
   return { ...base, actor: 'system' };
 }
 
+/** Venues open by weekly hours: the first day from today with any opening window. */
+function nextWeeklyOpenDay(config) {
+  if (config?.model !== 'hourly') return null;
+  const today = propertyToday();
+  for (let offset = 0; offset < 7; offset += 1) {
+    const day = addLocalDays(today, offset);
+    if (operatingWindows(config, day).length) return day;
+  }
+  return null;
+}
+
 const dayOf = (value) =>
   value instanceof Date ? value.toISOString().slice(0, 10) : String(value ?? '').slice(0, 10);
 
@@ -52,11 +66,13 @@ export async function ownerPropertyOverview(database, ownerId, id) {
   if (!row) return null;
 
   const inventory = await listingInventory(database, id, row);
-  const [next] = await database`SELECT min(day)::text AS day FROM availability
+  const [next] = row.rental_unit === 'hour'
+    ? [{ day: nextWeeklyOpenDay(row.booking_config) }]
+    : await database`SELECT min(day)::text AS day FROM availability
     WHERE rentable_id=${id} AND day >= (now() AT TIME ZONE 'Asia/Kolkata')::date
       AND units_available > 0`;
   const visits = await database`SELECT b.id, b.reference, b.order_id, o.reference AS order_reference,
-      b.local_day, b.slot, b.guests, b.state, b.starts_at, b.ends_at, b.hours_known
+      b.local_day, b.slot, b.guests, b.state, b.starts_at, b.ends_at, b.hours_known, b.time_zone, b.slot_snapshot
     FROM booking b LEFT JOIN booking_order o ON o.id=b.order_id
     WHERE b.rentable_id=${id} AND b.state IN ${database(UPCOMING)} AND b.ends_at > now()
     ORDER BY b.starts_at LIMIT 10`;
@@ -78,6 +94,7 @@ export async function ownerPropertyOverview(database, ownerId, id) {
         orderReference: v.order_reference,
         date: dayOf(v.local_day),
         slot: v.slot,
+        label: visitLabel(v),
         guests: v.guests,
         state: v.state,
         startsAt: v.hours_known ? v.starts_at : null,
