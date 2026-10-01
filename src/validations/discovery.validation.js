@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { publicCode, slug } from './common.validation.js';
+import { DEFAULT_VERTICAL, VERTICAL_PATTERN } from '../services/domain/verticals.js';
+
+/** Which vertical's cards; farmhouse when absent, so older clients see exactly what they saw before. */
+const vertical = z.string().regex(VERTICAL_PATTERN).default(DEFAULT_VERTICAL);
 
 export const codeParam = z.object({ code: publicCode });
 
@@ -7,6 +11,7 @@ export const liveListingsQuery = z.object({
   citySlug: slug.optional(),
   areaSlug: slug.optional(),
   limit: z.coerce.number().int().min(1).max(48).default(24),
+  vertical,
 });
 
 /**
@@ -18,6 +23,7 @@ export const nearbyQuery = z.object({
   lat: z.coerce.number().min(-90).max(90),
   km: z.coerce.number().min(1).max(200).default(25),
   limit: z.coerce.number().int().min(1).max(48).default(24),
+  vertical,
 });
 
 /**

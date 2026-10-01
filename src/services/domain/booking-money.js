@@ -38,6 +38,12 @@ export function calculateVisitPriceMinor({ baseRentMinor, depositMinor, guests, 
     throw new RangeError('Guest count exceeds the configured capacity');
   }
   const extraGuestsMinor = safeNumber(BigInt(Math.max(0, guests - includedGuests)) * BigInt(extraGuestChargeMinor));
+  return visitMoneyMinor({ baseRentMinor, extraGuestsMinor, depositMinor });
+}
+
+/** Fee, total and illustrative advance for one visit's rent. The one place these rules live. */
+export function visitMoneyMinor({ baseRentMinor, extraGuestsMinor = 0, depositMinor }) {
+  [baseRentMinor, extraGuestsMinor, depositMinor].forEach((value) => integer(value));
   const rentMinor = safeNumber(BigInt(baseRentMinor) + BigInt(extraGuestsMinor));
   const feeMinor = applyBasisPoints(rentMinor, BOOKING_POLICY.platformFeeBps);
   const totalMinor = safeNumber(BigInt(rentMinor) + BigInt(feeMinor));
@@ -49,6 +55,14 @@ export function calculateVisitPriceMinor({ baseRentMinor, depositMinor, guests, 
     illustrativeAdvanceMinor,
     illustrativeBalanceMinor: totalMinor - illustrativeAdvanceMinor,
   };
+}
+
+const TOTAL_FIELDS = ['baseRentMinor', 'extraGuestsMinor', 'rentMinor', 'feeMinor', 'totalMinor', 'depositMinor', 'brokerageMinor', 'illustrativeAdvanceMinor', 'illustrativeBalanceMinor'];
+/** Sum per-visit money into quote totals. */
+export function sumVisitTotals(visits) {
+  return Object.fromEntries(TOTAL_FIELDS.map((field) => [
+    field, safeNumber(visits.reduce((sum, visit) => sum + BigInt(visit[field]), 0n)),
+  ]));
 }
 
 /**
@@ -70,11 +84,7 @@ export function priceVisitsMinor({ dates, slot, guests, rate, overridesByDate = 
       ...calculateVisitPriceMinor({ ...rate, baseRentMinor, guests }),
     };
   });
-  const fields = ['baseRentMinor', 'extraGuestsMinor', 'rentMinor', 'feeMinor', 'totalMinor', 'depositMinor', 'brokerageMinor', 'illustrativeAdvanceMinor', 'illustrativeBalanceMinor'];
-  const totals = Object.fromEntries(fields.map((field) => [
-    field, safeNumber(visits.reduce((sum, visit) => sum + BigInt(visit[field]), 0n)),
-  ]));
-  return { currency: BOOKING_POLICY.currency, pricingVersion: BOOKING_POLICY.version, visits, totals };
+  return { currency: BOOKING_POLICY.currency, pricingVersion: BOOKING_POLICY.version, visits, totals: sumVisitTotals(visits) };
 }
 
 export function formatINRMinor(amountMinor) {

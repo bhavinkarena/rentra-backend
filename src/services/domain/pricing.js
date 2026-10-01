@@ -26,6 +26,16 @@ export const CANCELLATION_TIERS = {
   strict: { label: 'Strict', bands: [[7, 0.5], [3, 0], [0, 0]], noShow: 0 },
 };
 
+/**
+ * Time-booked venues (courts, lanes): bands in HOURS before the start. Owner
+ * confirmed these defaults on 1 Oct 2026 (entertainment plan §H, D3).
+ */
+export const CANCELLATION_TIERS_HOURLY = {
+  flexible: { label: 'Flexible', bands: [[4, 1], [0, 0]], noShow: 0 },
+  moderate: { label: 'Moderate', bands: [[24, 1], [6, 0.5], [0, 0]], noShow: 0 },
+  strict: { label: 'Strict', bands: [[48, 0.5], [0, 0]], noShow: 0 },
+};
+
 // Legacy callers and columns use whole rupees. New customer booking services
 // must use booking-money.js; never reinterpret these existing return values.
 const paise = (n) => Math.round(n);

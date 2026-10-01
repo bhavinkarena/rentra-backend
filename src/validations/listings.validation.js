@@ -22,6 +22,7 @@ export const listingsPageQuery = z.object({
       'rejected',
     ])
     .default('all'),
+  vertical: z.enum(['farmhouse', 'entertainment', '']).default(''),
   page: z.coerce.number().int().min(1).max(100000).default(1),
   pageSize: z.coerce.number().int().min(5).max(50).default(10),
 });

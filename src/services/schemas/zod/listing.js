@@ -78,7 +78,6 @@ export const locationSchema = z.object({
   lat: z.coerce.number().min(6).max(37, 'Pin must be inside India'),
   lng: z.coerce.number().min(68).max(98, 'Pin must be inside India'),
   exactAddress: z.string().trim().min(10, 'Give the full address').max(500),
-  approachNote: z.string().trim().max(300).optional().or(z.literal('')),
 });
 
 export const capacitySchema = z.object({
@@ -104,6 +103,16 @@ export const rulesSchema = z.object({
   extraRules: z.string().trim().max(1000).optional().or(z.literal('')),
 });
 
+/** Venue rules (time-booked listings). Structured, like house rules; notes go through moderation. */
+export const venueRulesSchema = z.object({
+  footwear: z.enum(['non_marking', 'no_studs', 'studs_ok', 'any', '']).default(''),
+  minAge: z.union([z.literal(''), z.coerce.number().int().min(1).max(99)]).default(''),
+  foodAllowed: z.enum(['yes', 'no', 'seating_only']).default('yes'),
+  smokingAllowed: z.enum(['yes', 'no']).default('no'),
+  alcoholAllowed: z.enum(['yes', 'no']).default('no'),
+  extraRules: z.string().trim().max(1000).optional().or(z.literal('')),
+}).refine((d) => d.footwear || d.extraRules, { message: 'Say what players should wear, or add a rule', path: ['footwear'] });
+
 const rupees = z.coerce.number().int().min(0).max(500000);
 
 export const pricingSchema = z.object({
@@ -127,7 +136,53 @@ export const ownershipDocSchema = z.object({
   docType: z.enum([
     'extract_7_12', 'electricity_bill', 'property_tax', 'index_ii',
     'extract_8a', 'sale_deed', 'authorisation_letter',
+    // Venues (often leased commercial premises).
+    'rent_agreement', 'shop_establishment', 'gst_certificate', 'noc',
   ]),
   nameOnDocument: z.string().trim().min(3, 'Enter the name printed on it').max(160),
   issuedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'When was it issued?').optional().or(z.literal('')),
 });
+
+/* --------------- time-booked venues (entertainment plan, Phase 4) --------------- */
+const activitySlug = z.string().max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
+
+/** One court, lane, turf or station. `id` present = an existing resource. */
+export const venueResourceSchema = z.object({
+  id: z.string().uuid().optional(),
+  name: z.string().trim().min(1, 'Name each court').max(60),
+  capacity: z.number().int().min(1).max(500),
+  isIndoor: z.boolean().nullable().default(null),
+  details: z.object({
+    size: z.string().trim().max(40).optional(),
+    surface: z.string().trim().max(40).optional(),
+    format: z.string().trim().max(40).optional(),
+    equipment: z.string().trim().max(60).optional(),
+  }).strict().default({}),
+  activities: z.array(activitySlug).min(1, 'Choose at least one activity').max(10),
+  sortOrder: z.number().int().min(0).max(1000),
+  isActive: z.boolean().default(true),
+}).strict();
+
+export const venueResourcesSchema = z.object({
+  resources: z.array(venueResourceSchema).min(1, 'Add at least one court').max(30),
+}).strict().superRefine((value, ctx) => {
+  const names = value.resources.map((row) => row.name.toLowerCase());
+  names.forEach((name, index) => {
+    if (names.indexOf(name) !== index) ctx.addIssue({ code: 'custom', path: ['resources', index, 'name'], message: 'Each court needs a different name' });
+  });
+});
+
+/** One hourly band: activity × weekday/weekend × [from, to). `toNextDay` for bands past midnight. */
+export const hourlyRateSchema = z.object({
+  activity: activitySlug,
+  dayKind: z.enum(['weekday', 'weekend']),
+  from: clock,
+  to: clock,
+  toNextDay: z.boolean().default(false),
+  hourlyRate: z.number().int().min(0).max(500_000),
+}).strict();
+
+export const hourlyRatesSchema = z.object({
+  rates: z.array(hourlyRateSchema).min(1, 'Add at least one price').max(100),
+}).strict();

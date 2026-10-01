@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { BOOKING_POLICY } from '../../domain/booking-policy.js';
 import { visitInterval } from '../../domain/booking-dates.js';
 import { localDateSchema, slotEnum } from './booking.js';
+import { validateHourlyConfig } from '../../domain/hourly.js';
 
 const enabledSlot = z.object({
   enabled: z.literal(true),
@@ -36,3 +37,22 @@ export const priceOverrideSchema = z.object({
   rentableId: z.string().uuid(), day: localDateSchema, slot: slotEnum,
   rentMinor: z.number().int().min(0).max(50_000_000).nullable(),
 }).strict();
+
+const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const openWindow = z.object({ open: hhmm, close: hhmm, closesNextDay: z.boolean().default(false) }).strict();
+/** [] = closed that weekday; two windows = a split shift. */
+const openDay = z.array(openWindow).max(2);
+
+/** Time-booked venues (rentable.rental_unit = 'hour'): weekly hours and the start/duration grid. */
+export const hourlyBookingConfigSchema = z.object({
+  model: z.literal('hourly'),
+  timeZone: z.literal(BOOKING_POLICY.timeZone),
+  leadTimeMinutes: z.number().int().min(0).max(10_080),
+  bookingHorizonDays: z.number().int().min(1).max(180),
+  stepMinutes: z.union([z.literal(30), z.literal(60)]),
+  minDurationMinutes: z.number().int().min(30).max(720),
+  maxDurationMinutes: z.number().int().min(30).max(720),
+  bufferBeforeMinutes: z.number().int().min(0).max(120),
+  bufferAfterMinutes: z.number().int().min(0).max(120),
+  weeklyHours: z.object({ mon: openDay, tue: openDay, wed: openDay, thu: openDay, fri: openDay, sat: openDay, sun: openDay }).strict(),
+}).strict().superRefine(validateHourlyConfig);

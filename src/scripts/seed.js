@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import { readFile } from 'node:fs/promises';
 import * as s from '@/services/db/schema/index.js';
 import { hashPassword } from '@/services/auth/admin-crypto.js';
+import { seedDatabaseUrl } from './seed-guard.js';
 
 /**
  * Development seed data.
@@ -17,7 +18,7 @@ import { hashPassword } from '@/services/auth/admin-crypto.js';
  * call for reverse-image checks against exactly that.
  */
 
-const client = postgres(process.env.DATABASE_URL, {
+const client = postgres(seedDatabaseUrl('seed'), {
   prepare: false, max: 1, onnotice: () => {},
 });
 

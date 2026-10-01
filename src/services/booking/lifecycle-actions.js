@@ -30,6 +30,10 @@ export async function bookAgain(previous, form) {
   let quote;
   try {
     quote = await quoteBookAgain(sql, actor.session, form.get('orderId'), { dates: form.getAll('date').filter(Boolean), slot: form.get('slot'), guests: Number(form.get('guests')) });
-  } catch { return { error: 'These dates, guests or listing are unavailable. Change your selection and check again; no dates have been reserved.' }; }
+  } catch (error) {
+    // A court booking is rebooked from the venue page; send the guest there.
+    if (error.code === 'REBOOK_UNSUPPORTED') return { error: error.message, code: 'REBOOK_UNSUPPORTED', redirect: error.listingUrl };
+    return { error: 'These dates, guests or listing are unavailable. Change your selection and check again; no dates have been reserved.' };
+  }
   redirect(`/checkout/review/${quote.id}`);
 }

@@ -55,9 +55,7 @@ export const LISTING_CHAPTERS = [
   {
     id: 'photos',
     label: 'Photos',
-    steps: [
-      { id: 'photos', label: 'Photos', advance: 'navigate' },
-    ],
+    steps: [{ id: 'photos', label: 'Photos', advance: 'navigate' }],
   },
   {
     id: 'publish',
@@ -75,17 +73,78 @@ export const LISTING_CHAPTERS = [
   },
 ];
 
-/** Flat step list, in walkthrough order. */
-export const LISTING_STEPS = LISTING_CHAPTERS.flatMap((c) =>
-  c.steps.map((s) => ({ ...s, chapterId: c.id, chapterLabel: c.label })),
-);
+/**
+ * Time-booked venues (entertainment plan, Phase 5). Same chapters and step ids
+ * wherever the meaning is shared; `venue` (courts) and `hours` replace size and
+ * capacity, and the labels speak about a venue, not a farmhouse.
+ */
+export const VENUE_CHAPTERS = [
+  {
+    id: 'place',
+    label: 'The venue',
+    steps: [
+      { id: 'basics', label: 'What it is', advance: 'submit' },
+      { id: 'location', label: 'Where it is', advance: 'submit' },
+    ],
+  },
+  {
+    id: 'space',
+    label: 'Courts and facilities',
+    steps: [
+      { id: 'venue', label: 'Courts', advance: 'submit' },
+      { id: 'amenities', label: 'What it has', advance: 'submit' },
+    ],
+  },
+  {
+    id: 'terms',
+    label: 'Hours, rules and price',
+    steps: [
+      { id: 'hours', label: 'Opening hours', advance: 'submit' },
+      { id: 'rules', label: 'Venue rules', advance: 'submit' },
+      { id: 'pricing', label: 'Hourly prices', advance: 'submit' },
+      { id: 'terms', label: 'Deposit and cancellation', advance: 'submit' },
+    ],
+  },
+  {
+    id: 'photos',
+    label: 'Photos',
+    steps: [{ id: 'photos', label: 'Photos', advance: 'navigate' }],
+  },
+  {
+    id: 'publish',
+    label: 'Proof and publish',
+    steps: [
+      { id: 'ownership', label: 'Proof you can list it', advance: 'navigate' },
+      { id: 'review', label: 'Check and send', advance: 'none' },
+    ],
+  },
+];
+
+/** The booking model of a listing: 'hour' (venue) or 'slot' (farmhouse, the default). */
+export const listingModel = (listing) => (listing?.rentalUnit === 'hour' ? 'hour' : 'slot');
+
+/** Chapters for a booking model. Every helper below takes the same optional `model`. */
+export const chaptersFor = (model = 'slot') =>
+  model === 'hour' ? VENUE_CHAPTERS : LISTING_CHAPTERS;
+
+const stepsOf = (model) =>
+  chaptersFor(model).flatMap((c) =>
+    c.steps.map((s) => ({ ...s, chapterId: c.id, chapterLabel: c.label })),
+  );
+
+/** Flat step list, in walkthrough order (farmhouse). */
+export const LISTING_STEPS = stepsOf('slot');
 
 export const LISTING_STEP_IDS = LISTING_STEPS.map((s) => s.id);
 
 /** Steps that a completion section actually gates. `review` has none. */
-export const INPUT_STEP_IDS = LISTING_STEPS
-  .filter((s) => s.advance !== 'none')
-  .map((s) => s.id);
+export const INPUT_STEP_IDS = LISTING_STEPS.filter((s) => s.advance !== 'none').map((s) => s.id);
+
+const stepIdsOf = (model) => stepsOf(model).map((s) => s.id);
+const inputStepIdsOf = (model) =>
+  stepsOf(model)
+    .filter((s) => s.advance !== 'none')
+    .map((s) => s.id);
 
 /**
  * The DOM id of a section wrapper — namespaced, and it has to stay that way.
@@ -110,26 +169,28 @@ export function sectionAnchorId(id) {
   return `section-${id}`;
 }
 
-export function isListingStep(id) {
-  return LISTING_STEP_IDS.includes(id);
+export function isListingStep(id, model = 'slot') {
+  return stepIdsOf(model).includes(id);
 }
 
-export function getStep(id) {
-  return LISTING_STEPS.find((s) => s.id === id) ?? null;
+export function getStep(id, model = 'slot') {
+  return stepsOf(model).find((s) => s.id === id) ?? null;
 }
 
-export function stepIndex(id) {
-  return LISTING_STEP_IDS.indexOf(id);
+export function stepIndex(id, model = 'slot') {
+  return stepIdsOf(model).indexOf(id);
 }
 
-export function nextStepId(id) {
-  const i = stepIndex(id);
-  return i >= 0 && i < LISTING_STEPS.length - 1 ? LISTING_STEP_IDS[i + 1] : null;
+export function nextStepId(id, model = 'slot') {
+  const ids = stepIdsOf(model);
+  const i = ids.indexOf(id);
+  return i >= 0 && i < ids.length - 1 ? ids[i + 1] : null;
 }
 
-export function prevStepId(id) {
-  const i = stepIndex(id);
-  return i > 0 ? LISTING_STEP_IDS[i - 1] : null;
+export function prevStepId(id, model = 'slot') {
+  const ids = stepIdsOf(model);
+  const i = ids.indexOf(id);
+  return i > 0 ? ids[i - 1] : null;
 }
 
 export function stepHref(listingId, stepId) {
@@ -141,12 +202,13 @@ export function stepHref(listingId, stepId) {
  * completion bar is derived: a stored `current_step` is wrong the moment a
  * photo is deleted or an admin rejects the ownership document.
  */
-export function firstIncompleteStepId(completion) {
+export function firstIncompleteStepId(completion, model = 'slot') {
   const bySection = new Map(completion.sections.map((s) => [s.id, s]));
+  const inputs = inputStepIdsOf(model);
   // A rejected section outranks an unstarted one — send them to the problem.
-  const failed = INPUT_STEP_IDS.find((id) => bySection.get(id)?.failed);
+  const failed = inputs.find((id) => bySection.get(id)?.failed);
   if (failed) return failed;
-  const todo = INPUT_STEP_IDS.find((id) => !bySection.get(id)?.done);
+  const todo = inputs.find((id) => !bySection.get(id)?.done);
   return todo ?? 'review';
 }
 
@@ -159,12 +221,13 @@ export function firstIncompleteStepId(completion) {
  * Position and completion are not the same number, and conflating them is how
  * a bar ends up full while three sections are still empty.
  */
-export function wizardProgress(completion, currentStepId) {
+export function wizardProgress(completion, currentStepId, model = 'slot') {
   const bySection = new Map(completion.sections.map((s) => [s.id, s]));
-  const current = getStep(currentStepId);
-  const chapterIndex = LISTING_CHAPTERS.findIndex((c) => c.id === current?.chapterId);
+  const current = getStep(currentStepId, model);
+  const allChapters = chaptersFor(model);
+  const chapterIndex = allChapters.findIndex((c) => c.id === current?.chapterId);
 
-  const chapters = LISTING_CHAPTERS.map((c, i) => {
+  const chapters = allChapters.map((c, i) => {
     const gated = c.steps.filter((s) => s.advance !== 'none');
     const done = gated.filter((s) => bySection.get(s.id)?.done).length;
     const failed = gated.some((s) => bySection.get(s.id)?.failed);
@@ -174,7 +237,7 @@ export function wizardProgress(completion, currentStepId) {
       return {
         id: s.id,
         label: s.label,
-        index: stepIndex(s.id) + 1,
+        index: stepIndex(s.id, model) + 1,
         done: isReview ? completion.done === completion.total : Boolean(section?.done),
         failed: Boolean(section?.failed),
         isCurrent: s.id === currentStepId,
@@ -200,10 +263,10 @@ export function wizardProgress(completion, currentStepId) {
     steps: chapters.flatMap((c) => c.steps.map((s) => ({ ...s, chapterId: c.id }))),
     chapterIndex,
     chapterNumber: chapterIndex + 1,
-    chapterTotal: LISTING_CHAPTERS.length,
+    chapterTotal: allChapters.length,
     chapterLabel: current?.chapterLabel ?? '',
-    stepNumber: stepIndex(currentStepId) + 1,
-    stepTotal: LISTING_STEPS.length,
+    stepNumber: stepIndex(currentStepId, model) + 1,
+    stepTotal: stepsOf(model).length,
     doneCount: completion.done,
     doneTotal: completion.total,
     percent: completion.total ? Math.round((completion.done / completion.total) * 100) : 0,

@@ -1,6 +1,8 @@
 import 'server-only';
 import { z } from 'zod';
-import { bookingConfigSchema, priceOverrideSchema } from '../schemas/zod/booking-config.js';
+import { bookingConfigSchema, hourlyBookingConfigSchema, priceOverrideSchema } from '../schemas/zod/booking-config.js';
+import { bookingModel } from '../domain/verticals.js';
+import { operatingWindows } from '../domain/hourly.js';
 import { localDateSchema } from '../schemas/zod/booking.js';
 import { addLocalDays, parseLocalDate } from '../domain/booking-dates.js';
 import { withListingInventory, auditInventoryReadiness, expireInventoryHolds, InventoryError } from './inventory.js';
@@ -13,21 +15,38 @@ async function ownerAccess(tx, listing, ownerId) {
 export async function saveBookingConfiguration(database, ownerId, { rentableId, expectedVersion, configuration }) {
   z.string().uuid().parse(rentableId);
   z.number().int().nonnegative().parse(expectedVersion);
-  const parsed = bookingConfigSchema.parse(configuration);
   return withListingInventory(database, rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId);
+    // The listing's booking model picks the schema; a config in the other shape is refused.
+    const hourly = bookingModel(listing) === 'hourly';
+    const parsed = (hourly ? hourlyBookingConfigSchema : bookingConfigSchema).parse(configuration);
     if (listing.booking_config_version !== expectedVersion) throw new InventoryError('CONFIG_CHANGED', 'Booking settings changed. Reload before saving.');
-    for (const schedule of Object.values(parsed.slots)) {
+    if (!hourly) for (const schedule of Object.values(parsed.slots)) {
       if (schedule.enabled && schedule.capacity > listing.capacity) throw new InventoryError('INVALID_CAPACITY', 'Slot capacity cannot exceed the property capacity.');
     }
+    // New hours never cancel anything: upcoming court bookings outside them are kept and listed.
+    const outsideHours = hourly ? await bookingsOutsideHours(tx, listing.id, parsed) : [];
     await expireInventoryHolds(tx, rentableId);
     const candidate = { ...parsed, inventoryReady: true };
     await auditInventoryReadiness(tx, { ...listing, booking_config: candidate });
     await tx`UPDATE rentable SET booking_config=${JSON.stringify(candidate)}::text::jsonb, booking_config_version=booking_config_version+1, updated_at=now() WHERE id=${rentableId}`;
     await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"before","after")
       VALUES ('client',${ownerId},'rentable',${rentableId},'booking_configuration_changed',${JSON.stringify(listing.booking_config)}::text::jsonb,${JSON.stringify({values:candidate,effectiveVersion:expectedVersion+1})}::text::jsonb)`;
-    return { version: expectedVersion + 1 };
+    return { version: expectedVersion + 1, outsideHours };
   });
+}
+
+/** Upcoming held/confirmed court visits that would fall outside new weekly hours. */
+async function bookingsOutsideHours(tx, rentableId, config) {
+  const rows = await tx`SELECT b.reference, b.local_day::text AS day, b.starts_at, b.ends_at, b.slot_snapshot->>'startMinute' AS start_minute,
+      b.slot_snapshot->>'durationMinutes' AS duration
+    FROM booking b JOIN inventory_reservation r ON r.booking_id=b.id AND r.state IN ('held','committed')
+    WHERE b.rentable_id=${rentableId} AND b.resource_id IS NOT NULL AND b.ends_at > clock_timestamp()
+    ORDER BY b.starts_at`;
+  return rows.filter((row) => {
+    const start = Number(row.start_minute), end = start + Number(row.duration);
+    return !operatingWindows(config, row.day).some((w) => start >= w.startMin && end <= w.endMin);
+  }).map((row) => ({ reference: row.reference, startsAt: new Date(row.starts_at).toISOString(), endsAt: new Date(row.ends_at).toISOString() }));
 }
 
 export async function saveBookingPriceOverride(database, ownerId, input) {
@@ -55,6 +74,7 @@ export async function openBookingDates(database, ownerId, { rentableId, from, to
   if (count < 1 || count > 366) throw new InventoryError('INVALID_RANGE', 'Choose an ordered range of at most 366 dates.');
   return withListingInventory(database, rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId);
+    if (bookingModel(listing) === 'hourly') throw new InventoryError('UNSUPPORTED_INVENTORY', 'Venues open by their weekly hours; close a day with a block instead.');
     const result = await tx`INSERT INTO availability (rentable_id,day,slot,units_available)
       SELECT ${listing.id}, d::date, s::availability_slot, 1
       FROM generate_series(${from}::date,${to}::date,interval '1 day') d CROSS JOIN unnest(ARRAY['day','night']) s

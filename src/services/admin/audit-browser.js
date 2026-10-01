@@ -143,6 +143,7 @@ const safeWords = new Set([
   'day',
   'night',
   'full_day',
+  'hourly',
 ]);
 const allowedFields = new Set([
   'state',

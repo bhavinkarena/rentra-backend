@@ -1,4 +1,5 @@
 import 'server-only';
+import { visitLabel } from '../domain/booking-record.js';
 import { AppError } from '../../utils/apiError.js';
 import { reviewPreviewToken, moderationAllowed, REVIEW_REASONS } from './policy.js';
 import { z } from 'zod';
@@ -83,11 +84,11 @@ export async function reviewOrder(database, session, orderId, env = process.env)
     const [order] =
       await tx`SELECT id,reference FROM booking_order WHERE id=${orderId} AND customer_id=${customer.id}`;
     if (!order) throw new ReviewError('NOT_FOUND');
-    const visits = await tx`SELECT b.id,b.reference,b.local_day::text date,b.slot,b.state,
+    const visits = await tx`SELECT b.id,b.reference,b.local_day::text date,b.slot,b.state,b.starts_at,b.ends_at,b.hours_known,b.time_zone,b.slot_snapshot,
       rentra_review_eligible(b.id,${customer.id},b.rentable_id) eligible,r.id review_id,r.rating,r.body,r.moderation_state,r.moderation_reason
       FROM booking b LEFT JOIN review r ON r.booking_id=b.id AND r.author_id=${customer.id}
       WHERE b.order_id=${orderId} ORDER BY b.item_position,b.id`;
-    return { ...order, visits };
+    return { ...order, visits: visits.map(({ starts_at, ends_at, hours_known, time_zone, slot_snapshot, ...v }) => ({ ...v, label: visitLabel({ ...v, starts_at, ends_at, hours_known, time_zone, slot_snapshot }) })) };
   });
 }
 export async function moderateReview(database, adminId, input) {

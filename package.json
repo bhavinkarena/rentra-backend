@@ -18,6 +18,8 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed.js",
     "seed:partners": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed-gujarat-partners.js",
+    "seed:entertainment": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed-entertainment.js",
+    "seed:venues": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed-entertainment-venues.js",
     "seed:admin": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed-admin.js",
     "routes": "node --import ./loader/register.mjs --env-file=.env src/scripts/printRoutes.js",
     "smoke": "node --import ./loader/register.mjs --env-file=.env src/scripts/smoke.js",
@@ -30,6 +32,7 @@
     "ci": "npm run lint && npm run format:check && npm run db:check && npm test",
     "prettier:check": "npm run format:check",
     "db:check": "node src/scripts/checkMigrations.js",
+    "release:entertainment": "node --import ./loader/register.mjs --env-file=.env src/scripts/entertainment-release-check.js",
     "payments:enable-test": "node --import ./loader/register.mjs --env-file=.env src/scripts/enableTestPayments.js"
   },
   "dependencies": {

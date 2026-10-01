@@ -11,6 +11,7 @@ import {
 } from '@/validations/discovery.validation.js';
 import { slug, idParam } from '@/validations/common.validation.js';
 import { z } from 'zod';
+import { discoveryLimiter } from '@/middlewares/rateLimit.middleware.js';
 
 /**
  * Public discovery. No session is read on any of these, which is what makes
@@ -43,7 +44,18 @@ router.get('/sitemap', discovery.sitemap);
 
 router.get('/listings/:code', validate({ params: codeParam }), discovery.detail);
 router.get('/listings/:code/next-dates', validate({ params: codeParam }), discovery.nextDates);
-router.get('/listings/:code/availability', validate({ params: codeParam }), discovery.availability);
+router.get(
+  '/listings/:code/availability',
+  discoveryLimiter,
+  validate({ params: codeParam }),
+  discovery.availability,
+);
+router.get(
+  '/listings/:code/times',
+  discoveryLimiter,
+  validate({ params: codeParam }),
+  discovery.times,
+);
 router.get('/listings/:id/similar', validate({ params: idParam }), discovery.similar);
 
 export default router;

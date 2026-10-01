@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   pgTable, pgEnum, uuid, text, varchar, integer, bigint, boolean, timestamp,
-  date, jsonb, real, geometry, uniqueIndex, index, primaryKey, check, foreignKey,
+  date, jsonb, real, geometry, uniqueIndex, index, primaryKey, check, foreignKey, smallint,
 } from 'drizzle-orm/pg-core';
 
 /** Aggregate-only measurement: bounded dimensions, no per-person event history. */
@@ -11,11 +11,14 @@ export const customerMeasurement = pgTable('customer_measurement', {
   source: varchar('source', { length: 8 }).notNull(),
   device: varchar('device', { length: 8 }).notNull(),
   visits: varchar('visits', { length: 8 }).notNull(),
+  vertical: varchar('vertical', { length: 24 }).notNull().default('unknown'),
   count: integer('count').notNull(),
-}, t => [primaryKey({ columns: [t.day, t.event, t.source, t.device, t.visits] }),
+}, t => [primaryKey({ name: 'customer_measurement_pk', columns: [t.day, t.event, t.source, t.device, t.visits, t.vertical] }),
   check('customer_measurement_bounds_chk', sql`${t.count} BETWEEN 1 AND 1000000
     AND ${t.device} IN ('mobile','desktop','unknown') AND ${t.visits} IN ('single','multiple','unknown')
-    AND ((${t.source}='browser' AND ${t.event} IN ('search_submitted','listing_viewed','dates_selected','history_viewed','share_attempted','share_completed'))
+    AND ${t.vertical} IN ('farmhouse','entertainment','unknown')
+    AND ((${t.source}='browser' AND ${t.event} IN ('search_submitted','listing_viewed','dates_selected','history_viewed','share_attempted','share_completed',
+      'vertical_switched','times_viewed','time_selected'))
       OR (${t.source}='server' AND ${t.event} IN ('quote_ready','login_completed','checkout_started','inventory_conflict','quote_changed','payment_unavailable','otp_request_rejected','otp_rejected')))`),
 ]);
 
@@ -106,7 +109,8 @@ export const fulfilment = pgEnum('fulfilment', [
   'pickup_from_owner', // movable, collected
   'delivered',         // movable, brought to the renter
 ]);
-export const rentalUnit = pgEnum('rental_unit', ['slot', 'night', 'day', 'week', 'month']);
+/** 'hour' (0053): time booking on a start/duration grid per court. The engine branches on rentable.rental_unit. */
+export const rentalUnit = pgEnum('rental_unit', ['slot', 'night', 'day', 'week', 'month', 'hour']);
 
 /**
  * Availability is stored per DAY and per NIGHT only.
@@ -114,7 +118,8 @@ export const rentalUnit = pgEnum('rental_unit', ['slot', 'night', 'day', 'week',
  * out of this enum makes that invariant impossible to violate.
  */
 export const availabilitySlot = pgEnum('availability_slot', ['day', 'night']);
-export const bookingSlot = pgEnum('booking_slot', ['day', 'night', 'full_day']);
+/** 'hourly' (0053): a time-booked visit; it must name its court (booking_resource_slot_chk). */
+export const bookingSlot = pgEnum('booking_slot', ['day', 'night', 'full_day', 'hourly']);
 
 export const listingStatus = pgEnum('listing_status', [
   'draft', 'pending_review', 'pending_verification', 'live', 'paused', 'hidden',
@@ -343,6 +348,8 @@ export const documentType = pgEnum('document_type', [
   // Ownership — Gate 2, per listing
   'electricity_bill', 'property_tax', 'extract_7_12', 'extract_8a',
   'index_ii', 'sale_deed', 'na_order', 'authorisation_letter', 'noc',
+  // Venue proof (0053): many play venues are leased commercial premises.
+  'rent_agreement', 'shop_establishment', 'gst_certificate',
 ]);
 
 export const documentSide = pgEnum('document_side', ['front', 'back', 'single']);
@@ -666,6 +673,21 @@ export const area = pgTable(
   ],
 );
 
+/**
+ * Top-level verticals a guest switches between (0052). A lookup, not an enum,
+ * so a new vertical never needs ALTER TYPE. status: hidden → partners → public.
+ */
+export const vertical = pgTable('vertical', {
+  code: varchar('code', { length: 24 }).primaryKey(),
+  slug: varchar('slug', { length: 40 }).notNull().unique(),
+  name: varchar('name', { length: 60 }).notNull(),
+  status: varchar('status', { length: 12 }).notNull().default('hidden'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  version: integer('version').notNull().default(1),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [check('vertical_status_check', sql`${t.status} IN ('hidden','partners','public')`)]);
+
 export const category = pgTable('category', {
   version: integer('version').notNull().default(1),
   sortOrder: integer('sort_order').notNull().default(0),
@@ -675,7 +697,12 @@ export const category = pgTable('category', {
   form: rentableForm('form').notNull().default('fixed'),
   defaultRentalUnit: rentalUnit('default_rental_unit').notNull().default('slot'),
   isActive: boolean('is_active').notNull().default(true),
-});
+  /** Immutable after create, like form and rental unit. Defaults to farmhouse for older writers. */
+  verticalCode: varchar('vertical_code', { length: 24 }).notNull().default('farmhouse')
+    .references(() => vertical.code, { onDelete: 'restrict', onUpdate: 'restrict' }),
+  /** One of the icon keys the frontend ships; unknown keys fall back to a generic icon. */
+  iconKey: varchar('icon_key', { length: 40 }),
+}, (t) => [index('category_vertical_idx').on(t.verticalCode, t.isActive, t.sortOrder)]);
 
 /* ==========================================================================
    THE CORE OBJECT  —  `rentable`, not `properties`.
@@ -834,6 +861,66 @@ export const rentableAmenity = pgTable(
   },
   (t) => [primaryKey({ columns: [t.rentableId, t.amenityId] }), index('rentable_amenity_amenity_idx').on(t.amenityId)],
 );
+
+/** Which verticals may use an amenity (0052). Guarded on rentable_amenity by catalogue_reference_guard. */
+export const amenityVertical = pgTable('amenity_vertical', {
+  amenityId: uuid('amenity_id').notNull().references(() => amenity.id, { onDelete: 'cascade' }),
+  verticalCode: varchar('vertical_code', { length: 24 }).notNull().references(() => vertical.code, { onDelete: 'restrict' }),
+}, (t) => [primaryKey({ columns: [t.amenityId, t.verticalCode] }), index('amenity_vertical_vertical_idx').on(t.verticalCode)]);
+
+/**
+ * A bookable court, lane, turf or station inside a time-booked venue (0053).
+ * Farmhouses have none: the whole property is the unit. Never deleted once
+ * booked (bookings reference it); deactivate instead.
+ */
+export const rentableResource = pgTable('rentable_resource', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
+  name: varchar('name', { length: 60 }).notNull(),
+  capacity: integer('capacity').notNull(),
+  isIndoor: boolean('is_indoor'),
+  /** Activity-specific display facts (size, surface, format). Never read by booking logic. */
+  details: jsonb('details').notNull().default({}),
+  sortOrder: integer('sort_order').notNull().default(0),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('rentable_resource_id_rentable_idx').on(t.id, t.rentableId),
+  // rentable_resource_name_idx is UNIQUE (rentable_id, lower(name)), created in 0053 SQL.
+  index('rentable_resource_active_idx').on(t.rentableId, t.sortOrder).where(sql`${t.isActive}`),
+  check('rentable_resource_capacity_check', sql`${t.capacity} BETWEEN 1 AND 500`),
+]);
+
+/** Activities (entertainment categories) a resource supports; a multi-sport turf has several. */
+export const rentableResourceActivity = pgTable('rentable_resource_activity', {
+  resourceId: uuid('resource_id').notNull(),
+  rentableId: uuid('rentable_id').notNull(),
+  categoryId: uuid('category_id').notNull().references(() => category.id, { onDelete: 'restrict' }),
+}, (t) => [
+  primaryKey({ columns: [t.resourceId, t.categoryId] }),
+  foreignKey({ name: 'resource_activity_resource_fk', columns: [t.resourceId, t.rentableId], foreignColumns: [rentableResource.id, rentableResource.rentableId] }).onDelete('cascade'),
+  index('resource_activity_category_idx').on(t.categoryId, t.rentableId),
+]);
+
+/**
+ * Hourly rate bands per activity, weekday/weekend, in minutes from the
+ * operating day's midnight (end ≤ 1800 = 06:00 next day). The no-overlap
+ * exclusion constraint lives in 0053 SQL; full coverage is a service check.
+ */
+export const rentableRate = pgTable('rentable_rate', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'cascade' }),
+  categoryId: uuid('category_id').notNull().references(() => category.id, { onDelete: 'restrict' }),
+  dayKind: varchar('day_kind', { length: 8 }).notNull(),
+  startMinute: smallint('start_minute').notNull(),
+  endMinute: smallint('end_minute').notNull(),
+  hourlyRateMinor: minor('hourly_rate_minor').notNull(),
+}, (t) => [
+  index('rentable_rate_lookup_idx').on(t.rentableId, t.categoryId, t.dayKind, t.startMinute),
+  check('rentable_rate_valid_chk', sql`${t.dayKind} IN ('weekday','weekend') AND ${t.startMinute} BETWEEN 0 AND 1439
+    AND ${t.endMinute} > ${t.startMinute} AND ${t.endMinute} <= 1800 AND ${t.hourlyRateMinor} BETWEEN 0 AND 50000000`),
+]);
 
 /**
  * GATE 2 — one row per review pass, so history survives.
@@ -1121,6 +1208,8 @@ export const booking = pgTable(
 
     /** The visit as quoted (date, slot, hours, price). */
     slotSnapshot: jsonb('slot_snapshot'),
+    /** The court of an hourly visit (0053). NULL for slot visits: the whole property. */
+    resourceId: uuid('resource_id'),
 
     lifecycleVersion: integer('lifecycle_version').notNull().default(0),
   },
@@ -1129,6 +1218,9 @@ export const booking = pgTable(
     index('booking_customer_idx').on(t.customerId, t.state),
 
     uniqueIndex('booking_id_rentable_idx').on(t.id, t.rentableId),
+    foreignKey({ name: 'booking_resource_fk', columns: [t.resourceId, t.rentableId], foreignColumns: [rentableResource.id, rentableResource.rentableId] }).onDelete('restrict'),
+    check('booking_resource_slot_chk', sql`(${t.slot}::text = 'hourly') = (${t.resourceId} IS NOT NULL)`),
+    index('booking_resource_start_idx').on(t.resourceId, t.startsAt).where(sql`${t.resourceId} IS NOT NULL`),
     foreignKey({ name: 'booking_order_scope_fk',
       columns: [t.orderId, t.customerId, t.rentableId, t.currency, t.timeZone],
       foreignColumns: [bookingOrder.id, bookingOrder.customerId, bookingOrder.rentableId, bookingOrder.currency, bookingOrder.timeZone],
@@ -1162,6 +1254,7 @@ export const booking = pgTable(
 );
 
 /** Staged single-property ledger. Authority is switched only after Part 04 remediation.
+ * Since 0053 the GiST exclusion is per (rentable_id, COALESCE(resource_id, nil uuid), blocked range).
  * The GiST exclusion is maintained in migration 0008 (Drizzle has no exclusion builder).
  * Expiry must be transitioned under the listing lock; a clock predicate is unsafe.
  */
@@ -1173,6 +1266,8 @@ export const inventoryReservation = pgTable('inventory_reservation', {
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'restrict' }),
   reason: text('reason'),
   resourceKey: varchar('resource_key', { length: 64 }).notNull().default('property'),
+  /** The court held (0053). NULL = the whole listing: every farmhouse row, and venue-wide closures. */
+  resourceId: uuid('resource_id'),
   units: integer('units').notNull().default(1),
   blockedStartAt: timestamp('blocked_start_at', { withTimezone: true }).notNull(),
   blockedEndAt: timestamp('blocked_end_at', { withTimezone: true }).notNull(),
@@ -1182,6 +1277,7 @@ export const inventoryReservation = pgTable('inventory_reservation', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   foreignKey({ name: 'reservation_booking_listing_fk', columns: [t.bookingId, t.rentableId], foreignColumns: [booking.id, booking.rentableId] }),
+  foreignKey({ name: 'reservation_resource_fk', columns: [t.resourceId, t.rentableId], foreignColumns: [rentableResource.id, rentableResource.rentableId] }).onDelete('restrict'),
   uniqueIndex('reservation_active_booking_idx').on(t.bookingId).where(sql`${t.state} IN ('held', 'committed')`),
   index('reservation_listing_state_idx').on(t.rentableId, t.state),
   index('reservation_expiry_idx').on(t.state, t.holdExpiresAt),

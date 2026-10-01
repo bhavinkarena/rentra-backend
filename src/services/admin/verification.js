@@ -25,7 +25,16 @@ export const CHECKLIST = [
   ['ownershipOriginal', 'Original ownership or authority document sighted'],
   ['safeForGuests', 'No safety concern that should stop guests visiting'],
 ];
-const CHECKLIST_KEYS = CHECKLIST.map(([key]) => key);
+/** Time-booked venues: the same identity, photo, amenity, location and proof checks, plus play safety. */
+export const VENUE_CHECKLIST = [
+  ...CHECKLIST.filter(([key]) => key !== 'safeForGuests'),
+  ['resourcesMatch', 'Courts, lanes or stations and their count match the listing'],
+  ['playSafety', 'Nets, padding, flooring, first aid and fire safety are in place'],
+  ['lightingWorks', 'Lighting works for the evening and night hours offered'],
+];
+/** The checklist an admin must confirm, by the property's booking model. */
+export const checklistFor = (rentalUnit) => (rentalUnit === 'hour' ? VENUE_CHECKLIST : CHECKLIST);
+const CHECKLIST_KEYS = [...new Set([...CHECKLIST, ...VENUE_CHECKLIST].map(([key]) => key))];
 const TIME_ZONE = 'Asia/Kolkata';
 const IST_OFFSET = '+05:30';
 const uuid = z.string().uuid();
@@ -103,6 +112,28 @@ async function audit(tx, { adminId, id, action, after, reason = null, ip = null 
 /** Saleable inventory facts shared by the admin publish panel and the owner overview. */
 export async function listingInventory(database, id, row) {
   const config = row.booking_config;
+  if (config?.model === 'hourly') {
+    // A time-booked venue opens by weekly hours: it needs a court and hourly prices instead of open dates.
+    const resources = await database`SELECT r.capacity,r.is_active AS "isActive",
+        COALESCE(json_agg(c.slug) FILTER (WHERE c.id IS NOT NULL), '[]'::json) AS activities
+      FROM rentable_resource r LEFT JOIN rentable_resource_activity a ON a.resource_id=r.id
+      LEFT JOIN category c ON c.id=a.category_id WHERE r.rentable_id=${id} GROUP BY r.id`;
+    const hourlyRates = await database`SELECT c.slug AS activity,rr.day_kind AS "dayKind",
+        rr.start_minute AS "startMinute",rr.end_minute AS "endMinute",(rr.hourly_rate_minor/100)::int AS "hourlyRate"
+      FROM rentable_rate rr JOIN category c ON c.id=rr.category_id WHERE rr.rentable_id=${id}`;
+    const [category] = await database`SELECT slug FROM category WHERE id=${row.category_id}`;
+    const completion = listingCompletion({ rentalUnit: 'hour', categorySlug: category?.slug, bookingConfig: config }, { resources, hourlyRates });
+    const ready = (id) => completion.sections.find((s) => s.id === id).done;
+    const scheduleReady = ready('hours');
+    const courts = resources.filter((r) => r.isActive).length;
+    const bookable = scheduleReady && ready('venue') && ready('pricing');
+    return {
+      scheduleReady, openDates: null, courts, bookable,
+      note: !scheduleReady ? 'Not bookable yet: confirm valid opening hours.'
+        : !ready('venue') ? 'Not bookable yet: add active courts offering the main activity.'
+          : !ready('pricing') ? 'Not bookable yet: price every open hour for every offered activity.' : 'Bookable during the published opening hours.',
+    };
+  }
   const [{ open }] = await database`SELECT count(*)::int AS open FROM availability
     WHERE rentable_id=${id} AND day >= (now() AT TIME ZONE ${TIME_ZONE})::date
       AND units_available > 0`;
@@ -141,12 +172,14 @@ export async function publicationState(database, id) {
   if (submission && listingCompletion(submission.snapshot.listing, submission.snapshot).remaining.length)
     blockers.push('The submitted revision is incomplete.');
   if (!visit) blockers.push('No passed verification of this exact revision is recorded.');
+  const inventory = await listingInventory(database, id, row);
+  if (row.rental_unit === 'hour' && !inventory.bookable) blockers.push(inventory.note);
   return {
     eligible: blockers.length === 0,
     blockers,
     submissionId: submission?.id ?? null,
     visitId: visit?.id ?? null,
-    inventory: await listingInventory(database, id, row),
+    inventory,
     publishedAt: row.published_at,
     publishedSubmissionId: row.published_submission_id,
   };
@@ -290,14 +323,15 @@ export async function recordVerificationOutcome(database, { adminId, id, visitId
       throw unprocessable({ findings: 'Write at least 20 characters of findings.' });
     const geo = d.geoLat !== undefined && d.geoLat !== '' && d.geoLng !== undefined && d.geoLng !== '';
     if (d.outcome === 'passed') {
-      const missing = CHECKLIST_KEYS.filter((key) => !d.checklist.includes(key));
+      const required = checklistFor(row.rental_unit).map(([key]) => key);
+      const missing = required.filter((key) => !d.checklist.includes(key));
       if (missing.length)
         throw unprocessable({ checklist: 'Confirm every checklist item, or record the verification as failed.' });
       if (visit.mode === 'physical' && !geo)
         throw unprocessable({ geoLat: 'Record the on-site coordinates for a physical visit.' });
     }
     const report = {
-      checklist: Object.fromEntries(CHECKLIST_KEYS.map((key) => [key, d.checklist.includes(key)])),
+      checklist: Object.fromEntries(checklistFor(row.rental_unit).map(([key]) => [key, d.checklist.includes(key)])),
       findings: d.findings,
     };
     await tx`UPDATE verification_visit SET outcome=${d.outcome}, completed_at=now(), recorded_by=${adminId},

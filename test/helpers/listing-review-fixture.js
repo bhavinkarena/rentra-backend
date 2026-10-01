@@ -35,6 +35,7 @@ export async function seedReviewFixture(sql) {
   for (const slug of ['pool', 'parking', 'garden']) {
     const [amenity] =
       await sql`INSERT INTO amenity(slug,group_slug,label_en) VALUES (${slug},'outdoors',${slug}) RETURNING id`;
+    await sql`INSERT INTO amenity_vertical(amenity_id,vertical_code) VALUES (${amenity.id},'farmhouse')`;
     await sql`INSERT INTO rentable_amenity(rentable_id,amenity_id) VALUES (${listing.id},${amenity.id})`;
   }
   await sql`INSERT INTO rentable_price(rentable_id,slot,weekday_minor,weekend_minor) VALUES (${listing.id},'day',100000,150000)`;

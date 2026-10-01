@@ -86,6 +86,7 @@ router.post('/settings/payout/draft', client, formFields(), settings.payoutDraft
  * ---------------------------------------------------------------- */
 router.get('/catalogue/amenities', client, listings.amenities);
 router.get('/catalogue/categories', client, listings.categories);
+router.get('/catalogue/verticals', client, listings.verticals);
 router.get('/catalogue/places', client, listings.places);
 
 /* ---------------------------------------------------------------- *
@@ -107,6 +108,7 @@ for (const [step, handler] of [
   ['basics', listings.basics],
   ['location', listings.location],
   ['capacity', listings.capacity],
+  ['venue', listings.venue],
   ['amenities', listings.amenitiesStep],
   ['rules', listings.rules],
   ['pricing', listings.pricing],

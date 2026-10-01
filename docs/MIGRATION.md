@@ -104,28 +104,34 @@ receiving events.
 the session cookie needs `SameSite=None; Secure` and an exact CORS origin
 echo. The simpler option, and the recommended one, is to put both behind one
 parent domain (`app.rentra.in` / `api.rentra.in`) so the cookie stays
-first-party and `SameSite=Lax` keeps working. `COOKIE_SAME_SITE` controls the cookie policy. CORS echoes every request
-origin and permits credentials; no origin allowlist is applied.
+first-party and `SameSite=Lax` keeps working. `COOKIE_SAME_SITE` controls the cookie policy. CORS permits credentials and
+echoes only origins listed in `CORS_ALLOWED_ORIGINS` (comma-separated). With it
+unset, development allows localhost and rentrafarm.vercel.app, and production
+allows no browser origin (`src/config/cors.js`).
 
 ## The shared schema
 
-`src/services/db/schema/index.js` exists in both repositories and **must stay
-byte-identical**. It is a copy, not a package, because extracting it would mean
-publishing and versioning a private package to solve a problem two `cp`
-commands solve — and a version skew between the two would be far harder to
-notice than a diff.
+The Drizzle schema lives only here, in `src/services/db/schema/index.js`. The
+frontend has no database access and no copy of the schema (`Rentra/lib/db` no
+longer exists); it talks to this API. An earlier version of this document said
+the schema was mirrored byte-for-byte in the frontend. That stopped being true
+when the frontend was cut over.
 
-The rule:
+The rules:
 
-- **The backend owns migrations.** Generate and apply them here
-  (`npm run db:generate`, `npm run db:migrate`). The frontend's
-  `drizzle.config.js` should no longer be used to generate.
-- **After changing the schema here**, copy it to
-  `Rentra/lib/db/schema/index.js` in the same commit.
+- **The backend owns migrations.** Apply them with `npm run db:migrate`.
+- **Write new migrations as hand-written SQL.** The drizzle-kit snapshots in
+  `drizzle/meta` stop at 0039, while the journal runs to 0051, so
+  `npm run db:generate` would diff against a stale snapshot. Add the journal
+  entry by hand (strictly increasing `when`) and run `npm run db:check`.
+- **The migrator applies every pending migration in one transaction.** A value
+  added with `ALTER TYPE … ADD VALUE` cannot be used anywhere else in the same
+  release's SQL (Postgres error `55P04`).
 
-`src/services/` as a whole follows the same rule, and is excluded from lint and
-Prettier here for exactly that reason: reformatting it would turn every future
-sync into a diff full of noise.
+What *is* shared is the pure domain code: files in `src/services/domain/` are
+copied into `Rentra/lib/domain/`. `booking-policy.js` and `listing-share.js` are
+byte-identical. The others are Prettier-formatted copies there and must keep the
+same behaviour. Update both sides in the same change.
 
 ## Cutting the frontend over
 

@@ -1,13 +1,15 @@
 import { z } from 'zod';
 
 // No identifiers, URLs, arbitrary strings or payload objects enter this contract.
-export const browserEvents = ['search_submitted', 'listing_viewed', 'dates_selected', 'history_viewed', 'share_attempted', 'share_completed'];
+export const browserEvents = ['search_submitted', 'listing_viewed', 'dates_selected', 'history_viewed', 'share_attempted', 'share_completed',
+  'vertical_switched', 'times_viewed', 'time_selected'];
 export const serverEvents = ['quote_ready', 'login_completed', 'checkout_started', 'inventory_conflict', 'quote_changed', 'payment_unavailable', 'otp_request_rejected', 'otp_rejected'];
 export const measurementSchema = z.object({
   event: z.enum([...browserEvents, ...serverEvents]),
   source: z.enum(['browser', 'server']),
   device: z.enum(['mobile', 'desktop', 'unknown']).default('unknown'),
   visits: z.enum(['single', 'multiple', 'unknown']).default('unknown'),
+  vertical: z.enum(['farmhouse', 'entertainment', 'unknown']).default('unknown'),
 }).strict().refine(value => (value.source === 'browser' ? browserEvents : serverEvents).includes(value.event));
 
 export function measurementError(code) {

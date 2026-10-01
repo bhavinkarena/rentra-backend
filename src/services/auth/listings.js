@@ -7,6 +7,8 @@ import { and, eq, inArray, isNull, sql as raw } from 'drizzle-orm';
 import { db, sql } from '@/services/db';
 import { submitProperty } from '../admin/listings.js';
 import { changePropertyPolicy } from '../booking/property-policy.js';
+import { changeHourlyRates } from '../booking/hourly-rates.js';
+import { saveVenueResources } from '../booking/venue.js';
 import {
   rentable, rentableAmenity, documents,
   category, city, area,
@@ -15,9 +17,9 @@ import { audit } from '@/services/audit';
 import { fieldErrors } from '@/services/schemas/zod';
 import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
-  ownershipDocSchema,
+  ownershipDocSchema, venueRulesSchema,
 } from '@/services/schemas/zod/listing';
-import { MAX_PHOTOS } from '@/services/domain/listing-completion';
+import { MAX_PHOTOS, ownershipDocTypesFor } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
@@ -27,7 +29,7 @@ import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
 } from '@/services/uploads/cloudinary';
-import { conflict, notFound } from '@/utils/apiError.js';
+import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { requireActiveClient } from './dal';
 
 /**
@@ -161,7 +163,9 @@ export async function createListingFromBasics(_prev, formData) {
         defaultRentalUnit: category.defaultRentalUnit,
       })
       .from(category)
-      .where(and(eq(category.id, d.categoryId), eq(category.isActive, true)))
+      // Only categories of a vertical that is open to partners (entertainment plan, Phase 4).
+      .where(and(eq(category.id, d.categoryId), eq(category.isActive, true),
+        raw`exists (select 1 from vertical v where v.code=${category.verticalCode} and v.status in ('partners','public'))`))
       .limit(1),
     db
       .select({ id: city.id })
@@ -223,8 +227,17 @@ export async function saveBasics(_prev, formData) {
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
   const d = parsed.data;
+  // A listing stays in its vertical; within it the category's booking model is copied again.
+  const [choice] = await sql`SELECT c.form::text AS form, c.default_rental_unit::text AS rental_unit,
+      c.vertical_code = (SELECT oc.vertical_code FROM rentable r JOIN category oc ON oc.id = r.category_id WHERE r.id = ${listing.id}) AS same_vertical
+    FROM category c WHERE c.id = ${d.categoryId} AND c.is_active`;
+  if (!choice) return { errors: { categoryId: 'Choose an available category' } };
+  if (!choice.same_vertical) return { errors: { categoryId: 'A listing cannot move to another kind of place. Create a new listing instead.' } };
   const { sentBack, contentVersion } = await applyEdit(listing, {
     categoryId: d.categoryId,
+    form: choice.form,
+    fulfilment: choice.form === 'fixed' ? 'visit_site' : 'pickup_from_owner',
+    rentalUnit: choice.rental_unit,
     title: d.title,
     // The slug follows the title, but the URL resolves by publicCode, so
     // retitling never breaks a link.
@@ -244,7 +257,6 @@ export async function saveLocation(_prev, formData) {
     lat: formData.get('lat'),
     lng: formData.get('lng'),
     exactAddress: formData.get('exactAddress'),
-    approachNote: formData.get('approachNote') ?? '',
   });
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
@@ -308,6 +320,7 @@ export async function saveAmenities(_prev, formData) {
 
 export async function saveRules(_prev, formData) {
   const { listing } = await load(String(formData.get('id')));
+  if (listing.rentalUnit === 'hour') return saveVenueRules(listing, formData);
   const parsed = rulesSchema.safeParse({
     checkInFrom: formData.get('checkInFrom'),
     checkOutBy: formData.get('checkOutBy'),
@@ -344,11 +357,54 @@ export async function saveRules(_prev, formData) {
   return { ok: true, contentVersion, sentBack };
 }
 
+/** Venue rules: what players wear, age, food, smoking, alcohol, notes. No check-in window. */
+async function saveVenueRules(listing, formData) {
+  const parsed = venueRulesSchema.safeParse({
+    footwear: formData.get('footwear') ?? '',
+    minAge: formData.get('minAge') ?? '',
+    foodAllowed: formData.get('foodAllowed') ?? 'yes',
+    smokingAllowed: formData.get('smokingAllowed') ?? 'no',
+    alcoholAllowed: formData.get('alcoholAllowed') ?? 'no',
+    extraRules: formData.get('extraRules') ?? '',
+  });
+  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
+  const d = parsed.data;
+  const houseRules = {
+    footwear: d.footwear || null,
+    minAge: d.minAge === '' ? null : d.minAge,
+    foodAllowed: d.foodAllowed,
+    smokingAllowed: d.smokingAllowed === 'yes',
+    alcoholAllowed: d.alcoholAllowed === 'yes',
+    notes: d.extraRules || null,
+  };
+  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules }, ['houseRules'], { expected: expectedVersion(formData) });
+  return { ok: true, contentVersion, sentBack };
+}
+
+/** Owner forms send structured lists (courts, rate bands) as one JSON field. */
+function jsonField(formData, key) {
+  try {
+    return JSON.parse(String(formData.get(key) ?? ''));
+  } catch {
+    throw unprocessable({ [key]: ['Send the list as JSON.'] });
+  }
+}
+
 async function policyAction(formData, command) {
   const user = await requireActiveClient();
   const data = await getListingForEdit(String(formData.get('id')),user.id);
   if(!data) throw notFound();
   const {listing}=data;
+  const [model] = await sql`SELECT rental_unit::text AS unit FROM rentable WHERE id=${listing.id}`;
+  if (command === 'pricing' && model?.unit === 'hour') {
+    // Time-booked venue: hourly bands per activity instead of slot prices.
+    const result = await changeHourlyRates(sql, user.id, listing.id, {
+      rates: jsonField(formData, 'rates'), expectedVersion: Number(formData.get('contentVersion')),
+      preview: formData.get('mode') === 'preview', previewToken: formData.get('previewToken'),
+    });
+    if (result.ok) revalidateListing(listing);
+    return result;
+  }
   const keys = command === 'pricing' ? ['day_weekday','day_weekend','night_weekday','night_weekend','full_day_weekday','full_day_weekend','extraGuestCharge','extraHourCharge'] : ['depositAmount','cancellationTier'];
   const result = await changePropertyPolicy(sql,user.id,listing.id,command,{
     values:Object.fromEntries(keys.map(key=>[key,formData.get(key)||0])),
@@ -358,6 +414,18 @@ async function policyAction(formData, command) {
   return result;
 }
 export async function savePricing(_prev, formData) { return policyAction(formData,'pricing'); }
+
+/** Courts, lanes and stations of a time-booked venue (wizard step `venue`). */
+export async function saveVenue(_prev, formData) {
+  const user = await requireActiveClient();
+  const data = await getListingForEdit(String(formData.get('id')), user.id);
+  if (!data) throw notFound();
+  const result = await saveVenueResources(sql, user.id, {
+    rentableId: data.listing.id, expectedVersion: Number(formData.get('contentVersion')), resources: jsonField(formData, 'resources'),
+  });
+  revalidateListing(data.listing);
+  return result;
+}
 export async function saveTerms(_prev, formData) { return policyAction(formData,'terms'); }
 
 /* ------------------------------ photos ------------------------------ */
@@ -494,6 +562,9 @@ export async function uploadOwnershipDocument(_prev, formData) {
     issuedAt: formData.get('issuedAt') ?? '',
   });
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
+  // A venue proves a lease or business; a farmhouse proves land. Each takes only its own list.
+  if (!ownershipDocTypesFor(listing.rentalUnit).some((type) => type.id === parsed.data.docType))
+    return { errors: { docType: 'Choose one of the listed documents' } };
 
   const file = formData.get('file');
   if (!file || file.size === 0) return { errors: { file: 'Choose the document' } };

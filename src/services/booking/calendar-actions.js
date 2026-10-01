@@ -10,7 +10,7 @@ import { calendarCommand } from './owner-calendar.js';
 import { parseINRMinor } from '@/services/domain/booking-money';
 
 function failure(error) {
-  if (['CALENDAR_CHANGED', 'PREVIEW_REQUIRED', 'INVENTORY_CONFLICT', 'CONFIG_CHANGED'].includes(error.code)) return { error: error.message, code: error.code, status: 409, conflicts: error.conflicts || [] };
+  if (['CALENDAR_CHANGED', 'PREVIEW_REQUIRED', 'INVENTORY_CONFLICT', 'CONFIG_CHANGED', 'UNSUPPORTED_INVENTORY'].includes(error.code)) return { error: error.message, code: error.code, status: 409, conflicts: error.conflicts || [] };
   if (error.code === 'NOT_FOUND') return { error: error.message, code: error.code, status: 404 };
   if (error instanceof RangeError) return { error: error.message };
   if (error.name === 'ZodError') return { error: 'Check the hours, dates, prices and capacities.' };
@@ -44,6 +44,12 @@ async function perform(form, run, command) {
 
 export async function saveSchedule(_state, form) {
   return perform(form, async (ownerId, rentableId, database) => {
+    if (form.get('model') === 'hourly') {
+      // Time-booked venue: weekly hours and the booking grid arrive as one JSON field.
+      let configuration;
+      try { configuration = JSON.parse(String(form.get('configuration'))); } catch { throw new RangeError('Send the opening hours as JSON.'); }
+      return saveBookingConfiguration(database, ownerId, { rentableId, expectedVersion: Number(form.get('expectedVersion')), configuration });
+    }
     const slots = {};
     for (const slot of ['day', 'night', 'full_day']) {
       slots[slot] = form.get(`${slot}_enabled`) === 'on' ? {
@@ -69,7 +75,8 @@ export async function addOpenDates(_state, form) {
 }
 export async function blockDates(_state, form) {
   return perform(form, async (ownerId, rentableId, database) => {
-    return createOwnerBlock(database, ownerId, { rentableId, blockedStartAt: propertyLocalInstant(form.get('from'), form.get('startTime')), blockedEndAt: propertyLocalInstant(form.get('to'), form.get('endTime')), reason: form.get('reason') });
+    // resourceId: one court of a venue; empty = the whole place.
+    return createOwnerBlock(database, ownerId, { rentableId, resourceId: form.get('resourceId') || null, blockedStartAt: propertyLocalInstant(form.get('from'), form.get('startTime')), blockedEndAt: propertyLocalInstant(form.get('to'), form.get('endTime')), reason: form.get('reason') });
   }, 'block');
 }
 export async function unblockDates(_state, form) {

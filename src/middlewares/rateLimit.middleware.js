@@ -56,6 +56,13 @@ export const uploadLimiter = rateLimit({
   limit: 40,
 });
 
+/** Public time grids and calendars compute every start for a day; keep them cheap to serve. */
+export const discoveryLimiter = rateLimit({
+  ...base,
+  windowMs: 60_000,
+  limit: 120,
+});
+
 /** Checkout holds take inventory out of circulation while they live. */
 export const checkoutLimiter = rateLimit({
   ...base,

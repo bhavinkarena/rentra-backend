@@ -365,6 +365,34 @@
       "when": 1790591100000,
       "tag": "0051_worker_performance",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790591200000,
+      "tag": "0052_verticals",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790591300000,
+      "tag": "0053_time_booking",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790591400000,
+      "tag": "0054_time_booking_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1790591500000,
+      "tag": "0055_measurement_vertical",
+      "breakpoints": true
     }
   ]
 }

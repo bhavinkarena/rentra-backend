@@ -116,7 +116,7 @@ export async function ownerPortfolioCalendar(database, ownerId, query = {}) {
     !Number.isInteger(page) ||
     page < 1 ||
     page > 10000 ||
-    (query.slot && !['day', 'night', 'full_day'].includes(query.slot))
+    (query.slot && !['day', 'night', 'full_day', 'hourly'].includes(query.slot))
   )
     throw new RangeError('Choose a valid date, view and slot.');
   if (query.property) z.string().uuid().parse(query.property);
@@ -132,15 +132,22 @@ export async function ownerPortfolioCalendar(database, ownerId, query = {}) {
       const snapshot = await calendarSnapshot(tx, listing);
       const reservations =
         await tx`SELECT r.id,r.source,r.state,r.reason,r.blocked_start_at,r.blocked_end_at,r.hold_expires_at,
-        b.order_id,b.slot,b.starts_at,b.ends_at
-        FROM inventory_reservation r LEFT JOIN booking b ON b.id=r.booking_id
+        b.order_id,b.slot,b.starts_at,b.ends_at,b.reference,b.guests,b.slot_snapshot->'activity'->>'name' AS activity,
+        r.resource_id,rs.name AS resource_name
+        FROM inventory_reservation r LEFT JOIN booking b ON b.id=r.booking_id LEFT JOIN rentable_resource rs ON rs.id=r.resource_id
         WHERE r.rentable_id=${listing.id} AND (r.state='committed' OR (r.state='held' AND r.hold_expires_at>now()))
         AND r.blocked_start_at < (${to}::date::timestamp AT TIME ZONE 'Asia/Kolkata')
         AND r.blocked_end_at > (${from}::date::timestamp AT TIME ZONE 'Asia/Kolkata')
         ORDER BY r.blocked_start_at,r.id`;
+      // Time-booked venues: the courts, so the owner sees a day timeline per court.
+      const resources = listing.rental_unit === 'hour'
+        ? await tx`SELECT id,name,sort_order AS "sortOrder",is_active AS "isActive" FROM rentable_resource WHERE rentable_id=${listing.id} ORDER BY sort_order,name,id`
+        : [];
       return {
         id: listing.id,
         title: listing.title,
+        rentalUnit: listing.rental_unit,
+        resources,
         version: snapshot.version,
         scheduleReady: listing.booking_config?.inventoryReady === true,
         unresolvedVisits: snapshot.bookings

@@ -20,10 +20,11 @@ import postgres from 'postgres';
 import { and, eq, inArray } from 'drizzle-orm';
 import { readFile } from 'node:fs/promises';
 import * as s from '@/services/db/schema/index.js';
+import { seedDatabaseUrl } from './seed-guard.js';
 
 const OWNER_EMAIL = 'kunjdetroja52@gmail.com';
 
-const client = postgres(process.env.DATABASE_URL, {
+const client = postgres(seedDatabaseUrl('seed-owner-listings'), {
   prepare: false, max: 1, onnotice: () => {},
 });
 const db = drizzle(client, { schema: s });

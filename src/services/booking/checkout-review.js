@@ -24,6 +24,12 @@ async function details(tx, quote, customer, snapshot = null) {
     listingHref: savedListingHref(`/listing/${listing.slug}-${listing.public_code}`, quote.selection),
     serverNow: new Date().toISOString() };
 }
+/** A held time-booked visit as the hourly selection it was quoted from. */
+function hourlySelection(order, visit) {
+  const v = visit.slot_snapshot;
+  return { kind: 'hourly', rentableId: order.rentable_id, currency: order.currency, activity: v.activity?.slug, date: v.date,
+    start: v.start, durationMinutes: v.durationMinutes, resourceId: v.requestedResourceId ?? null, guests: visit.guests };
+}
 export async function readCheckoutReview(database, session, quoteId, env = process.env) {
   z.string().uuid().parse(quoteId);
   return database.begin(async tx => {
@@ -42,7 +48,8 @@ export async function readOwnedCheckoutReview(database, session, orderId, env = 
     // Accepted order/visit/payment snapshots are protected by database triggers.
     // Do not repaint an existing checkout from a later edited listing or advisory quote.
     const quote = { id:order.quote_id, version:order.quote_version, hash:order.quote_hash,
-      selection:{rentableId:order.rentable_id,dates:visits.map(v=>v.slot_snapshot.date),slot:visits[0].slot,guests:visits[0].guests,currency:order.currency},
+      selection: visits[0].slot === 'hourly' ? hourlySelection(order, visits[0])
+        : {rentableId:order.rentable_id,dates:visits.map(v=>v.slot_snapshot.date),slot:visits[0].slot,guests:visits[0].guests,currency:order.currency},
       visits:visits.map(v=>v.slot_snapshot), policy:order.policy_snapshot, payment:payment.snapshot,
       timeZone:order.time_zone, expiresAt:new Date(order.quote_expires_at).toISOString(),
       totals:{rentMinor:Number(order.amount_rent_minor),feeMinor:Number(order.amount_fee_minor),

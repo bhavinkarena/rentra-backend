@@ -1,4 +1,7 @@
 import 'server-only';
+import { propertyToday } from '../domain/booking-dates.js';
+import { visitLabel } from '../domain/booking-record.js';
+import { houseRuleLines } from '../domain/venue-rules.js';
 
 import { z } from 'zod';
 import { visitEvidenceRecords } from './visit-evidence.js';
@@ -36,12 +39,15 @@ const visitDTO = (row) => ({
   endsAt: row.hours_known ? instant(row.ends_at) : null,
   version: row.lifecycle_version,
   provenance: row.visit_provenance,
+  label: visitLabel(row),
 });
 
 export async function listStaffVisits(database, staff, input = {}) {
   const tab = TABS.includes(input?.tab) ? input.tab : 'today';
   const now = database`clock_timestamp()`;
-  const dayStart = database`(date_trunc('day', clock_timestamp() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata')`;
+  // A busy venue has many visits a day: "Today" pages by day through ?date= (entertainment plan, Phase 11).
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(input?.date ?? '')) && !Number.isNaN(Date.parse(`${input.date}T00:00:00Z`)) ? input.date : propertyToday();
+  const dayStart = database`(${date}::date::timestamp AT TIME ZONE 'Asia/Kolkata')`;
   const conditions = {
     today: database`b.state IN ('confirmed','handed_over','returned','disputed') AND b.starts_at < ${dayStart} + interval '1 day' AND b.ends_at > ${dayStart}`,
     upcoming: database`b.state IN ('confirmed','handed_over') AND b.ends_at > ${now}`,
@@ -58,7 +64,7 @@ export async function listStaffVisits(database, staff, input = {}) {
   const rows = await database`SELECT b.*, r.title FROM booking b JOIN rentable r ON r.id=b.rentable_id
     WHERE ${scope} AND ${conditions[tab]}
     ORDER BY ${tab === 'past' ? database`b.starts_at DESC` : database`b.starts_at ASC`}, b.id LIMIT 50`;
-  return { tab, counts, items: rows.map(visitDTO) };
+  return { tab, date, counts, items: rows.map(visitDTO) };
 }
 
 /** One booking's visits for an assigned property; a foreign or guessed id reads as missing. */
@@ -90,7 +96,7 @@ export async function readStaffVisitRecord(database, staff, orderId) {
       arrival: onSite
         ? { address: place?.exact_address ?? null, ownerName: staff.ownerName, ownerPhone: staff.ownerPhone }
         : null,
-      houseRules: Array.isArray(rules) ? rules.filter((rule) => typeof rule === 'string') : [],
+      houseRules: houseRuleLines(rules),
       canRecord: staff.capabilities.includes('staff.assigned-visits.evidence'),
     };
   });

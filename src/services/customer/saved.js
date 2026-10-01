@@ -9,7 +9,14 @@ import { normalizePublicPhotos } from '../domain/listing-content.js';
 export async function savedPlaceCards(database, entries) {
   if (!entries.length) return [];
   const ids = entries.map(e => e.rentableId);
-  const rows = await database`SELECT r.id,r.title,r.slug,r.public_code,r.photos,a.name AS area,c.name AS city
+  // Venue facts (entertainment plan, Phase 11): activities, courts, players, indoor or outdoor.
+  const rows = await database`SELECT r.id,r.title,r.slug,r.public_code,r.photos,a.name AS area,c.name AS city,
+      (SELECT vc.vertical_code FROM category vc WHERE vc.id=r.category_id) AS vertical,
+      CASE WHEN r.rental_unit::text='hour' THEN (SELECT coalesce(json_agg(json_build_object('slug',ac.slug,'name',ac.name,'iconKey',ac.icon_key) ORDER BY ac.sort_order,ac.name),'[]'::json)
+        FROM category ac WHERE ac.is_active AND ac.id IN (SELECT ra.category_id FROM rentable_resource_activity ra
+          JOIN rentable_resource rs ON rs.id=ra.resource_id AND rs.is_active WHERE ra.rentable_id=r.id)) END AS activities,
+      (SELECT count(*)::int FROM rentable_resource rs WHERE rs.rentable_id=r.id AND rs.is_active) AS resource_count,
+      (SELECT max(rs.capacity) FROM rentable_resource rs WHERE rs.rentable_id=r.id AND rs.is_active) AS max_players
     FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id
     WHERE r.id IN ${database(ids)} AND r.status='live'`;
   return entries.map(e => {
@@ -21,7 +28,8 @@ export async function savedPlaceCards(database, entries) {
     const photo = normalizedPhoto
       ? { url: normalizedPhoto.url, alt: normalizedPhoto.alt } : null;
     return row ? { rentableId:e.rentableId, selection, available:true, title:row.title,
-      area:`${row.area}, ${row.city}`, photo, href:savedListingHref(listingPath(row.slug,row.public_code),selection) }
+      area:`${row.area}, ${row.city}`, photo, href:savedListingHref(listingPath(row.slug,row.public_code),selection),
+      ...(row.activities ? { vertical: row.vertical, activities: row.activities, resourceCount: row.resource_count, maxPlayers: row.max_players } : {}) }
       : { rentableId:e.rentableId, selection, available:false, title:'Unavailable place' };
   });
 }

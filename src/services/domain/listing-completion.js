@@ -1,3 +1,6 @@
+import { priceGaps } from './hourly.js';
+import { hourlyBookingConfigSchema } from '../schemas/zod/booking-config.js';
+
 /**
  * Listing completeness — DERIVED, never stored.
  *
@@ -60,7 +63,25 @@ export const OWNERSHIP_DOC_TYPES = [
   },
 ];
 
-export function listingCompletion(listing, { prices = [], amenities = [], photos = [], documents = [] } = {}) {
+/** Venues are often leased commercial premises: prove the right to run it there. */
+export const VENUE_OWNERSHIP_DOC_TYPES = [
+  { id: 'rent_agreement', label: 'Rent or lease agreement', note: 'For a leased venue — must cover today’s date.', sides: ['single'] },
+  { id: 'property_tax', label: 'Property tax receipt', note: 'If you own the premises.', sides: ['single'] },
+  { id: 'electricity_bill', label: 'Electricity bill', note: 'In the venue’s or your name. Must be under 3 months old.', sides: ['single'], freshMonths: 3 },
+  { id: 'shop_establishment', label: 'Shop & Establishment registration', note: 'The business registration for the venue.', sides: ['single'] },
+  { id: 'gst_certificate', label: 'GST registration certificate', note: 'Shows the business name and the premises address.', sides: ['single'] },
+  { id: 'sale_deed', label: 'Registered sale deed', note: 'If you own the land outright.', sides: ['single'] },
+  { id: 'noc', label: 'Owner’s NOC', note: 'If the landlord’s permission is needed to run the venue.', sides: ['single'] },
+  { id: 'authorisation_letter', label: 'Authorisation letter', note: "Required if you are not the owner. Send the owner's ID and their document too.", sides: ['single'], agentOnly: true },
+];
+
+/** Which documents prove a listing, by booking model ('hour' = venue). */
+export const ownershipDocTypesFor = (rentalUnit) => (rentalUnit === 'hour' ? VENUE_OWNERSHIP_DOC_TYPES : OWNERSHIP_DOC_TYPES);
+
+export function listingCompletion(
+  listing,
+  { prices = [], amenities = [], photos = [], documents = [], resources = [], hourlyRates = [] } = {},
+) {
   const l = listing ?? {};
   const photoList = Array.isArray(photos) ? photos : [];
   const pricedSlots = prices.filter((p) => p.weekday > 0 || p.weekend > 0);
@@ -68,7 +89,7 @@ export function listingCompletion(listing, { prices = [], amenities = [], photos
   const liveDocs = documents.filter((d) => d.status !== 'rejected');
   const rejectedDoc = documents.find((d) => d.status === 'rejected');
 
-  const sections = [
+  let sections = [
     {
       id: 'basics',
       label: 'What it is',
@@ -154,6 +175,10 @@ export function listingCompletion(listing, { prices = [], amenities = [], photos
     },
   ];
 
+  // Time-booked venues (entertainment plan): courts and opening hours replace size and
+  // slots; venue rules replace the check-in window; hourly bands replace slot prices.
+  if (l.rentalUnit === 'hour') sections = venueSections(sections, l, { resources, hourlyRates });
+
   const total = sections.length;
   const done = sections.filter((s) => s.done).length;
   const remaining = sections.filter((s) => !s.done);
@@ -168,7 +193,11 @@ export function listingCompletion(listing, { prices = [], amenities = [], photos
     remaining,
     minutesLeft: remaining.reduce((n, s) => n + (s.minutes ?? 0), 0),
     percent: Math.round((done / total) * 100),
-    canSubmit: done === total && (status === 'draft' || status === 'rejected'),
+    canSubmit:
+      done === total &&
+      (status === 'draft' ||
+        status === 'rejected' ||
+        (status === 'pending_review' && l.reviewNeedsResubmission)),
     status,
     inReview,
     isLive: status === 'live',
@@ -182,4 +211,67 @@ export function listingCompletion(listing, { prices = [], amenities = [], photos
       state: status === 'live' ? 'done' : inReview ? 'in_review' : 'waiting',
     },
   };
+}
+
+/** The venue variant of the section list, in the venue walkthrough order. */
+function venueSections(farm, l, { resources, hourlyRates }) {
+  const by = (id) => farm.find((s) => s.id === id);
+  const active = resources.filter((r) => r.isActive !== false);
+  const rules = l.houseRules && !Array.isArray(l.houseRules) ? l.houseRules : {};
+  const config = l.bookingConfig;
+  const { inventoryReady, ...configuration } = config ?? {};
+  const hoursReady = inventoryReady === true && hourlyBookingConfigSchema.safeParse(configuration).success;
+  const activities = [...new Set(active.flatMap((r) => r.activities ?? []))];
+  const courtsReady = active.length >= 1 && active.every((r) =>
+    Number.isInteger(r.capacity) && r.capacity > 0 && (r.activities ?? []).length >= 1,
+  ) && Boolean(l.categorySlug && activities.includes(l.categorySlug));
+  const pricingReady = hoursReady && activities.length > 0 && activities.every((activity) => {
+    const bands = hourlyRates.filter((r) => r.activity === activity);
+    if (!bands.length || bands.some((r) => !Number.isFinite(r.hourlyRate) || r.hourlyRate <= 0 ||
+      !Number.isInteger(r.startMinute) || !Number.isInteger(r.endMinute) ||
+      r.startMinute < 0 || r.startMinute >= 1440 || r.endMinute <= r.startMinute || r.endMinute > 1800)) return false;
+    for (const kind of ['weekday', 'weekend']) {
+      const own = bands.filter((r) => r.dayKind === kind).sort((a, b) => a.startMinute - b.startMinute);
+      if (own.some((r, i) => i > 0 && r.startMinute < own[i - 1].endMinute)) return false;
+    }
+    return priceGaps(config, bands).length === 0;
+  });
+  return [
+    by('basics'),
+    by('location'),
+    {
+      id: 'venue',
+      label: 'Courts',
+      hint: 'Each court, lane or station, and what it is for',
+      done: courtsReady,
+      note: active.length ? `${active.length} active` : null,
+      minutes: 3,
+    },
+    { ...by('amenities'), hint: 'Floodlights, parking, changing rooms…' },
+    {
+      id: 'hours',
+      label: 'Opening hours',
+      hint: 'Weekly hours and how long a booking can be',
+      done: hoursReady,
+      minutes: 3,
+    },
+    {
+      id: 'rules',
+      label: 'Venue rules',
+      hint: 'Footwear, age, food and drink',
+      done: Boolean(rules.footwear || rules.notes),
+      minutes: 2,
+    },
+    {
+      id: 'pricing',
+      label: 'Hourly prices',
+      hint: 'Per hour, weekday and weekend, peak and off-peak',
+      done: pricingReady,
+      note: hourlyRates.length ? `${hourlyRates.length} price band${hourlyRates.length === 1 ? '' : 's'}` : null,
+      minutes: 3,
+    },
+    by('terms'),
+    { ...by('photos'), hint: `${MIN_PHOTOS}–${MAX_PHOTOS} photos of the actual venue` },
+    by('ownership'),
+  ];
 }

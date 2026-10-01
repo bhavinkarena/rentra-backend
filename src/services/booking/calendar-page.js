@@ -15,17 +15,20 @@ import { calendarSnapshot } from './owner-calendar.js';
  */
 export async function ownerCalendarPage(database, ownerId, rentableId) {
   const [listing] = await database`
-    SELECT id, title, capacity, booking_config, booking_config_version
+    SELECT id, title, capacity, booking_config, booking_config_version, rental_unit::text AS rental_unit
     FROM rentable WHERE id=${rentableId} AND client_id=${ownerId}`;
   if (!listing) return null;
 
   return withListingSnapshot(database, rentableId, async (tx, current) => {
     if (current.client_id !== ownerId) return null;
     const rows = await tx`
-      SELECT id, blocked_start_at, blocked_end_at, reason
-      FROM inventory_reservation
-      WHERE rentable_id=${rentableId} AND source='owner_block' AND state='committed'
-      ORDER BY blocked_start_at`;
+      SELECT r.id, r.blocked_start_at, r.blocked_end_at, r.reason, r.resource_id, rs.name AS resource_name
+      FROM inventory_reservation r LEFT JOIN rentable_resource rs ON rs.id = r.resource_id
+      WHERE r.rentable_id=${rentableId} AND r.source='owner_block' AND r.state='committed'
+      ORDER BY r.blocked_start_at`;
+    const resources = listing.rental_unit === 'hour'
+      ? await tx`SELECT id, name, capacity, is_active AS "isActive" FROM rentable_resource WHERE rentable_id=${rentableId} ORDER BY sort_order, name, id`
+      : [];
     const format = (time) => new Intl.DateTimeFormat('en-IN', {
       dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata',
     }).format(new Date(time));
@@ -33,8 +36,10 @@ export async function ownerCalendarPage(database, ownerId, rentableId) {
     return {
       // Stored in paise; the calendar form keeps its whole-rupee default.
       listing: { id, title, capacity, extra_guest_charge: Number(current.extra_guest_charge_minor) / 100, booking_config, booking_config_version,
-        calendar_version: (await calendarSnapshot(tx, current)).version },
-      blocks: rows.map(row => ({ id:row.id, reason:row.reason, label:`${format(row.blocked_start_at)} – ${format(row.blocked_end_at)}` })),
+        rental_unit: listing.rental_unit, calendar_version: (await calendarSnapshot(tx, current)).version },
+      resources,
+      blocks: rows.map(row => ({ id:row.id, reason:row.reason, label:`${format(row.blocked_start_at)} – ${format(row.blocked_end_at)}`,
+        resource: row.resource_id ? { id: row.resource_id, name: row.resource_name } : null })),
     };
   });
 }

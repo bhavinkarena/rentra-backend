@@ -1,6 +1,7 @@
 import { and, eq, sql as raw, desc, asc, isNotNull, ne } from 'drizzle-orm';
 import { db, sql } from './index.js';
 import { getBookingAvailability } from '../booking/quotes.js';
+import { getHourlyAvailability } from '../booking/time-slots.js';
 import {
   rentable, rentablePrice, rentableAmenity, amenity, verificationVisit,
   area, city, category, review, users,
@@ -8,6 +9,8 @@ import {
 import { listingPath } from '@/services/domain/listing-url';
 import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { amenityStates, normalizePublicPhotos, publicSlotSchedules } from '@/services/domain/listing-content';
+import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
+import { minuteToHhmm } from '@/services/domain/hourly';
 
 /**
  * Data access for public, indexable pages.
@@ -18,10 +21,26 @@ import { amenityStates, normalizePublicPhotos, publicSlotSchedules } from '@/ser
  * for crawlers.
  */
 
+/** Hourly card facts (time-booked venues): activities, courts, from-price per hour. */
+function hourlyCardFields(row) {
+  return {
+    vertical: row.vertical,
+    rentalUnit: 'hour',
+    activities: row.activities ?? [],
+    resourceCount: Number(row.resourceCount ?? 0),
+    maxPlayers: row.maxPlayers == null ? null : Number(row.maxPlayers),
+    isIndoor: row.indoorKinds == null ? null : row.indoorKinds === 'indoor' ? true : row.indoorKinds === 'outdoor' ? false : 'mixed',
+    price: row.hourFromMinor == null ? null : Number(row.hourFromMinor) / 100,
+    priceWeekend: null,
+    unit: 'hour',
+    priceNote: 'Per hour; platform fee added at checkout. Choose a date and time for a total.',
+  };
+}
+
 /** Shape the ListingCard component expects. */
 function toCard(row) {
   const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME });
-  return {
+  const card = {
     id: row.id,
     slug: row.slug,
     publicCode: row.publicCode,
@@ -50,7 +69,10 @@ function toCard(row) {
     photos,
     photo: photos[0] ?? null,
     photoCount: photos.length,
+    vertical: row.vertical ?? DEFAULT_VERTICAL,
+    rentalUnit: row.rentalUnit ?? 'slot',
   };
+  return row.rentalUnit === 'hour' ? { ...card, ...hourlyCardFields(row) } : card;
 }
 
 const cardColumns = {
@@ -73,7 +95,22 @@ const cardColumns = {
   // Stored in paise; the public API keeps whole rupees.
   nightWeekday: raw`(${rentablePrice.weekdayMinor}/100)::int`.mapWith(Number).as('night_weekday'),
   nightWeekend: raw`(${rentablePrice.weekendMinor}/100)::int`.mapWith(Number).as('night_weekend'),
+  rentalUnit: rentable.rentalUnit,
+  vertical: raw`(select vc.vertical_code from category vc where vc.id=${rentable.categoryId})`.as('vertical'),
+  // Time-booked venues only (NULL / empty for farmhouses): one subquery each, all index-backed.
+  hourFromMinor: raw`(select min(rr.hourly_rate_minor) from rentable_rate rr where rr.rentable_id=${rentable.id})`.as('hour_from_minor'),
+  resourceCount: raw`(select count(*)::int from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('resource_count'),
+  maxPlayers: raw`(select max(rs.capacity) from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('max_players'),
+  indoorKinds: raw`(select case when bool_and(rs.is_indoor) then 'indoor' when not bool_or(rs.is_indoor) then 'outdoor' when count(rs.is_indoor)>0 then 'mixed' end
+    from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('indoor_kinds'),
+  activities: raw`(select coalesce(json_agg(json_build_object('slug',ac.slug,'name',ac.name,'iconKey',ac.icon_key) order by ac.sort_order, ac.name), '[]'::json)
+    from category ac where ac.is_active and ac.id in (select ra.category_id from rentable_resource_activity ra
+      join rentable_resource rs on rs.id=ra.resource_id and rs.is_active where ra.rentable_id=${rentable.id}))`.as('activities'),
 };
+
+/** Cards and lists of one vertical; farmhouse unless the caller asks. */
+const inVertical = (vertical = DEFAULT_VERTICAL) =>
+  raw`exists (select 1 from category vc where vc.id=${rentable.categoryId} and vc.vertical_code=${vertical})`;
 
 const nightPrice = and(
   eq(rentablePrice.rentableId, rentable.id),
@@ -89,10 +126,14 @@ const publiclyListed = and(
   eq(rentable.status, 'live'),
   raw`exists (select 1 from "user" o where o.id = ${rentable.clientId}
     and o.role = 'client' and o.account_status = 'active')`,
+  // A vertical that is not public yet (hidden, or open to partners only) never
+  // reaches a public read: detail, availability, cards, similar or the sitemap.
+  raw`exists (select 1 from category pc join vertical pv on pv.code = pc.vertical_code
+    where pc.id = ${rentable.categoryId} and pv.status = 'public')`,
 );
 
-export async function getLiveListings({ citySlug, areaSlug, limit = 24 } = {}) {
-  const filters = [publiclyListed];
+export async function getLiveListings({ citySlug, areaSlug, limit = 24, vertical = DEFAULT_VERTICAL } = {}) {
+  const filters = [publiclyListed, inVertical(vertical)];
   if (citySlug) filters.push(eq(city.slug, citySlug));
   if (areaSlug) filters.push(eq(area.slug, areaSlug));
 
@@ -118,7 +159,7 @@ export async function getLiveListings({ citySlug, areaSlug, limit = 24 } = {}) {
  * Proximity search. The reason PostGIS is in the stack — "within 25 km of me"
  * is a native index-backed query, not a bounding-box approximation.
  */
-export async function getListingsNearby({ lng, lat, km = 25, limit = 24 }) {
+export async function getListingsNearby({ lng, lat, km = 25, limit = 24, vertical = DEFAULT_VERTICAL }) {
   const rows = await db
     .select({
       ...cardColumns,
@@ -133,6 +174,7 @@ export async function getListingsNearby({ lng, lat, km = 25, limit = 24 }) {
     .leftJoin(rentablePrice, nightPrice)
     .where(and(
       publiclyListed,
+      inVertical(vertical),
       raw`ST_DWithin(
         ${rentable.location}::geography,
         ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography,
@@ -211,7 +253,9 @@ export async function getListingByCode(publicCode) {
       .orderBy(asc(amenity.sortOrder)),
     db.select({ id: amenity.id, label: amenity.labelEn, sortOrder: amenity.sortOrder })
       .from(amenity)
-      .where(and(eq(amenity.isActive, true), eq(amenity.isFilterable, true)))
+      // Only the listing's vertical: a venue page must not list "Private pool" as missing.
+      .where(and(eq(amenity.isActive, true), eq(amenity.isFilterable, true),
+        raw`exists (select 1 from amenity_vertical av where av.amenity_id=${amenity.id} and av.vertical_code=${row.vertical ?? DEFAULT_VERTICAL})`))
       .orderBy(asc(amenity.sortOrder)),
     db.select({ completedAt: verificationVisit.completedAt })
       .from(verificationVisit)
@@ -245,6 +289,7 @@ export async function getListingByCode(publicCode) {
   ]);
 
   const agg = subScoreRows[0] ?? {};
+  const venue = row.rentalUnit === 'hour' ? await venueDetail(row) : {};
   const amenities = amenityStates({
     selected: selectedAmenities,
     catalogue: amenityCatalogue,
@@ -304,6 +349,41 @@ export async function getListingByCode(publicCode) {
       prices.map((p) => [p.slot, { weekday: p.weekday, weekend: p.weekend }]),
     ),
     reviews,
+    ...venue,
+  };
+}
+
+/**
+ * Public facts of a time-booked venue: courts (no internal state), their
+ * activities, weekly opening hours and hourly rate bands in whole rupees,
+ * like `prices`. Free/busy comes from /times, never from this cached page.
+ */
+async function venueDetail(row) {
+  const [resources, rates] = await Promise.all([
+    sql`SELECT r.id, r.name, r.capacity, r.is_indoor AS "isIndoor", r.details,
+        COALESCE(json_agg(c.slug ORDER BY c.sort_order, c.name) FILTER (WHERE c.id IS NOT NULL), '[]'::json) AS activities
+      FROM rentable_resource r LEFT JOIN rentable_resource_activity a ON a.resource_id = r.id
+      LEFT JOIN category c ON c.id = a.category_id AND c.is_active
+      WHERE r.rentable_id = ${row.id} AND r.is_active GROUP BY r.id ORDER BY r.sort_order, r.name, r.id`,
+    sql`SELECT c.slug AS activity, rr.day_kind AS "dayKind", rr.start_minute AS "startMinute", rr.end_minute AS "endMinute",
+        (rr.hourly_rate_minor / 100.0)::float8 AS "hourlyRate"
+      FROM rentable_rate rr JOIN category c ON c.id = rr.category_id
+      WHERE rr.rentable_id = ${row.id} ORDER BY c.sort_order, rr.day_kind, rr.start_minute`,
+  ]);
+  const config = row.bookingConfig?.model === 'hourly' ? row.bookingConfig : null;
+  return {
+    slotSchedules: [],
+    prices: {},
+    activities: row.activities ?? [],
+    resources,
+    openingHours: config
+      ? { weeklyHours: config.weeklyHours, stepMinutes: config.stepMinutes, minDurationMinutes: config.minDurationMinutes, maxDurationMinutes: config.maxDurationMinutes, bookingHorizonDays: config.bookingHorizonDays }
+      : null,
+    // Live but mid-change (inventory not rebuilt yet): the page shows facts, not times.
+    bookable: Boolean(config?.inventoryReady),
+    rates: rates.map((r) => ({ activity: r.activity, dayKind: r.dayKind, from: minuteToHhmm(r.startMinute), to: minuteToHhmm(r.endMinute),
+      endsNextDay: r.endMinute > 1440, hourlyRate: r.hourlyRate })),
+    venueRules: row.houseRules ?? {},
   };
 }
 
@@ -312,6 +392,16 @@ export async function getListingByCode(publicCode) {
  * the availability endpoint, which must not pay for a full listing join on
  * every calendar paint.
  */
+/** id and booking model of a public listing; null when not publicly listed. */
+export async function getListingRefByCode(publicCode) {
+  const [row] = await db
+    .select({ id: rentable.id, rentalUnit: rentable.rentalUnit })
+    .from(rentable)
+    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
+    .limit(1);
+  return row ?? null;
+}
+
 export async function getListingIdByCode(publicCode) {
   const [row] = await db
     .select({ id: rentable.id })
@@ -332,6 +422,19 @@ export async function getListingIdByCode(publicCode) {
  */
 export async function getNextAvailableDates({ rentableId, days = 60, limit = 3 }) {
   const today = propertyToday();
+  const [venue] = await sql`SELECT c.slug, (r.booking_config->>'minDurationMinutes')::int AS duration
+    FROM rentable r JOIN category c ON c.id = r.category_id WHERE r.id = ${rentableId} AND r.rental_unit::text = 'hour'`;
+  if (venue) {
+    // Time-booked venue: the next days with at least one free start for its main activity.
+    try {
+      const result = await getHourlyAvailability(sql, { rentableId, from: today, days: Math.min(Number(days) || 30, 30),
+        activity: venue.slug, durationMinutes: venue.duration ?? 60 });
+      return { hourly: Object.entries(result.days).filter(([, entry]) => entry.freeStarts > 0).slice(0, limit).map(([date]) => date) };
+    } catch (error) {
+      if (/^[0-9A-Z]{5}$/.test(error.code ?? '') && !['42P01', '42703'].includes(error.code)) throw error;
+      return { hourly: [] };
+    }
+  }
   try {
     const result = await getBookingAvailability(sql, { rentableId, from: today, to: addLocalDays(today, days - 1) });
     return Object.fromEntries(['day','night','full_day'].map((slot) => [slot,
@@ -361,10 +464,14 @@ export async function getSimilarListings({ rentableId, areaId, cityId, limit = 4
       publiclyListed,
       ne(rentable.id, rentableId),
       eq(rentable.cityId, cityId),
+      // Similar means the same vertical as the listing being viewed.
+      raw`exists (select 1 from category vc where vc.id=${rentable.categoryId} and vc.vertical_code=
+        (select oc.vertical_code from rentable o join category oc on oc.id=o.category_id where o.id=${rentableId}))`,
     ))
     .orderBy(
-      // Same area first, then verified, then best rated.
+      // Same area first, then the same category, then verified, then best rated.
       raw`(${rentable.areaId} = ${areaId}) desc`,
+      raw`(${rentable.categoryId} = (select o.category_id from rentable o where o.id=${rentableId})) desc`,
       raw`${rentable.verifiedAt} desc nulls last`,
       raw`${rentable.ratingAvg} desc nulls last`,
     )

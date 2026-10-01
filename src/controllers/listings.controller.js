@@ -6,6 +6,7 @@ import {
   saveAmenities,
   saveRules,
   savePricing,
+  saveVenue,
   saveTerms,
   uploadListingPhotos,
   removeListingPhoto,
@@ -20,6 +21,7 @@ import {
   getListingForEdit,
   getAmenityCatalogue,
   getCategories,
+  getPartnerVerticals,
   getCitiesWithAreas,
 } from '@/services/db/listing-queries.js';
 import { runAction } from '@/utils/runAction.js';
@@ -70,8 +72,17 @@ export const overview = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
-export const amenities = asyncHandler(async (_req, res) => ok(res, await getAmenityCatalogue()));
-export const categories = asyncHandler(async (_req, res) => ok(res, await getCategories()));
+const verticalQuery = (req) =>
+  /^[a-z][a-z0-9_]{0,23}$/.test(String(req.query.vertical ?? ''))
+    ? String(req.query.vertical)
+    : null;
+export const amenities = asyncHandler(async (req, res) =>
+  ok(res, await getAmenityCatalogue({ vertical: verticalQuery(req) })),
+);
+export const categories = asyncHandler(async (req, res) =>
+  ok(res, await getCategories({ vertical: verticalQuery(req) })),
+);
+export const verticals = asyncHandler(async (_req, res) => ok(res, await getPartnerVerticals()));
 export const places = asyncHandler(async (_req, res) => ok(res, await getCitiesWithAreas()));
 
 /** The wizard, one step per route. Each step is independently saveable. */
@@ -81,6 +92,7 @@ export const location = runAction(saveLocation);
 export const capacity = runAction(saveCapacity);
 export const amenitiesStep = runAction(saveAmenities);
 export const rules = runAction(saveRules);
+export const venue = policyAction(saveVenue);
 function policyAction(action) {
   const handler = runAction(action);
   return (req, res, next) => {
