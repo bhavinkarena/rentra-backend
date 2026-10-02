@@ -93,6 +93,21 @@ export async function fillOpenDates(tx, id, horizon) {
   return tx`INSERT INTO availability(rentable_id,day,slot,units_available)
     SELECT ${id},d::date,s::availability_slot,1 FROM generate_series((now() AT TIME ZONE 'Asia/Kolkata')::date,(now() AT TIME ZONE 'Asia/Kolkata')::date+${horizon}::int,interval '1 day') d CROSS JOIN unnest(ARRAY['day','night']) s ON CONFLICT(rentable_id,day,slot) DO NOTHING`;
 }
+/** The one-time Today offer for properties that predate auto-open: one click records the owner's choice. */
+export async function setAutoOpen(database, ownerId, { rentableId, enabled }) {
+  z.string().uuid().parse(rentableId);
+  z.boolean().parse(enabled);
+  return withListingInventory(database, rentableId, async (tx, listing) => {
+    await ownerAccess(tx, listing, ownerId);
+    if (bookingModel(listing) === 'hourly' || !listing.booking_config?.inventoryReady) throw new InventoryError('UNSUPPORTED_INVENTORY', 'Set booking rules for this property first.');
+    const config = { ...listing.booking_config, autoOpen: enabled };
+    await tx`UPDATE rentable SET booking_config=${JSON.stringify(config)}::text::jsonb, booking_config_version=booking_config_version+1, updated_at=now() WHERE id=${rentableId}`;
+    if (enabled) await fillOpenDates(tx, rentableId, config.bookingHorizonDays);
+    await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"after") VALUES ('client',${ownerId},'rentable',${rentableId},'auto_open_changed',${JSON.stringify({ autoOpen: enabled })}::text::jsonb)`;
+    return { autoOpen: enabled };
+  });
+}
+
 export async function autoOpenDates(database) {
   const rows=await database`SELECT id FROM rentable WHERE booking_config->>'autoOpen'='true' AND rental_unit<>'hour' AND status IN ('draft','live','pending_review','pending_verification')`;
   for (const row of rows) await withListingInventory(database,row.id,async(tx,l)=> {if(l.booking_config?.autoOpen) await fillOpenDates(tx,l.id,l.booking_config.bookingHorizonDays);});

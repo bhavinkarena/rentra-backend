@@ -94,8 +94,8 @@ async function issueLink(tx, staffId) {
     WHERE staff_id=${staffId} AND used_at IS NULL AND revoked_at IS NULL`;
   const token = newToken();
   const [row] = await tx`INSERT INTO staff_invitation(staff_id, token_hash, expires_at)
-    VALUES (${staffId}, ${hashToken(token)}, now() + ${INVITE_TTL_HOURS} * interval '1 hour') RETURNING expires_at`;
-  return { token, expiresAt: row.expires_at };
+    VALUES (${staffId}, ${hashToken(token)}, now() + ${INVITE_TTL_HOURS} * interval '1 hour') RETURNING id,expires_at`;
+  return { token, invitationId: row.id, expiresAt: row.expires_at };
 }
 
 const memberState = (row) =>
@@ -106,7 +106,7 @@ export async function listTeam(database, ownerId) {
       (SELECT max(p.created_at) FROM auth_session p WHERE p.staff_id=s.id) AS last_session_at,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'title', r.title) ORDER BY r.title), '[]'::jsonb)
          FROM staff_property sp JOIN rentable r ON r.id=sp.rentable_id WHERE sp.staff_id=s.id) AS properties,
-      (SELECT jsonb_build_object('expiresAt', i.expires_at, 'createdAt', i.created_at) FROM staff_invitation i
+      (SELECT jsonb_build_object('expiresAt', i.expires_at, 'createdAt', i.created_at, 'deliveryState', i.delivery_state) FROM staff_invitation i
          WHERE i.staff_id=s.id AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()
          ORDER BY i.created_at DESC LIMIT 1) AS pending
     FROM client_staff s WHERE s.client_id=${ownerId} ORDER BY s.revoked_at IS NOT NULL, s.created_at DESC`;

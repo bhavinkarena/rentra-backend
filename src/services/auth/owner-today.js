@@ -22,7 +22,7 @@ export function bookedRent(items) {
 }
 
 async function needsYou(database, ownerId) {
-  const [base, dates, reviews, disputes, support, incidents] = await Promise.all([
+  const [base, dates, reviews, disputes, support, incidents, autoOpen] = await Promise.all([
     clientTasks(database,ownerId),
     database`SELECT r.id,r.title,max(a.day)::text last_day FROM rentable r JOIN availability a ON a.rentable_id=r.id
       WHERE r.client_id=${ownerId} AND r.status='live' AND r.rental_unit::text<>'hour' AND coalesce(r.booking_config->>'autoOpen','false')<>'true' AND a.units_available>0
@@ -33,9 +33,13 @@ async function needsYou(database, ownerId) {
     database`SELECT id,subject FROM dispute_case WHERE owner_id=${ownerId} AND state='open' AND requested_party='owner' ORDER BY response_due NULLS LAST,id LIMIT 20`,
     database`SELECT id,subject FROM support_request WHERE client_id=${ownerId} AND state='waiting_customer' ORDER BY updated_at,id LIMIT 20`,
     database`SELECT i.id,b.order_id,r.title FROM visit_incident i JOIN booking b ON b.id=i.booking_id JOIN rentable r ON r.id=b.rentable_id WHERE r.client_id=${ownerId} AND i.state='open' ORDER BY i.created_at DESC LIMIT 20`,
+    // CAL-02: properties that predate auto-open have never recorded a choice; offer it once.
+    database`SELECT id,title FROM rentable WHERE client_id=${ownerId} AND status='live' AND rental_unit::text<>'hour'
+      AND (booking_config->>'inventoryReady')='true' AND NOT (booking_config ? 'autoOpen') ORDER BY title,id LIMIT 20`,
   ]);
   return { tasks: [
     ...base.tasks.filter(t => t.key !== 'visits_today' && !(t.key==='updates_unread' && base.actionUnread>0)),
+    ...autoOpen.map(r => ({key:`auto_open_offer:${r.id}`,kind:'action',count:1,label:`Keep ${r.title} open automatically?`,href:`/partner/listings/${r.id}/booking-rules#auto-open`,action:'Turn on'})),
     ...dates.map(r => ({key:`dates_running_out:${r.id}`,kind:'action',count:1,label:`${r.title}: open dates end on ${r.last_day}.`,href:`/partner/listings/${r.id}/calendar`,action:'Open more dates'})),
     ...reviews.map(r => ({key:`reviews_unreplied:${r.id}`,kind:'action',count:1,label:`Reply to a guest review of ${r.title}.`,href:`/partner/reviews/${r.id}`,action:'Reply'})),
     ...disputes.map(r => ({key:`dispute_response_requested:${r.id}`,kind:'action',count:1,label:`Rentra needs your response: ${r.subject}.`,href:`/partner/disputes/${r.id}`,action:'Respond'})),

@@ -39,7 +39,7 @@ async function perform(form, run, command, draft = false) {
   revalidatePath(`/partner/listings/${rentableId}/calendar`);
   revalidatePath('/listing/[handle]', 'page');
   revalidatePath('/partner/calendar');
-  return { ok: true, result: result?.result ?? result };
+  return { ok: true, result: result?.result ?? result, ...(result?.undoToken && { undoToken: result.undoToken, undoUntil: result.undoUntil }) };
 }
 
 export async function saveSchedule(_state, form) {

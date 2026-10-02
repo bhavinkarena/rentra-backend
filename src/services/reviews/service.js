@@ -21,7 +21,7 @@ export class ReviewError extends AppError {
   constructor(code) {
     super(
       {
-        CHANGED: 'This review changed. Reload and preview again.',
+        CHANGED: 'This review changed. Reload and try again.',
         PREVIEW_REQUIRED: 'Preview these exact values before confirming.',
         INVALID_REASON: 'Choose a policy basis. Negative sentiment is not a removal reason.',
       }[code] || code,
@@ -144,7 +144,7 @@ export async function replyToReview(database, ownerId, input) {
     .object({
       id: uuid,
       version: z.number().int().nonnegative(),
-      body: z.string().trim().min(10).max(2000),
+      body: z.string().trim().min(10).max(2000).nullable(),
       preview: z.boolean().default(false),
       previewToken: z.string().optional(),
     })
@@ -177,8 +177,7 @@ export async function replyToReview(database, ownerId, input) {
           ownerReply: v.body,
         },
       };
-    if (v.previewToken !== token) throw new ReviewError('PREVIEW_REQUIRED');
-    await tx`UPDATE review SET owner_reply=${v.body},replied_by=${ownerId},replied_at=now(),version=version+1 WHERE id=${v.id}`;
+    await tx`UPDATE review SET owner_reply=${v.body},replied_by=${v.body === null ? null : ownerId},replied_at=CASE WHEN ${v.body===null} THEN NULL ELSE now() END,version=version+1 WHERE id=${v.id}`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES('client',${ownerId},'review',${v.id},'review_reply',${JSON.stringify({ body: row.owner_reply, version: row.version })}::text::jsonb,${JSON.stringify({ body: v.body, version: row.version + 1 })}::text::jsonb)`;
   });
 }
@@ -204,10 +203,12 @@ export async function reportReview(database, actor, input, env = process.env) {
     } else throw new ReviewError('FORBIDDEN');
     if (!(await tx`SELECT id FROM public_customer_review WHERE id=${row.id}`).length)
       throw new ReviewError('NOT_FOUND');
+    const [existing] = await tx`SELECT id,created_at FROM review_report WHERE review_id=${row.id} AND reporter_id=${reporter}`;
+    if (existing) return { id: existing.id, alreadyReported: true, reportedAt: new Date(existing.created_at).toISOString() };
     const [report] =
       await tx`INSERT INTO review_report(review_id,reporter_id,reason) VALUES(${row.id},${reporter},${v.reason})
-      ON CONFLICT(review_id,reporter_id) DO UPDATE SET reason=review_report.reason RETURNING id`;
-    return report;
+      ON CONFLICT(review_id,reporter_id) DO UPDATE SET reason=review_report.reason RETURNING id,created_at`;
+    return {id: report.id, reportedAt: new Date(report.created_at).toISOString()};
   });
 }
 export async function closeReviewReport(database, adminId, input) {
@@ -223,7 +224,7 @@ export async function closeReviewReport(database, adminId, input) {
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES('admin',${adminId},'review_report',${v.id},'review_report_closed',${JSON.stringify({ resolution: v.resolution })}::text::jsonb)`;
   });
 }
-export async function reviewQueue(database, actor, page = 1, rentableId = null) {
+export async function reviewQueue(database, actor, page = 1, rentableId = null, tab = 'all') {
   const offset =
     (Math.max(1, Math.min(10000, Number.isSafeInteger(Number(page)) ? Number(page) : 1)) - 1) * 30;
   return database.begin(async (tx) => {
@@ -244,14 +245,18 @@ export async function reviewQueue(database, actor, page = 1, rentableId = null) 
     // PROP: one property's reviews (property hub Reviews tab).
     const property = rentableId ? tx`AND r.rentable_id=${uuid.parse(rentableId)}` : tx``;
     const rows =
-      await tx`SELECT r.id,r.rating,r.body,r.owner_reply,r.version,r.moderation_state,r.rentable_id,l.title
-      FROM review r JOIN rentable l ON l.id=r.rentable_id WHERE r.author_role='customer' AND ${condition} ${property}
-      ORDER BY r.created_at,r.id LIMIT 31 OFFSET ${offset}`;
+      await tx`SELECT r.id,r.rating,r.body,r.owner_reply,r.version,r.moderation_state,r.rentable_id,l.title,r.created_at,
+        split_part(coalesce(u.name,'Guest'),' ',1) guest_first_name,b.local_day::text visit_date,b.reference visit_reference,
+        (SELECT p.created_at FROM review_report p WHERE p.review_id=r.id AND p.reporter_id=${actor.id}) reported_at
+      FROM review r JOIN rentable l ON l.id=r.rentable_id JOIN "user" u ON u.id=r.author_id JOIN booking b ON b.id=r.booking_id
+      WHERE r.author_role='customer' AND ${condition} ${property} ${actor.kind === 'owner' && tab === 'needs_reply' ? tx`AND r.owner_reply IS NULL AND r.id IN (SELECT id FROM public_customer_review)` : tx``}
+      ORDER BY r.created_at DESC,r.id DESC LIMIT 31 OFFSET ${offset}`;
     const reports =
       actor.kind === 'admin'
         ? await tx`SELECT p.id,p.review_id,p.reason,r.body,r.rating,r.version FROM review_report p JOIN review r ON r.id=p.review_id WHERE p.state='open' ORDER BY p.created_at,p.id LIMIT 30`
         : [];
-    return { rows: rows.slice(0, 30), reports, hasNext: rows.length > 30, page: offset / 30 + 1 };
+    const [stats] = actor.kind === 'owner' ? await tx`SELECT count(*)::int count,round(avg(r.rating)::numeric,1) average FROM public_customer_review r JOIN rentable l ON l.id=r.rentable_id WHERE l.client_id=${actor.id} ${property}` : [{}];
+    return { stats, tab: tab === 'needs_reply' ? 'needs_reply' : 'all', rows: rows.slice(0, 30), reports, hasNext: rows.length > 30, page: offset / 30 + 1 };
   });
 }
 

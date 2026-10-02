@@ -43,6 +43,13 @@ const visitDTO = (row) => ({
   label: visitLabel(row),
 });
 
+/** BOOK-06: first name, guests and phone, only on the visit day and only when the owner allows it. */
+const guestFor = (staff, contact, visits) =>
+  staff.permissions?.guestContact !== false &&
+  visits.some((v) => [v.startsAt, v.endsAt].some((at) => at && propertyToday(at) === propertyToday()) && ['confirmed', 'handed_over', 'returned', 'disputed'].includes(v.state))
+    ? { name: contact?.name?.trim().split(/\s+/)[0] || null, phone: contact?.phone || null, guests: Math.max(...visits.map((v) => v.guests || 0)) }
+    : null;
+
 export async function listStaffVisits(database, staff, input = {}) {
   const tab = TABS.includes(input?.tab) ? input.tab : 'today';
   const now = database`clock_timestamp()`;
@@ -62,10 +69,10 @@ export async function listStaffVisits(database, staff, input = {}) {
       count(*) FILTER (WHERE ${conditions.action_needed})::int AS action_needed,
       count(*) FILTER (WHERE ${conditions.past})::int AS past
     FROM booking b WHERE ${scope}`;
-  const rows = await database`SELECT b.*, r.title FROM booking b JOIN rentable r ON r.id=b.rentable_id
+  const rows = await database`SELECT b.*, r.title, o.listing_snapshot->'contact' AS contact FROM booking b JOIN rentable r ON r.id=b.rentable_id JOIN booking_order o ON o.id=b.order_id
     WHERE ${scope} AND ${conditions[tab]}
     ORDER BY ${tab === 'past' ? database`b.starts_at DESC` : database`b.starts_at ASC`}, b.id LIMIT 50`;
-  return { tab, date, counts, offline:tab==='today'?await offlineBookings(database,staff.ownerId,{staffId:staff.id,contact:staff.permissions?.guestContact!==false && date===propertyToday()}):[],items: rows.map(visitDTO) };
+  return { tab, date, counts, offline:tab==='today'?await offlineBookings(database,staff.ownerId,{staffId:staff.id,contact:staff.permissions?.guestContact!==false && date===propertyToday()}):[],items: rows.map((row) => ({ ...visitDTO(row), guest: guestFor(staff, row.contact, [visitDTO(row)]) })) };
 }
 
 /** One booking's visits for an assigned property; a foreign or guessed id reads as missing. */
@@ -90,7 +97,7 @@ export async function readStaffVisitRecord(database, staff, orderId) {
     return {
       orderId,
       ownerNote:rows[0].owner_note,
-      guest:staff.permissions?.guestContact!==false && visits.some(v=>[v.startsAt,v.endsAt].some(at=>at&&propertyToday(at)===propertyToday())&&['confirmed','handed_over','returned','disputed'].includes(v.state))?{name:rows[0].listing_snapshot?.contact?.name?.trim().split(/\s+/)[0]||null,phone:rows[0].listing_snapshot?.contact?.phone||null,guests:Math.max(...visits.map(v=>v.guests||0))}:null,
+      guest: guestFor(staff, rows[0].listing_snapshot?.contact, visits),
       reference: rows[0].order_reference,
       propertyTitle: rows[0].title,
       timeZone: rows[0].time_zone || 'Asia/Kolkata',

@@ -329,7 +329,7 @@ export async function resolveBookingCase(database, actor, input) {
         const available=sources.reduce((n,a)=>n+Math.max(0,Number(a.actual_minor)-Number(a.reserved)),0);
         if(value.refundMinor>available)throw new CaseError('REFUND_EXCEEDS_CAPTURE','Refund cannot exceed the remaining verified captured amount');
         let remaining=value.refundMinor;const refunds=sources.map(a=>{const amount=Math.min(remaining,Math.max(0,Number(a.actual_minor)-Number(a.reserved)));remaining-=amount;return {allocationId:a.id,transactionId:a.transaction_id,component:a.component,amount,bookingId:a.booking_id};}).filter(a=>a.amount>0);
-        refundIds=await createRefundObligations(tx,visits.map(v=>({id:v.id,refunds:refunds.filter(a=>a.bookingId===v.id)})),{reason:`Partial refund ? ${fresh.reference}`,idempotencyKey:value.requestKey,requestHash});
+        refundIds=await createRefundObligations(tx,visits.map(v=>({id:v.id,refunds:refunds.filter(a=>a.bookingId===v.id)})),{reason:`Partial refund · ${fresh.reference}`,idempotencyKey:value.requestKey,requestHash});
       }
     }
     if (value.outcome === 'visits_cancelled') {

@@ -1,3 +1,4 @@
+import { runOwnerNotificationJobs } from '../services/notifications/owner-jobs.js';
 import { completeReturnedVisits } from '../services/booking/visit-lifecycle.js';
 import { cleanListingPhotoOrphans } from '../services/uploads/cloudinary.js';
 import { autoOpenDates } from '../services/booking/owner-settings.js';
@@ -39,7 +40,13 @@ export function createJobs(sql) {
     },
     {
       name: 'notifications',
-      run: () => runNotificationJobs(sql),
+      run: async () => {
+        const [customer, owner] = await Promise.all([
+          runNotificationJobs(sql),
+          runOwnerNotificationJobs(sql),
+        ]);
+        return { customer, owner };
+      },
       heartbeat: (ok) => recordWorkerHealth(sql, 'notifications', ok),
     },
     {

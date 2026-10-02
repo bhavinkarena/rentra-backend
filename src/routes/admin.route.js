@@ -322,7 +322,7 @@ router.get('/payments/disputes/context/:orderId', disputes.context);
 router.get('/payments/disputes/:id/attachments/:fileId', disputes.attachment);
 router.get('/payments/disputes/:id', disputes.detail);
 router.get('/payments/disputes', disputes.list);
-router.post('/payments/disputes', formFields(), disputes.create);
+router.post('/payments/disputes', uploadLimiter, evidencePhotos(), disputes.create);
 router.post('/payments/disputes/:id/reply', uploadLimiter, evidencePhotos(), disputes.reply);
 router.post('/payments/disputes/:id/manage', formFields(), disputes.manage);
 export default router;

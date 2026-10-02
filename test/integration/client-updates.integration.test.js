@@ -20,7 +20,7 @@ const FINDINGS = 'Private findings that must never reach the owner inbox.';
 const NOTE = 'Internal scheduling note for operators only';
 
 test(
-  'CP15 client updates: trigger-written, idempotent, scoped, muted info and tasks that match their lists',
+  'CP15 client updates: trigger-written, idempotent, scoped, mandatory in-app updates and tasks that match their lists',
   { skip: !process.env.PORTAL_TEST_DATABASE_URL },
   async () => {
     const fixture = await createDisposableDatabase(process.env.PORTAL_TEST_DATABASE_URL);
@@ -144,7 +144,7 @@ test(
       );
       prefs = await inbox.saveClientPreferences(sql, f.owner, {
         expectedVersion: 0,
-        muted: ['booking', 'property'],
+        muted: ['property'],
       });
       assert.equal(prefs.version, 1);
       await assert.rejects(
@@ -158,8 +158,8 @@ test(
       const cancelled = (await list({ category: 'booking' })).items.find(
         (u) => u.action === 'visits_cancelled',
       );
-      assert.equal(cancelled.read, true, 'muted information arrives already read');
-      assert.equal((await list()).unread, before);
+      assert.equal(cancelled.read, false, 'in-app information always arrives unread');
+      assert.equal((await list()).unread, before + 1);
       // Required work is never muted, even in a muted category.
       const state = await lc.lifecycleState(sql, id);
       await lc.hideProperty(sql, {
@@ -232,11 +232,11 @@ test(
       assert.equal((await inbox.markClientUpdatesRead(sql, f.owner, { id: target.id })).updated, 1);
       assert.equal((await inbox.markClientUpdatesRead(sql, f.owner, { id: target.id })).updated, 0);
       assert.equal((await list()).items.find((u) => u.id === target.id).read, true);
-      await inbox.markClientUpdatesRead(sql, f.owner, { all: '1' });
+      await inbox.markClientUpdatesRead(sql, f.owner, { all: '1', confirm: '1' });
       page = await list();
       assert.equal(page.unread, 0);
-      assert.equal(page.action, 0);
-      assert.equal((await list({ filter: 'action' })).total, 0);
+      assert.ok(page.action > 0, 'reading does not resolve outstanding tasks');
+      assert.equal((await list({ filter: 'action' })).total, page.action);
       tasks = await inbox.clientTasks(sql, f.owner);
       assert.equal(tasks.unread, 0);
       assert.equal(

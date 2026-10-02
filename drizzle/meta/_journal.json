@@ -435,6 +435,20 @@
       "when": 1790591500006,
       "tag": "0061_owner_earnings",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1790591500007,
+      "tag": "0062_owner_communications",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1790591500008,
+      "tag": "0063_owner_bookings_finish",
+      "breakpoints": true
     }
   ]
 }

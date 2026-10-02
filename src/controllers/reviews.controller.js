@@ -41,7 +41,13 @@ export const queue = asyncHandler(async (req, res) => {
     kind === 'owner' && typeof req.query.property === 'string' ? req.query.property : null;
   return ok(
     res,
-    await reviewQueue(sql, await bookingActor(kind), Number(req.query.page ?? 1), property),
+    await reviewQueue(
+      sql,
+      await bookingActor(kind),
+      Number(req.query.page ?? 1),
+      property,
+      req.query.tab,
+    ),
   );
 });
 

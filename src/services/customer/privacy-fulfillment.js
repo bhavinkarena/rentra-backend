@@ -1,3 +1,5 @@
+import {ownerPrivacyInventory,ownerExportSnapshot} from './owner-privacy.js';
+import {lockOwnerSecurity} from '../auth/owner-security.js';
 import 'server-only';
 import { createHash, createHmac, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { z } from 'zod';
@@ -105,13 +107,15 @@ async function load(tx, id, lock = false) {
   if (!scope) throw notFound();
   // Same account-first ordering as profile, phone and account lifecycle writers.
   const [customer] =
-    await tx`SELECT * FROM "user" WHERE id=${scope.customer_id} AND role='customer' ${lock ? tx`FOR UPDATE` : tx``}`;
+    await tx`SELECT * FROM "user" WHERE id=${scope.customer_id} AND role IN ('customer','client') ${lock ? tx`FOR UPDATE` : tx``}`;
   if (!customer) throw notFound();
   const [request] =
     await tx`SELECT * FROM customer_privacy_request WHERE id=${id} ${lock ? tx`FOR UPDATE` : tx``}`;
   return { customer, request };
 }
 export async function privacyInventory(tx, id) {
+  const [principal]=await tx`SELECT role FROM "user" WHERE id=${id}`;
+  if(principal?.role==='client')return ownerPrivacyInventory(tx,id);
   const [counts] = await tx`SELECT
     (SELECT count(*)::int FROM booking_order WHERE customer_id=${id}) orders,
     (SELECT count(*)::int FROM booking WHERE customer_id=${id}) visits,
@@ -335,6 +339,7 @@ export async function privacyCommand(db, actor, id, input, env = process.env) {
 // Explicit projections and ownership joins: never export authentication/provider secrets,
 // internal messages, other participants' identifiers, shared KYC or storage keys.
 async function exportSnapshot(tx, customer) {
+  if(customer.role==='client')return ownerExportSnapshot(tx,customer);
   const id = customer.id,
     limit = 5001;
   const sections = {};
@@ -454,6 +459,12 @@ export async function processPrivacyJob(db, id, options = {}) {
             await tx`UPDATE "user" SET marketing_consent=false,profile_version=profile_version+1,updated_at=now() WHERE id=${customer.id} AND profile_completed_at IS NOT NULL`;
             const methods =
               await tx`UPDATE customer_payment_method SET is_active=false,is_default=false,revoked_at=coalesce(revoked_at,now()) WHERE customer_id=${customer.id} AND is_active RETURNING id`;
+            if(customer.role==='client'){
+              await tx`UPDATE "user" SET notification_prefs='{}'::jsonb,owner_guide='{}'::jsonb WHERE id=${customer.id}`;
+              await tx`UPDATE owner_notification SET state='suppressed',failure_code='ACCOUNT_CLOSED' WHERE user_id=${customer.id} AND state IN ('pending','retry','blocked')`;
+              await tx`UPDATE client_staff SET is_active=false,revoked_at=coalesce(revoked_at,now()) WHERE client_id=${customer.id}`;
+              await tx`UPDATE staff_invitation SET revoked_at=coalesce(revoked_at,now()) WHERE staff_id IN (SELECT id FROM client_staff WHERE client_id=${customer.id})`;
+            }
             await tx`UPDATE otp_challenge SET consumed_at=now() WHERE user_id=${customer.id} AND consumed_at IS NULL`;
             result = {
               stage: 'preferences',
@@ -555,6 +566,10 @@ export async function privacyDownload(db, actor, id, receipt = false, env = proc
         await tx`SELECT id FROM customer_privacy_request WHERE id=${id} AND customer_id=${customer.id}`;
       if (!owned) throw notFound();
       actor = { kind: 'customer', id: customer.id };
+    } else if(actor?.kind==='owner'){
+      await lockOwnerSecurity(tx,actor);
+      const [owned]=await tx`SELECT id FROM customer_privacy_request WHERE id=${id} AND customer_id=${actor.id}`;
+      if(!owned)throw notFound();actor={kind:'client',id:actor.id};
     } else throw forbidden();
     const { request } = await load(tx, id, true);
     const [job] =

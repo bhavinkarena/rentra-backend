@@ -1,9 +1,10 @@
+import {OWNER_GUIDE_GROUPS,ownerGuideArticles} from './owner-guide.js';
 import 'server-only';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { badRequest, conflict, forbidden, notFound, unavailable } from '@/utils/apiError.js';
 import { POLICY_VERSION, policyVersions, faqs, supportContact } from '../domain/help.js';
-export const contentKinds = ['terms', 'privacy', 'cancellation', 'help', 'contact'];
+export const contentKinds = ['terms', 'privacy', 'cancellation', 'help', 'contact', 'owner_help'];
 const policyKinds = ['terms', 'privacy', 'cancellation'];
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const plain = (max) =>
@@ -59,6 +60,11 @@ const schemas = {
     })
     .strict(),
 };
+schemas.owner_help = z.object({title:plain(120),intro:plain(500),faqs:z.array(z.object({
+ id:z.string().regex(/^[a-z][a-z0-9-]{1,60}$/),group:z.enum(OWNER_GUIDE_GROUPS),question:plain(200),answer:plain(4000),
+ href:z.string().regex(/^\/partner(?:\/(?:onboarding\/(?:details|phone|kyc|payout|consent|review)|listings(?:\/new)?|calendar|bookings|earnings|team|reviews|support|settings(?:\/(?:security|notifications|privacy))?))?$/),link:plain(100),
+ screenshot:z.enum(['','/help/owner/properties.png','/help/owner/pricing.png']).default('')
+}).strict()).min(1).max(40).refine(rows=>new Set(rows.map(r=>r.id)).size===rows.length,'Article IDs must be unique.')}).strict();
 const policySchema = z
   .object({
     title: plain(160),
@@ -91,7 +97,7 @@ function builtin(kind, version = POLICY_VERSION, env = process.env) {
   if (policyKinds.includes(kind)) body = policyVersions[version]?.[kind];
   else if (version === POLICY_VERSION)
     body =
-      kind === 'help'
+      kind === 'owner_help' ? {title:'Owner guide',intro:'Practical steps for getting verified and running your property.',faqs:ownerGuideArticles} : kind === 'help'
         ? {
             title: 'Help and support',
             intro: 'Practical answers for planning, booking and visiting.',

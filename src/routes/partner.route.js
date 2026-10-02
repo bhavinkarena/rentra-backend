@@ -107,6 +107,8 @@ router.delete('/documents', client, formFields(), documents.remove);
  * Account settings — reachable before approval, deliberately
  * ---------------------------------------------------------------- */
 router.post('/settings/account', client, formFields(), settings.account);
+router.get('/settings/notifications', client, settings.notifications);
+router.post('/settings/notifications', client, settings.saveNotifications);
 router.get('/settings/payout', client, settings.payoutPage);
 router.post('/settings/payout', client, formFields(), settings.payout);
 router.post(
@@ -258,7 +260,10 @@ router.post(
 router.post('/listings/:id/calendar/offline', requireActiveClient, booking.offlineBooking);
 router.post('/listings/:id/calendar/feed', requireActiveClient, booking.calendarFeed);
 router.post('/records/:id/note', requireActiveClient, booking.ownerNote);
+router.get('/listings/:id/arrival-guide', requireActiveClient, booking.arrivalGuide);
+router.post('/listings/:id/arrival-guide', requireActiveClient, booking.saveArrivalGuide);
 router.post('/listings/:id/calendar/undo', requireActiveClient, booking.calendarUndo);
+router.post('/listings/:id/calendar/auto-open', requireActiveClient, booking.autoOpen);
 router.get('/calendar', requireActiveClient, booking.portfolioCalendar);
 router.get(
   '/listings/:id/calendar',
@@ -297,6 +302,7 @@ router.get('/updates/unread', client, updates.unread);
 router.get('/nav-counts', client, updates.unread);
 router.post('/updates/read', client, formFields(), updates.read);
 router.get('/updates/preferences', client, updates.preferences);
+router.get('/updates/:id', client, updates.detail);
 router.post('/updates/preferences', client, formFields(), updates.savePreferences);
 router.get('/tasks', requireActiveClient, updates.tasks);
 
@@ -375,7 +381,7 @@ router.post('/reviews/reply', requireActiveClient, formFields(), reviews.reply);
 router.post('/reviews/report', requireActiveClient, formFields(), reviews.reportByOwner);
 
 router.get('/support', validate({ query: supportListQuery }), support.list);
-router.post('/support', formFields(), support.openAsOwner);
+router.post('/support', uploadLimiter, evidencePhotos(), support.openAsOwner);
 router.get('/support/:id', support.detail);
 router.get('/support/:id/thread', support.thread);
 router.post(
@@ -409,7 +415,7 @@ router.get('/disputes/context/:orderId', requireActiveClient, disputes.context);
 router.get('/disputes/:id/attachments/:fileId', requireActiveClient, disputes.attachment);
 router.get('/disputes/:id', requireActiveClient, disputes.detail);
 router.get('/disputes', requireActiveClient, disputes.list);
-router.post('/disputes', requireActiveClient, formFields(), disputes.create);
+router.post('/disputes', requireActiveClient, uploadLimiter, evidencePhotos(), disputes.create);
 router.post(
   '/disputes/:id/reply',
   requireActiveClient,
@@ -418,3 +424,12 @@ router.post(
   disputes.reply,
 );
 export default router;
+
+router.get('/settings/security', client, settings.security);
+router.post('/settings/security/sign-out-others', client, settings.signOutOthers);
+router.post('/settings/security/contact/request', client, settings.requestContactChange);
+router.post('/settings/security/contact/confirm', client, settings.confirmContactChange);
+
+router.get('/settings/privacy', client, settings.privacy);
+router.post('/settings/privacy', client, settings.requestPrivacy);
+router.get('/settings/privacy/:id/:artifact(export|receipt)', client, settings.privacyArtifact);

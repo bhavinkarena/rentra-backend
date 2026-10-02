@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { withListingInventory } from '../booking/inventory.js';
 import { notificationMessage } from '../domain/notifications.js';
 import { bodyHash, smsConfiguration, smsAdapter } from './delivery.js';
+import { arrivalGuideMessage, queueArrivalGuides } from '../booking/arrival-guide.js';
 
 async function obsolete(tx, row) {
   const [user] = await tx`SELECT phone,phone_verified_at FROM "user" WHERE id=${row.customer_id} AND role='customer' AND account_status='active' FOR SHARE`;
@@ -10,6 +11,14 @@ async function obsolete(tx, row) {
   if (row.template === 'reminder') {
     const [valid] = await tx`SELECT id FROM booking WHERE id=${row.booking_id} AND state='confirmed' AND starts_at>clock_timestamp()`;
     if (!valid) return { reason: 'REMINDER_OBSOLETE' };
+  }
+  if (row.template === 'arrival_guide') {
+    // Cancelled, started or no-show visits never get a guide; neither does a guide the owner cleared.
+    const [valid] = await tx`SELECT id FROM booking WHERE id=${row.booking_id} AND state='confirmed' AND starts_at>clock_timestamp()`;
+    if (!valid) return { reason: 'ARRIVAL_GUIDE_OBSOLETE' };
+    const guide = await arrivalGuideMessage(tx, row.booking_id);
+    if (!guide) return { reason: 'ARRIVAL_GUIDE_EMPTY' };
+    return { user, guide };
   }
   if (row.template === 'review_invitation') {
     const [valid] = await tx`SELECT b.id FROM booking b JOIN visit_evidence e ON e.booking_id=b.id AND e.kind='complete' AND e.nature='actual'
@@ -46,6 +55,7 @@ export async function processNotification(database, id, options = {}) {
       }
       row.phone = eligibility.user.phone;
       row.phoneVerified = Boolean(eligibility.user.phone_verified_at);
+      row.guide = eligibility.guide;
     }
     let config;
     try {
@@ -85,6 +95,7 @@ export async function processNotification(database, id, options = {}) {
 }
 
 export async function runNotificationJobs(database, options = {}) {
+  await queueArrivalGuides(database);
   const rows = await database`SELECT id FROM notification_outbox WHERE state IN ('pending','retry','blocked','accepted','sending')
     AND scheduled_at<=clock_timestamp() AND next_attempt_at<=clock_timestamp() AND (lease_until IS NULL OR lease_until<=clock_timestamp())
     ORDER BY next_attempt_at,id LIMIT 10`;

@@ -49,5 +49,6 @@ policyVersions[POLICY_VERSION] = {
 export function supportContact(env = process.env) {
   const email = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(env.RENTRA_SUPPORT_EMAIL || '') ? env.RENTRA_SUPPORT_EMAIL : null;
   const whatsapp = /^\d{10,15}$/.test(env.NEXT_PUBLIC_WHATSAPP_NUMBER || '') ? env.NEXT_PUBLIC_WHATSAPP_NUMBER : null;
-  return { email, whatsapp, hours: (env.RENTRA_SUPPORT_HOURS || '').trim().slice(0,200) || null };
+  const phone = /^\+?[1-9]\d{9,14}$/.test(env.RENTRA_SUPPORT_PHONE || '') ? env.RENTRA_SUPPORT_PHONE : null;
+  return { email, whatsapp, phone, hours: (env.RENTRA_SUPPORT_HOURS || '').trim().slice(0,200) || null };
 }

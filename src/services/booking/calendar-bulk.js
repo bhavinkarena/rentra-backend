@@ -1,13 +1,13 @@
 import {createHmac,timingSafeEqual} from 'node:crypto';
 import {calendarSnapshot} from './owner-calendar.js';
 import {z} from 'zod';
-import {calendarCommand} from './owner-calendar.js';
+import {calendarCommand,signUndo} from './owner-calendar.js';
 import {withListingInventory,expireInventoryHolds,getInventoryState,InventoryError} from './inventory.js';
 import {visitInterval,addLocalDays,isWeekendLocalDate,isLocalDate} from '../domain/booking-dates.js';
 
 const date=z.string().refine(isLocalDate,'Choose a valid date');
 const cell=z.object({date,slot:z.enum(['day','night','full_day'])}).strict();
-const schema=z.object({cells:z.array(cell).min(1).max(1098),command:z.enum(['slots','prices']),open:z.boolean().optional(),rentMinor:z.number().int().min(50000).max(50000000).optional(),deltaBps:z.number().int().min(-9900).max(100000).optional(),reset:z.boolean().optional()}).strict();
+const schema=z.object({cells:z.array(cell).min(1).max(1098),command:z.enum(['slots','prices']),open:z.boolean().optional(),rentMinor:z.number().int().min(50000).max(50000000).optional(),deltaBps:z.number().int().min(-9900).max(100000).optional(),reset:z.boolean().optional(),alignFullDay:z.boolean().optional()}).strict();
 export async function changeCalendarCells(database,ownerId,input) {
  const value=schema.parse(input.change);
  if(new Set(value.cells.map(c=>`${c.date}:${c.slot}`)).size!==value.cells.length)throw new RangeError('Choose each slot once');
@@ -44,9 +44,20 @@ export async function changeCalendarCells(database,ownerId,input) {
     else await tx`INSERT INTO booking_price_override(rentable_id,day,slot,rent_minor) VALUES(${listing.id},${c.date},${c.slot},${c.after}) ON CONFLICT(rentable_id,day,slot) DO UPDATE SET rent_minor=excluded.rent_minor,updated_at=now()`;
    }else for(const s of c.slot==='full_day'?['day','night']:[c.slot])await tx`INSERT INTO availability(rentable_id,day,slot,units_available) VALUES(${listing.id},${c.date},${s},${c.after}) ON CONFLICT(rentable_id,day,slot) DO UPDATE SET units_available=excluded.units_available`;
   }
-  if(value.command==='prices')for(const day of new Set(days)){
-   const [prices]=await tx`SELECT sum(rent_minor) FILTER(WHERE slot IN ('day','night')) combined,max(rent_minor) FILTER(WHERE slot='full_day') full_price FROM booking_price_override WHERE rentable_id=${listing.id} AND day=${day}`;
-   const full=rates.find(r=>r.slot==='full_day');if(full&&Number(prices.combined)>Number(prices.full_price??(isWeekendLocalDate(day,listing.booking_config?.weekendDays)?full.weekend_minor:full.weekday_minor)))warnings.push(`${day}: Full day is cheaper than Day + Night. Select Full day too to update it.`);
+  const full=rates.find(r=>r.slot==='full_day');
+  if(value.command==='prices'&&full&&listing.booking_config?.slots?.full_day?.enabled)for(const day of new Set(days)){
+   const rows=await tx`SELECT slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} AND day=${day}`,weekend=isWeekendLocalDate(day,listing.booking_config?.weekendDays);
+   const effective=(slot)=>{const r=rows.find(o=>o.slot===slot),rate=rates.find(x=>x.slot===slot);return r?Number(r.rent_minor):rate?Number(weekend?rate.weekend_minor:rate.weekday_minor):null;};
+   if(!rows.some(r=>r.slot!=='full_day')||effective('day')==null||effective('night')==null)continue;
+   const combined=effective('day')+effective('night'),fullPrice=effective('full_day');
+   if(combined<=fullPrice)continue;
+   // One-click alignment: Full day becomes Day + Night in the same atomic, undoable change.
+   if(value.alignFullDay){
+    const old=rows.find(r=>r.slot==='full_day');
+    await tx`INSERT INTO booking_price_override(rentable_id,day,slot,rent_minor) VALUES(${listing.id},${day},'full_day',${combined}) ON CONFLICT(rentable_id,day,slot) DO UPDATE SET rent_minor=excluded.rent_minor,updated_at=now()`;
+    const existing=affected.find(c=>c.date===day&&c.slot==='full_day');
+    if(existing)existing.after=combined;else affected.push({date:day,slot:'full_day',oldOverride:old?Number(old.rent_minor):null,beforeRows:[],before:fullPrice,after:combined,aligned:true});
+   }else warnings.push(`${day}: Full day is cheaper than Day + Night.`);
   }
   await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES('client',${ownerId},'rentable',${listing.id},${'calendar_bulk_'+value.command},${JSON.stringify(affected)}::text::jsonb)`;
   return {affected,conflicts,warnings,undoVersion:(await calendarSnapshot(tx,listing,{from:`${days[0]}T00:00:00+05:30`,to:`${addLocalDays(days.at(-1),2)}T00:00:00+05:30`})).version};
@@ -54,7 +65,7 @@ export async function changeCalendarCells(database,ownerId,input) {
  if(changed.ok){
  const window={from:`${days[0]}T00:00:00+05:30`,to:`${addLocalDays(days.at(-1),2)}T00:00:00+05:30`};
  // Capture the post-command version while locked in the same command below, to make Undo conditional.
- if(changed.result.undoVersion){const payload=Buffer.from(JSON.stringify({ownerId,id:input.rentableId,expires:Date.now()+10000,rows:changed.result.affected,command:value.command,version:changed.result.undoVersion,window})).toString('base64url');changed.undoToken=payload+'.'+createHmac('sha256',process.env.SESSION_SECRET).update(payload).digest('hex');changed.undoUntil=Date.now()+10000;}
+ if(changed.result.undoVersion)Object.assign(changed,signUndo({ownerId,id:input.rentableId,rows:changed.result.affected,command:value.command,version:changed.result.undoVersion,window}));
  }
  return changed;
 
@@ -70,7 +81,10 @@ export async function undoCalendarCells(database,ownerId,token){
  if(listing.client_id!==ownerId||!(await tx`SELECT 1 FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`).length)throw new InventoryError('NOT_FOUND','Property unavailable');
  if((await calendarSnapshot(tx,listing,value.window)).version!==value.version)throw new InventoryError('CALENDAR_CHANGED','These dates changed. Undo would overwrite newer work.');
  for(const c of value.rows){
- if(value.command==='prices'){
+ if(value.command==='unblock'){
+  const restored=await tx`UPDATE inventory_reservation SET state='committed',released_at=NULL WHERE id=${c.blockId} AND rentable_id=${value.id} AND source='owner_block' AND state='released' RETURNING id`;
+  if(!restored.length)throw new InventoryError('CALENDAR_CHANGED','This block changed. Undo would overwrite newer work.');
+ }else if(value.command==='prices'){
   if(c.oldOverride===null)await tx`DELETE FROM booking_price_override WHERE rentable_id=${value.id} AND day=${c.date} AND slot=${c.slot}`;
   else await tx`INSERT INTO booking_price_override(rentable_id,day,slot,rent_minor) VALUES(${value.id},${c.date},${c.slot},${c.oldOverride}) ON CONFLICT(rentable_id,day,slot) DO UPDATE SET rent_minor=excluded.rent_minor,updated_at=now()`;
  }else{

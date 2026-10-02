@@ -64,7 +64,7 @@ export const attachment = asyncHandler(async (req, res) => {
     'Content-Type': file.mimeType,
     'Cache-Control': 'private, no-store',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Disposition': 'attachment; filename="support-photo"',
+    'Content-Disposition': `attachment; filename="support-photo.${{ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[file.mimeType] || 'bin'}"`,
     'Content-Security-Policy': "default-src 'none'; sandbox",
     'Referrer-Policy': 'no-referrer',
   });

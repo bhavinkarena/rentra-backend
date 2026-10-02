@@ -58,6 +58,17 @@ function orderDTO(row) {
     rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor) };
 }
 
+// BOOK-01: guest, visits with their next action, and contact inside the same window as the detail.
+function ownerCard(row) {
+  const visits = (row.visit_rows || []).map(v => ({ id: v.id, reference: v.reference, state: v.state, guests: v.guests,
+    date: String(v.local_day).slice(0, 10), startsAt: v.hours_known ? instant(v.starts_at) : null, label: visitLabel(v),
+    operation: visitOperation(v, row.as_of, row.booking_config?.earlyArrivalMinutes ?? 120) }));
+  const open = visits.some(v => ['confirmed','handed_over','returned','disputed'].includes(v.state)) || row.recently_completed;
+  const contact = row.listing_snapshot?.contact;
+  return { visits, guests: Math.max(0, ...visits.map(v => v.guests || 0)),
+    contact: { name: contact?.name?.trim().split(/\s+/)[0] || null, phone: open ? contact?.phone || null : null } };
+}
+
 export async function listBookingRecords(database, actor, input = {}, env = process.env) {
   const operational = actor.kind !== 'customer';
   const filters = historyFilters(input, operational), size = 20;
@@ -125,6 +136,10 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
         ORDER BY v.item_position NULLS LAST,v.local_day,v.id LIMIT 1) f) first_row,
       (SELECT c.vertical_code FROM category c WHERE c.id=r.category_id) vertical,
       (SELECT jsonb_agg(DISTINCT v.state) FROM booking v WHERE v.order_id=o.id) visit_states,
+      (SELECT jsonb_agg(f ORDER BY f.item_position NULLS LAST,f.local_day,f.id) FROM (SELECT v.id,v.reference,v.state,v.slot,v.local_day,v.starts_at,v.ends_at,v.hours_known,v.time_zone,v.slot_snapshot,v.guests,v.item_position,rs.name AS resource_name
+        FROM booking v LEFT JOIN rentable_resource rs ON rs.id=v.resource_id WHERE v.order_id=o.id) f) visit_rows,
+      clock_timestamp() as_of,
+      EXISTS(SELECT 1 FROM visit_evidence e JOIN booking b ON b.id=e.booking_id WHERE b.order_id=o.id AND b.state='completed' AND e.kind='complete' AND e.occurred_at>now()-interval '7 days') recently_completed,
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${tab} AND ${match}
       ORDER BY ${order} LIMIT ${size} OFFSET ${(page - 1) * size}`;
@@ -133,7 +148,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       // The first visit's own words and start, so a list says when and which court.
       firstVisitLabel: row.first_row ? visitLabel(row.first_row) : null, firstVisitSlot: row.first_row?.slot ?? null,
       firstVisitStartsAt: row.first_row?.hours_known ? instant(row.first_row.starts_at) : null,
-      resourceName: row.first_row?.resource_name ?? null })) };
+      resourceName: row.first_row?.resource_name ?? null, ...(actor.kind === 'owner' ? ownerCard(row) : {}) })) };
   });
 }
 
@@ -175,6 +190,8 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       startsAt: row.hours_known ? instant(row.starts_at) : null, endsAt: row.hours_known ? instant(row.ends_at) : null,
       rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor),
       includedGuests:row.slot_snapshot?.includedGuests??null,
+      // BOOK-05/08: an arrival that started and was never checked in can be reported as a no-show.
+      ...(actor.kind === 'owner' ? { noShowEligible: row.state === 'confirmed' && row.hours_known && new Date(row.starts_at) <= new Date(now) } : {}),
       version: row.lifecycle_version, provenance: row.visit_provenance,
       label: visitLabel({ ...row, slot_snapshot: { activity: row.activity }, time_zone: order.time_zone }),
       // Time-booked visits (courts): which court and activity. Null for slot visits.

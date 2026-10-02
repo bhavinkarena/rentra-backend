@@ -21,8 +21,9 @@ async function open(kind, form) {
       orderId: form.get('orderId') || null,
       privacyRequestId: form.get('privacyRequestId') || null,
       propertyId: form.get('propertyId') || null,
+      visitId: form.get('visitId') || null,
       requestKey: form.get('requestKey'),
-    });
+    }, process.env, form.getAll('photos'));
   } catch (error) {
     if (error instanceof SupportError) throw error;
     if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };

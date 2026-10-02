@@ -15,9 +15,11 @@ export async function deliverPortalCode({ identifier, channel, code, purpose }, 
     print(`\n  ┌─ OTP ─────────────────────────────────────────\n  │  ${channel.toUpperCase()} → ${identifier}\n  │  code: ${code}\n  └───────────────────────────────────────────────\n`);
     return;
   }
+  const contact = ['owner_email_change','owner_phone_change'].includes(purpose);
+  const contactMessage = `Your Rentra code to verify your new contact detail is ${code}. It expires in 10 minutes. Do not share it. If you did not request this change, do not use the code.`;
   const payout = purpose === 'payout_confirm';
   const payoutMessage = `Your Rentra code to confirm a payout method change is ${code}. It expires in 10 minutes. Do not share this code. If you did not request this change, do not use the code.`;
-  if (channel === 'sms') return deliverCustomerCode(identifier.replace(/^staff:/, ''), code, env, fetcher, payout ? payoutMessage : undefined);
+  if (channel === 'sms') return deliverCustomerCode(identifier.replace(/^staff:/, ''), code, env, fetcher, contact ? contactMessage : payout ? payoutMessage : undefined);
   if (channel !== 'email') throw new Error(`No ${channel} provider configured — cannot deliver OTP in production`);
   if (!env.RESEND_API_KEY || !env.OTP_EMAIL_FROM) throw new Error('Owner email delivery is not configured.');
   const response = await fetcher('https://api.resend.com/emails', {
@@ -26,8 +28,8 @@ export async function deliverPortalCode({ identifier, channel, code, purpose }, 
     body: JSON.stringify({
       from: env.OTP_EMAIL_FROM,
       to: [identifier],
-      subject: payout ? `${code} confirms your Rentra payout method change` : `${code} is your Rentra sign-in code`,
-      text: payout ? payoutMessage : `Your Rentra sign-in code is ${code}. It expires in 10 minutes. Do not share this code with anyone, including Rentra staff.`,
+      subject: contact ? `${code} verifies your new Rentra contact detail` : payout ? `${code} confirms your Rentra payout method change` : `${code} is your Rentra sign-in code`,
+      text: contact ? contactMessage : payout ? payoutMessage : `Your Rentra sign-in code is ${code}. It expires in 10 minutes. Do not share this code with anyone, including Rentra staff.`,
     }),
   });
   // Never log provider bodies: they can echo the address and the code.

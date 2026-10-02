@@ -1,4 +1,8 @@
 import {
+  readArrivalGuide,
+  saveArrivalGuide as storeArrivalGuide,
+} from '../services/booking/arrival-guide.js';
+import {
   addOfflineBooking,
   regenerateCalendarFeed,
   saveOwnerBookingNote,
@@ -15,6 +19,7 @@ import {
 } from '@/services/booking/calendar-actions.js';
 import { ownerPortfolioCalendar } from '@/services/booking/owner-calendar.js';
 import { ownerCalendarPage } from '@/services/booking/calendar-page.js';
+import { setAutoOpen } from '@/services/booking/owner-settings.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -49,7 +54,9 @@ export const unblock = calendarAction(unblockDates);
  * configuration and its current owner blocks.
  */
 export const calendarPage = asyncHandler(async (req, res) => {
-  const page = await ownerCalendarPage(sql, req.user.id, req.params.id);
+  const page = await ownerCalendarPage(sql, req.user.id, req.params.id, {
+    blocksPage: req.query.blocksPage,
+  });
   if (!page) throw notFound('LISTING_NOT_FOUND', 'That listing does not exist.');
   return ok(res, page);
 });
@@ -126,6 +133,39 @@ export const ownerNote = asyncHandler(async (req, res) =>
   ),
 );
 
+export const autoOpen = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await setAutoOpen(sql, req.user.id, {
+      rentableId: req.params.id,
+      enabled: req.body.enabled === true,
+    }),
+  ),
+);
+
 export const calendarUndo = asyncHandler(async (req, res) =>
   ok(res, await undoCalendarCells(sql, req.user.id, req.body.token)),
 );
+
+/** BOOK-08: the owner's arrival guide for one property. */
+export const arrivalGuide = asyncHandler(async (req, res) => {
+  const guide = await readArrivalGuide(sql, req.user.id, req.params.id);
+  if (!guide) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
+  ok(res, guide);
+});
+
+export const saveArrivalGuide = asyncHandler(async (req, res) => {
+  let guide;
+  try {
+    guide = await storeArrivalGuide(sql, req.user.id, req.params.id, req.body);
+  } catch (error) {
+    if (error.name === 'ZodError' || error.code === 'INVALID_ARRIVAL_GUIDE')
+      throw badRequest(
+        'INVALID_ARRIVAL_GUIDE',
+        'Keep each field under 300 characters and pick one of this property’s photos.',
+      );
+    throw error;
+  }
+  if (!guide) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
+  ok(res, { ok: true, guide });
+});
