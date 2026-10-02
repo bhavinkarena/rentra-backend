@@ -125,7 +125,18 @@ export const pricingSchema = z.object({
   (d) => [d.day_weekday, d.day_weekend, d.night_weekday,
     d.night_weekend, d.full_day_weekday, d.full_day_weekend].some((v) => v > 0),
   { message: 'Price at least one slot', path: ['day_weekday'] },
-);
+).superRefine((d, ctx) => {
+  // A zero side would be quoted to guests as ₹0, so an offered slot needs both.
+  for (const slot of ['day', 'night', 'full_day']) {
+    const [weekday, weekend] = [d[`${slot}_weekday`], d[`${slot}_weekend`]];
+    if ((weekday > 0) !== (weekend > 0))
+      ctx.addIssue({
+        code: 'custom',
+        path: [`${slot}_${weekday > 0 ? 'weekend' : 'weekday'}`],
+        message: 'Enter both weekday and weekend prices, or leave both at 0 if you do not offer this slot',
+      });
+  }
+});
 
 export const termsSchema = z.object({
   depositAmount: rupees,
