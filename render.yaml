@@ -47,6 +47,9 @@ services:
       #   CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET
       #   RAZORPAY_TEST_KEY_ID / RAZORPAY_TEST_KEY_SECRET
       #   RAZORPAY_TEST_WEBHOOK_SECRET
+      #   Owner sign-in codes (without these, owner login fails in production):
+      #   RESEND_API_KEY, OTP_EMAIL_FROM  e.g. "Rentra <codes@yourdomain>"
+      #   CUSTOMER_OTP_DELIVERY=twilio, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
       # The frontend's public origin for measurement beacons:
       #   NEXT_PUBLIC_SITE_URL  e.g. https://rentra.example
       - key: DATABASE_URL

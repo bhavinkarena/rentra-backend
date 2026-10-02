@@ -5,6 +5,7 @@ import { and, desc, eq, gt, isNull, sql as raw } from 'drizzle-orm';
 import { db } from '@/services/db';
 import { otpChallenge } from '@/services/db/schema/index.js';
 import { getEnv, isOtpBypassEnabled } from '@/services/schemas/joi/env';
+import { deliverPortalCode } from './portal-delivery.js';
 
 /**
  * One-time codes: generate, deliver, verify.
@@ -135,21 +136,12 @@ export async function issueOtp({ identifier, channel, purpose, __returnCodeForTe
  * runs on every dev login, so it is exercised continuously rather than being
  * skipped and found broken on the day the gateway is switched on.
  *
- * TODO(step 2): wire an email provider, and MSG91/Gupshup for SMS once TRAI
- * DLT registration clears. Start that registration early — it is a lead-time
- * dependency measured in weeks, not a billing decision.
+ * Production sends email through Resend and SMS through the customer Twilio
+ * adapter (see portal-delivery.js). Indian SMS still needs TRAI DLT template
+ * registration with the carrier route; start it early, it takes weeks.
  */
 async function deliverOtp({ identifier, channel, code }) {
-  if (getEnv().NODE_ENV !== 'production') {
-    console.info(
-      `\n  ┌─ OTP ─────────────────────────────────────────\n`
-      + `  │  ${channel.toUpperCase()} → ${identifier}\n`
-      + `  │  code: ${code}   (or use ${DEV_CODE} in dev)\n`
-      + `  └───────────────────────────────────────────────\n`,
-    );
-    return;
-  }
-  throw new Error(`No ${channel} provider configured — cannot deliver OTP in production`);
+  await deliverPortalCode({ identifier, channel, code }, { ...process.env, NODE_ENV: getEnv().NODE_ENV });
 }
 
 /**
