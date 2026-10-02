@@ -22,6 +22,9 @@ function canonical(value) {
   return value;
 }
 export const quoteDigest = (value) => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+// listingConfigVersion stays in the snapshot for the record but not in the hash:
+// every owner calendar save bumps it, which would void unrelated accepted quotes.
+const termsDigest = ({ policy: { listingConfigVersion, ...policy }, ...content }) => quoteDigest({ ...content, policy });
 const dayKey = (value) => value instanceof Date ? value.toISOString().slice(0, 10) : value;
 
 export function listingConfiguration(listing) {
@@ -119,7 +122,7 @@ export function prepareHourlyQuote(selection, listing, inputs, now, publications
   const rates = bands.map((band) => ({ ...band, hourlyRateMinor: Number(band.hourlyRateMinor) }));
   const pricingVersion = quoteDigest({ rates, overrides: [], schedule: config, totals }).slice(0, 32);
   const content = { selection, visits, totals, policy, payment: paymentSnapshot, pricingVersion };
-  return { ...content, hash: quoteDigest(content), currency: 'INR', timeZone: config.timeZone };
+  return { ...content, hash: termsDigest(content), currency: 'INR', timeZone: config.timeZone };
 }
 
 /** Either model, from the inputs currentInputs loaded for this listing. */
@@ -163,9 +166,11 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
   // or operational credential error details are returned to a browsing guest.
   const paymentSnapshot = paymentSnapshotFor(payment, price.visits, price.totals);
   const visitSnapshots = visits.map((visit, index) => ({ ...visit, ...price.visits[index] }));
-  const pricingVersion = quoteDigest({ rates, overrides, schedule, totals: price.totals }).slice(0, 32);
+  // Only the chosen slot's inputs: an owner editing another slot or date must
+  // not invalidate a guest's accepted quote (the config version is left out for the same reason).
+  const pricingVersion = quoteDigest({ rate, overrides: overrides.filter((row) => row.slot === selection.slot), schedule, totals: price.totals }).slice(0, 32);
   const content = { selection, visits: visitSnapshots, totals: price.totals, policy, payment: paymentSnapshot, pricingVersion };
-  return { ...content, hash: quoteDigest(content), currency: 'INR', timeZone: config.timeZone };
+  return { ...content, hash: termsDigest(content), currency: 'INR', timeZone: config.timeZone };
 }
 
 /** Courts, their activities and the hourly bands of a time-booked venue. */
