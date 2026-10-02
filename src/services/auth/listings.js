@@ -24,7 +24,7 @@ import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-ph
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
 import { slugify } from '@/services/domain/listing-url';
-import { ownerEditEffect, ownerPauseTarget } from '@/services/domain/listing-lifecycle';
+import { ownerEditEffect, ownerPauseTarget, trustChanges } from '@/services/domain/listing-lifecycle';
 import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
@@ -94,7 +94,6 @@ async function load(id) {
  * treated the same. Existing confirmed bookings are untouched either way.
  */
 async function applyEdit(listing, fields, changed, { expected = null, children = null } = {}) {
-  const touchesTrust = changed.some((f) => TRUST_FIELDS.has(f));
 
   /**
    * The status decision is made on the row as it is NOW, under its lock, not
@@ -107,11 +106,21 @@ async function applyEdit(listing, fields, changed, { expected = null, children =
         status: rentable.status,
         priorStatus: rentable.priorStatus,
         contentVersion: rentable.contentVersion,
+        title: rentable.title,
+        categoryId: rentable.categoryId,
+        capacity: rentable.capacity,
+        bedrooms: rentable.bedrooms,
+        exactAddress: rentable.exactAddress,
+        location: rentable.location,
+        houseRules: rentable.houseRules,
       })
       .from(rentable)
       .where(eq(rentable.id, listing.id))
       .for('update');
     assertVersion(current.contentVersion, expected);
+    // Pressing Save without changing anything must not take a live property out of search.
+    const touchesTrust =
+      trustChanges(current, fields, changed.filter((f) => TRUST_FIELDS.has(f))).length > 0;
     // Child rows (amenities) are written under the same lock, after the check.
     if (children) await children(tx);
     const effect = ownerEditEffect(current, touchesTrust);
@@ -308,7 +317,9 @@ export async function saveAmenities(_prev, formData) {
 
   // Replace wholesale: the form submits the complete set, so a diff would only
   // add a way for the two to disagree.
-  const { sentBack, contentVersion } = await applyEdit(listing, {}, ['amenities'], {
+  const key = (list) => list.map((r) => `${r.amenityId}=${r.value ?? ''}`).sort().join('|');
+  const stored = await sql`SELECT amenity_id::text AS "amenityId",value FROM rentable_amenity WHERE rentable_id=${listing.id}`;
+  const { sentBack, contentVersion } = await applyEdit(listing, {}, key(stored) === key(rows) ? [] : ['amenities'], {
     expected: expectedVersion(formData),
     children: async (tx) => {
       await tx.delete(rentableAmenity).where(eq(rentableAmenity.rentableId, listing.id));
