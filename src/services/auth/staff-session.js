@@ -29,6 +29,7 @@ const otpIdentifier = (phone) => `staff:${phone}`;
 const key = () => new TextEncoder().encode(getEnv().SESSION_SECRET);
 
 function issueError(result) {
+  if (result.reason === 'delivery_failed') return 'We could not send the code just now. Try again in a minute.';
   if (result.reason === 'cooldown')
     return `Wait ${Math.ceil(result.retryInMs / 1000)} seconds before asking for a new code.`;
   return 'Too many codes requested for this number. Try again in an hour.';

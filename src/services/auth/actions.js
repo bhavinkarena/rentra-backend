@@ -35,6 +35,7 @@ async function clientIp() {
 }
 
 function friendlyIssueError(result) {
+  if (result.reason === 'delivery_failed') return 'We could not send the code just now. Try again in a minute.';
   if (result.reason === 'cooldown') {
     const secs = Math.ceil(result.retryInMs / 1000);
     return `Wait ${secs} second${secs === 1 ? '' : 's'} before asking for a new code.`;

@@ -565,10 +565,14 @@ export async function uploadOwnershipDocument(_prev, formData) {
 
   // The setup walkthrough's Continue submits this form; with no new file and a
   // document already on record, there is nothing to upload.
+  // Only when the form still describes that same document, so an edited type or
+  // name is never reported as saved without the file it refers to.
   const chosen = formData.get('file');
   if (!chosen || chosen.size === 0) {
     const [kept] = await sql`SELECT 1 FROM document WHERE owner_type='rentable' AND owner_id=${listing.id}
-      AND status IN ('uploaded','accepted') LIMIT 1`;
+      AND status IN ('uploaded','accepted') AND deleted_at IS NULL
+      AND doc_type=${String(formData.get('docType') ?? '')}
+      AND coalesce(name_on_document,'')=${String(formData.get('nameOnDocument') ?? '').trim()} LIMIT 1`;
     if (kept) return { ok: true, unchanged: true };
   }
 

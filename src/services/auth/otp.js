@@ -117,7 +117,14 @@ export async function issueOtp({ identifier, channel, purpose, __returnCodeForTe
     expiresAt: new Date(now + TTL_MS),
   }).returning({ id: otpChallenge.id });
 
-  await deliverOtp({ identifier, channel, code });
+  try {
+    await deliverOtp({ identifier, channel, code });
+  } catch (error) {
+    // A code that never went out must not block the retry, and the owner sees a message, not a crash.
+    await db.delete(otpChallenge).where(eq(otpChallenge.id, challenge.id));
+    console.error(`[otp] ${channel} delivery failed: ${error.message}`);
+    return { ok: false, reason: 'delivery_failed' };
+  }
   await db.update(otpChallenge).set({ delivered: true }).where(eq(otpChallenge.id, challenge.id));
 
   return {
