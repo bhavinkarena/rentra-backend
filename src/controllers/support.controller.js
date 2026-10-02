@@ -14,7 +14,7 @@ import {
   supportAttachment,
 } from '@/services/support/service.js';
 import { supportRecordPage } from '@/services/support/page.js';
-import { bookingActor } from '@/services/booking/record-page.js';
+import { supportActor } from '@/services/support/actor.js';
 import { recordKindFromBaseUrl } from '@/services/booking/record-scope.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
@@ -30,7 +30,7 @@ const kindOf = (req) => {
 };
 
 export const list = asyncHandler(async (req, res) =>
-  ok(res, await listSupportRequests(sql, await bookingActor(kindOf(req)), req.query)),
+  ok(res, await listSupportRequests(sql, await supportActor(kindOf(req)), req.query)),
 );
 
 export const detail = asyncHandler(async (req, res) =>
@@ -39,7 +39,7 @@ export const detail = asyncHandler(async (req, res) =>
 
 /** The raw conversation, without the page wrapper. Used for polling a thread. */
 export const thread = asyncHandler(async (req, res) =>
-  ok(res, await readSupportRequest(sql, await bookingActor(kindOf(req)), req.params.id)),
+  ok(res, await readSupportRequest(sql, await supportActor(kindOf(req)), req.params.id)),
 );
 
 /**
@@ -56,7 +56,7 @@ export const manage = runAction(manageSupport);
 export const attachment = asyncHandler(async (req, res) => {
   const file = await supportAttachment(
     sql,
-    await bookingActor(kindOf(req)),
+    await supportActor(kindOf(req)),
     req.params.id,
     req.params.attachmentId,
   );

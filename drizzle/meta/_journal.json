@@ -393,6 +393,13 @@
       "when": 1790591500000,
       "tag": "0055_measurement_vertical",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1790591500001,
+      "tag": "0056_owner_navigation_support",
+      "breakpoints": true
     }
   ]
 }

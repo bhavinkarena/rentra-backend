@@ -142,3 +142,16 @@ export async function clientTasks(database, clientId) {
   ];
   return { tasks, unread: counts.unread, actionUnread: counts.action };
 }
+
+/** Owner-scoped navigation counts; an applicant never queries active-only tools. */
+export async function navigationCounts(database, user) {
+  const counts = await unreadCounts(database, user.id);
+  const [support] = await database`SELECT count(*)::int AS count FROM support_request WHERE client_id=${user.id} AND state='waiting_customer'`;
+  if (user.accountStatus !== 'active') return { ...counts, supportAwaiting: support.count };
+  const [bookings, properties, reviews] = await Promise.all([
+    listBookingRecords(database, { kind: 'owner', id: user.id }, { tab: 'action_needed' }),
+    database`SELECT count(*)::int AS count FROM rentable WHERE client_id=${user.id} AND status IN ('draft','rejected')`,
+    database`SELECT count(*)::int AS count FROM public_customer_review r JOIN rentable l ON l.id=r.rentable_id WHERE l.client_id=${user.id} AND r.owner_reply IS NULL`,
+  ]);
+  return { ...counts, supportAwaiting: support.count, bookingsAction: bookings.summary.action_needed, propertiesNeedsChanges: properties[0].count, reviewsUnreplied: reviews[0].count };
+}

@@ -15,14 +15,14 @@ export class SupportError extends AppError {
 }
 const uuid = z.string().uuid(),
   body = z.string().trim().min(2).max(5000);
-const categories = ['booking', 'change', 'cancellation', 'payment', 'privacy', 'other'];
+const categories = ['booking', 'change', 'cancellation', 'payment', 'privacy', 'other', 'verification', 'account'];
 const states = ['open', 'in_progress', 'waiting_customer', 'resolved'];
 const missing = () => new SupportError('NOT_FOUND', 'Support request not found.', 404);
 async function authorize(tx, actor, env, write = false) {
   if (actor?.kind === 'customer') return (await lockCustomerAccount(tx, actor.session, env)).id;
   if (actor?.kind === 'owner' && uuid.safeParse(actor.id).success) {
     const [client] =
-      await tx`SELECT id FROM "user" WHERE id=${actor.id} AND role='client' AND account_status='active' FOR SHARE`;
+      await tx`SELECT id FROM "user" WHERE id=${actor.id} AND role='client' AND account_status IN ('active','pending_application') FOR SHARE`;
     if (client) return client.id;
   }
   if (actor?.kind === 'admin' && uuid.safeParse(actor.id).success) {
@@ -100,6 +100,7 @@ export async function createSupportRequest(database, actor, input, env = process
     .strict()
     .parse(input);
   const hash = quoteDigest(value);
+  if (actor?.kind !== 'owner' && ['verification', 'account'].includes(value.category)) throw new SupportError('INVALID_TOPIC', 'Choose a supported topic.', 422);
   if (!['customer', 'owner'].includes(actor?.kind)) throw missing();
   if (
     (['booking', 'change', 'cancellation', 'payment'].includes(value.category) && !value.orderId) ||
@@ -110,6 +111,12 @@ export async function createSupportRequest(database, actor, input, env = process
     throw new SupportError('CONTEXT_REQUIRED', 'Choose a supported record for this topic.', 422);
   return database.begin(async (tx) => {
     const actorId = await authorize(tx, actor, env, true);
+    if (actor.kind === 'owner') {
+      const [owner] = await tx`SELECT account_status FROM "user" WHERE id=${actorId}`;
+      if (owner.account_status === 'pending_application' && (!['verification', 'account', 'other'].includes(value.category) || value.orderId || value.propertyId || value.privacyRequestId)) {
+        throw new SupportError('INVALID_TOPIC', 'Choose Verification, Account or Other while your verification is in progress.', 422);
+      }
+    }
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${actor.kind + actorId},0))`;
     const [existing] =
       await tx`SELECT id,request_hash FROM support_request WHERE ${scope(tx, actor, actorId)} AND request_key=${value.requestKey}`;

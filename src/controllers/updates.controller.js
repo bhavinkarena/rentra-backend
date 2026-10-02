@@ -5,7 +5,7 @@ import {
   markClientUpdatesRead,
   readClientPreferences,
   saveClientPreferences,
-  unreadCounts,
+  navigationCounts,
 } from '@/services/auth/client-inbox.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -15,7 +15,7 @@ export const list = asyncHandler(async (req, res) =>
   ok(res, await listClientUpdates(sql, req.user.id, req.query)),
 );
 export const unread = asyncHandler(async (req, res) =>
-  ok(res, await unreadCounts(sql, req.user.id)),
+  ok(res, await navigationCounts(sql, req.user)),
 );
 export const read = asyncHandler(async (req, res) =>
   ok(res, await markClientUpdatesRead(sql, req.user.id, req.body)),

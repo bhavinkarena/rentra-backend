@@ -259,13 +259,12 @@ router.get('/reviews', requireActiveClient, reviews.queue);
 router.post('/reviews/reply', requireActiveClient, formFields(), reviews.reply);
 router.post('/reviews/report', requireActiveClient, formFields(), reviews.reportByOwner);
 
-router.get('/support', requireActiveClient, validate({ query: supportListQuery }), support.list);
-router.post('/support', requireActiveClient, formFields(), support.openAsOwner);
-router.get('/support/:id', requireActiveClient, support.detail);
-router.get('/support/:id/thread', requireActiveClient, support.thread);
+router.get('/support', validate({ query: supportListQuery }), support.list);
+router.post('/support', formFields(), support.openAsOwner);
+router.get('/support/:id', support.detail);
+router.get('/support/:id/thread', support.thread);
 router.post(
   '/support/:id/reply',
-  requireActiveClient,
   uploadLimiter,
   evidencePhotos(),
   (req, res, next) => {
@@ -274,7 +273,7 @@ router.post(
   },
   support.replyAsOwner,
 );
-router.get('/support/:id/attachments/:attachmentId', requireActiveClient, support.attachment);
+router.get('/support/:id/attachments/:attachmentId', support.attachment);
 router.use('/finance', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   res.set('X-Robots-Tag', 'noindex, nofollow');

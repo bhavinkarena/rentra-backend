@@ -2005,7 +2005,7 @@ export const supportRequest = pgTable('support_request', {
   index('support_request_property_idx').on(t.propertyId).where(sql`${t.propertyId} IS NOT NULL`),
   index('support_request_assignee_idx').on(t.assignedTo, t.state).where(sql`${t.assignedTo} IS NOT NULL`),
   index('support_request_privacy_idx').on(t.privacyRequestId).where(sql`${t.privacyRequestId} IS NOT NULL`),
-  check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other')
+  check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other','verification','account')
     AND ${t.state} IN ('open','in_progress','waiting_customer','resolved') AND ${t.version}>=0
     AND length(trim(${t.subject})) BETWEEN 5 AND 120 AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
     AND (${t.category} NOT IN ('booking','change','cancellation','payment') OR ${t.orderId} IS NOT NULL)

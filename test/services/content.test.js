@@ -71,10 +71,15 @@ test('CP25 plain text, safe destinations, bounded sections and verified-channel 
     timeZone: 'Asia/Kolkata',
   };
   assert.deepEqual(validateContent('contact', contact), contact);
+  assert.equal(
+    validateContent('contact', { ...contact, phone: '+919000000000' }).phone,
+    '+919000000000',
+  );
   for (const patch of [
     { email: 'bad\r\nBcc:evil@example.com' },
     { email: '<bad>@example.com' },
     { whatsapp: '+91abcd' },
+    { phone: 'javascript:alert(1)' },
     { hours: '<script>x</script>' },
     { timeZone: 'UTC' },
   ])

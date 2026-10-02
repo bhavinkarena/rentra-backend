@@ -53,6 +53,7 @@ const schemas = {
       title: plain(120),
       email: z.union([z.email().max(160), z.literal('')]),
       whatsapp: z.string().regex(/^(?:[0-9]{10,15})?$/),
+      phone: z.string().regex(/^(?:\+?[0-9]{10,15})?$/).optional(),
       hours: optionalText(200),
       timeZone: z.literal('Asia/Kolkata'),
     })
