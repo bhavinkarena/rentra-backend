@@ -119,3 +119,19 @@ test('CP12 operational queues do not expand customer filters and action cues fol
     assert.equal(visitOperation({ ...v, state }).action, null);
   assert.equal(visitOperation({ ...v, hours_known: false }).action, null);
 });
+
+test('a visit whose stored price is zero is not offered rather than quoted at ₹0', () => {
+  const zeroWeekday = (dates, overrides = []) =>
+    prepareQuote(
+      { rentableId: '00000000-0000-4000-8000-000000000001', dates, slot: 'day', guests: 3 },
+      listing,
+      [{ slot: 'day', weekday_minor: 0, weekend_minor: 200000 }],
+      overrides,
+      payment,
+      new Date('2030-01-01T00:00:00Z'),
+    );
+  assert.throws(() => zeroWeekday(['2030-01-04']), { code: 'SLOT_UNAVAILABLE' });
+  assert.equal(zeroWeekday(['2030-01-05']).visits[0].baseRentMinor, 200000);
+  // An explicit date price still sells the weekday.
+  assert.equal(zeroWeekday(['2030-01-04'], [{ day: '2030-01-04', slot: 'day', rent_minor: 90000 }]).visits[0].baseRentMinor, 90000);
+});

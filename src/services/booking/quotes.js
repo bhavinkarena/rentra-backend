@@ -149,6 +149,8 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
     rate: { ...schedule, weekdayMinor: Number(rate.weekday_minor), weekendMinor: Number(rate.weekend_minor), depositMinor: Number(listing.deposit_minor) },
     overridesByDate: byDate,
   });
+  // Older pricing saved one day type as 0; never sell those visits for nothing.
+  if (price.visits.some((visit) => visit.baseRentMinor <= 0)) throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This slot is not offered on that day.');
   const policy = {
     ...(publications ? {publications} : {}),
     version: BOOKING_POLICY.version, listingConfigVersion: listing.booking_config_version,
