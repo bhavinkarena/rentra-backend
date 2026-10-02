@@ -58,7 +58,9 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
   const operational = actor.kind !== 'customer';
   const filters = historyFilters(input, operational), size = 20;
   return database.begin(async tx => {
-    const { condition: allowed } = await scope(tx, actor, env);
+    const { condition: scoped } = await scope(tx, actor, env);
+    // An unpaid or abandoned checkout is not a booking the owner has to handle.
+    const allowed = actor.kind === 'owner' ? tx`${scoped} AND o.state NOT IN ('held','expired')` : scoped;
     const upcoming = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','disputed') AND v.ends_at>clock_timestamp())`;
     const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed') AND v.ends_at<=clock_timestamp())`;
     const cancelled = tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))`;
@@ -83,6 +85,14 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       count(*) FILTER (WHERE ${today})::int today, count(*) FILTER (WHERE ${actionNeeded})::int action_needed
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${match}`;
     const count = filters.tab === 'all' ? summary.total : summary[filters.tab];
+    // Work queues: the next active visit first. History: the most recent visit first.
+    // "All": what is still ahead (soonest first), then the past (newest first).
+    const nextStart = tx`(SELECT min(v.starts_at) FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','disputed'))`;
+    const lastStart = tx`(SELECT max(v.starts_at) FROM booking v WHERE v.order_id=o.id)`;
+    const order = !operational ? tx`o.created_at DESC,o.id DESC`
+      : ['today', 'upcoming', 'action_needed'].includes(filters.tab) ? tx`${nextStart} ASC NULLS LAST,o.created_at DESC,o.id DESC`
+      : filters.tab === 'all' ? tx`(${upcoming}) DESC,CASE WHEN ${upcoming} THEN ${nextStart} END ASC,${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`
+      : tx`${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`;
     const pages = Math.max(1, Math.ceil(count / size)), page = Math.min(filters.page, pages);
     const rows = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
       (SELECT min(v.local_day)::text FROM booking v WHERE v.order_id=o.id) first_visit,
@@ -94,12 +104,12 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       (SELECT jsonb_agg(DISTINCT v.state) FROM booking v WHERE v.order_id=o.id) visit_states,
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${tab} AND ${match}
-      ORDER BY CASE WHEN ${operational} THEN (SELECT min(v.starts_at) FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','disputed')) END ASC NULLS LAST,o.created_at DESC,o.id DESC LIMIT ${size} OFFSET ${(page - 1) * size}`;
+      ORDER BY ${order} LIMIT ${size} OFFSET ${(page - 1) * size}`;
     // Filter choices: the verticals this actor has bookings in, and the chosen property's courts.
     const verticals = (await tx`SELECT DISTINCT c.vertical_code AS code FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
       JOIN category c ON c.id=r.category_id WHERE ${allowed} ORDER BY 1`).map(row => row.code);
     const resources = operational && filters.property ? await tx`SELECT rs.id,rs.name FROM rentable_resource rs JOIN rentable r ON r.id=rs.rentable_id
-      WHERE rs.rentable_id=${filters.property} AND ${allowed} ORDER BY rs.sort_order,rs.name` : [];
+      WHERE rs.rentable_id=${filters.property} AND ${scoped} ORDER BY rs.sort_order,rs.name` : [];
     return { ...filters, verticals, resources, page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), ...(operational ? {propertyId:row.rentable_id} : {}), visitCount: row.visit_count,
       visitStates: row.visit_states || [], payments: row.payments || [], vertical: row.vertical,
       // The first visit's own words and start, so a list says when and which court.
