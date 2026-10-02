@@ -56,7 +56,7 @@ export function profileCompletion(user, application = null, documents = []) {
     {
       id: 'phone',
       label: 'Mobile verified',
-      hint: 'where booking alerts will arrive',
+      hint: 'how Rentra and guests reach you',
       done: Boolean(user?.phoneVerifiedAt),
       href: '/partner/onboarding/phone',
       minutes: 1,
@@ -167,7 +167,7 @@ export function profileCompletion(user, application = null, documents = []) {
     /** Phase 2, rendered as a step from the first visit. */
     review: {
       label: 'Rentra reviews your application',
-      hint: '2 working days. We reply either way, by email and WhatsApp.',
+      hint: '2 working days. The decision appears on your dashboard.',
       state: approved ? 'done' : submitted ? 'in_review' : 'waiting',
     },
   };
@@ -179,7 +179,7 @@ export function lockedCtaMessage(completion) {
   if (completion.submitted) {
     return {
       title: 'Your application is with us',
-      body: 'We reply within 2 working days, by email and WhatsApp. You can keep exploring meanwhile.',
+      body: 'We reply within 2 working days. The decision appears on your dashboard.',
       items: [],
     };
   }
