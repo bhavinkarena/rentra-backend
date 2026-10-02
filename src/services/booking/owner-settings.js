@@ -22,6 +22,7 @@ export async function saveBookingConfiguration(database, ownerId, { rentableId, 
     const parsed = (hourly ? hourlyBookingConfigSchema : bookingConfigSchema).parse(configuration);
     if (listing.booking_config_version !== expectedVersion) throw new InventoryError('CONFIG_CHANGED', 'Booking settings changed. Reload before saving.');
     if (!hourly) for (const schedule of Object.values(parsed.slots)) {
+      if(schedule.enabled){schedule.extraGuestChargeMinor=Number(listing.extra_guest_charge_minor);schedule.includedGuests=listing.booking_config?.pricingIncludedGuests || schedule.includedGuests;}
       if (schedule.enabled && schedule.capacity > listing.capacity) throw new InventoryError('INVALID_CAPACITY', 'Slot capacity cannot exceed the property capacity.');
     }
     // New hours never cancel anything: upcoming court bookings outside them are kept and listed.
@@ -30,6 +31,7 @@ export async function saveBookingConfiguration(database, ownerId, { rentableId, 
     const candidate = { ...parsed, inventoryReady: true };
     await auditInventoryReadiness(tx, { ...listing, booking_config: candidate });
     await tx`UPDATE rentable SET booking_config=${JSON.stringify(candidate)}::text::jsonb, booking_config_version=booking_config_version+1, updated_at=now() WHERE id=${rentableId}`;
+    if (!hourly && (candidate.autoOpen || !listing.booking_config?.inventoryReady)) await fillOpenDates(tx, rentableId, candidate.bookingHorizonDays);
     await tx`INSERT INTO audit_log (actor_type,actor_id,entity,entity_id,action,"before","after")
       VALUES ('client',${ownerId},'rentable',${rentableId},'booking_configuration_changed',${JSON.stringify(listing.booking_config)}::text::jsonb,${JSON.stringify({values:candidate,effectiveVersion:expectedVersion+1})}::text::jsonb)`;
     return { version: expectedVersion + 1, outsideHours };
@@ -83,4 +85,14 @@ export async function openBookingDates(database, ownerId, { rentableId, from, to
       ('client',${ownerId},'rentable',${listing.id},'calendar_dates_added',${JSON.stringify({ from, to, endExclusive: addLocalDays(to, 1), attempted: count * 2, added: result.length, skipped: count * 2 - result.length })}::text::jsonb)`;
     return { added: result.length };
   });
+}
+
+export async function fillOpenDates(tx, id, horizon) {
+  return tx`INSERT INTO availability(rentable_id,day,slot,units_available)
+    SELECT ${id},d::date,s::availability_slot,1 FROM generate_series((now() AT TIME ZONE 'Asia/Kolkata')::date,(now() AT TIME ZONE 'Asia/Kolkata')::date+${horizon}::int,interval '1 day') d CROSS JOIN unnest(ARRAY['day','night']) s ON CONFLICT(rentable_id,day,slot) DO NOTHING`;
+}
+export async function autoOpenDates(database) {
+  const rows=await database`SELECT id FROM rentable WHERE booking_config->>'autoOpen'='true' AND rental_unit<>'hour' AND status IN ('draft','live','pending_review','pending_verification')`;
+  for (const row of rows) await withListingInventory(database,row.id,async(tx,l)=> {if(l.booking_config?.autoOpen) await fillOpenDates(tx,l.id,l.booking_config.bookingHorizonDays);});
+  return {properties:rows.length};
 }

@@ -1,4 +1,7 @@
 import 'server-only';
+import { listingCompletion } from '../domain/listing-completion.js';
+import {getEnv} from '../schemas/joi/env.js';
+import {firstIncompleteStepId, stepIndex} from '../domain/listing-steps.js';
 
 import {
   and, asc, count, desc, eq, ilike, inArray, isNull, ne, or, sql as raw,
@@ -152,7 +155,7 @@ export async function getClientListingsPage(
     .offset((currentPage - 1) * safePageSize);
 
   return {
-    items,
+    items: await Promise.all(items.map(async item=>{if(!['draft','rejected'].includes(item.status))return item;const data=await getListingForEdit(item.id,clientId);const resumeStep=firstIncompleteStepId(data.listing.completion);return {...item,resumeStep,resumeNumber:stepIndex(resumeStep)+1,stepTotal:data.listing.completion.total+1};})),
     total,
     page: currentPage,
     pageSize: safePageSize,
@@ -218,13 +221,14 @@ export async function getListingForEdit(id, clientId = null) {
 
   const [{ vertical, categorySlug }] = await sql`SELECT slug AS "categorySlug", vertical_code AS vertical FROM category WHERE id=${row.categoryId}`;
   const venue = row.rentalUnit === 'hour' ? await venueForEdit(id) : { resources: [], hourlyRates: [] };
+  const [bookings]=await sql`SELECT count(*)::int AS n FROM booking WHERE rentable_id=${id}`;
   return {
     // Money is stored in paise; the editor keeps its whole-rupee fields.
-    listing: { ...row, vertical, categorySlug, depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
+    listing: { ...row, hasBookings:bookings.n>0,hasReviewHistory:reviews.length>0, vertical, categorySlug, completion: listingCompletion({...row,categorySlug,depositAmount:row.depositMinor/100},{prices,amenities:tags,photos:row.photos,documents:docs,...venue}), depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
     prices,
     ...venue,
     amenities: tags,
-    photos: Array.isArray(row.photos) ? row.photos : [],
+    photos: Array.isArray(row.photos) ? row.photos.map(p=>({...p,url:p.url || (p.key && getEnv().CLOUDINARY_CLOUD_NAME ? `https://res.cloudinary.com/${getEnv().CLOUDINARY_CLOUD_NAME}/image/upload/fl_strip_profile/${p.key}` : undefined)})) : [],
     documents: docs,
     reviews,
   };
@@ -297,6 +301,7 @@ export async function getCitiesWithAreas() {
       cityName: city.name,
       areaId: area.id,
       areaName: area.name,
+      centre:area.centre,
     })
     .from(city)
     .innerJoin(area, eq(area.cityId, city.id))
@@ -308,7 +313,7 @@ export async function getCitiesWithAreas() {
     if (!map.has(r.cityId)) {
       map.set(r.cityId, { id: r.cityId, slug: r.citySlug, name: r.cityName, areas: [] });
     }
-    map.get(r.cityId).areas.push({ id: r.areaId, name: r.areaName });
+    map.get(r.cityId).areas.push({ id: r.areaId, name: r.areaName,centre:r.centre });
   }
   return [...map.values()];
 }

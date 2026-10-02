@@ -136,6 +136,8 @@ router.get(
 /** One route per wizard step: each step saves independently. */
 for (const [step, handler] of [
   ['basics', listings.basics],
+  ['type', listings.type],
+  ['availability', listings.availability],
   ['location', listings.location],
   ['capacity', listings.capacity],
   ['venue', listings.venue],
@@ -169,6 +171,40 @@ router.post(
     next();
   },
   runAction(saveListingHours),
+);
+router.get(
+  '/listings/:id/preview-data',
+  client,
+  validate({ params: listingIdParam }),
+  listings.previewData,
+);
+router.post(
+  '/listings/:id/price-preview',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.pricePreview,
+);
+router.delete(
+  '/listings/:id',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.removeDraft,
+);
+router.post(
+  '/listings/:id/photos/sign',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.photoSign,
+);
+router.post(
+  '/listings/:id/photos/attach',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.photoAttach,
 );
 router.post('/listings/:id/photos', client, uploadLimiter, manyFiles('photos'), listings.addPhotos);
 router.delete('/listings/:id/photos', client, formFields(), listings.removePhoto);

@@ -43,7 +43,10 @@ export async function changePropertyPolicy(database, ownerId, id, command, input
       before,
       value,
     ]);
-    if (input.preview)
+    const [booked] = await tx`SELECT 1 FROM booking WHERE rentable_id=${id} LIMIT 1`;
+    const direct = input.direct === true && ['draft','rejected'].includes(listing.status) && !booked;
+    if(input.autosave && !direct)throw conflict('EXPLICIT_SAVE_REQUIRED','Use Save for properties with bookings');
+    if (input.preview && !direct)
       return {
         preview: {
           token,
@@ -53,25 +56,26 @@ export async function changePropertyPolicy(database, ownerId, id, command, input
             'Immediately after confirmation, for new quotes only. Accepted bookings keep their original terms.',
         },
       };
-    if (input.previewToken !== token)
+    if (!direct && input.previewToken !== token)
       throw conflict('PREVIEW_REQUIRED', 'Preview these exact values before saving.');
     if (command === 'pricing') {
       await tx`DELETE FROM rentable_price WHERE rentable_id=${id}`;
       for (const slot of ['day', 'night', 'full_day'])
         if (value[`${slot}_weekday`] > 0 || value[`${slot}_weekend`] > 0)
           await tx`INSERT INTO rentable_price(rentable_id,slot,weekday_minor,weekend_minor) VALUES (${id},${slot},${value[`${slot}_weekday`] * 100},${value[`${slot}_weekend`] * 100})`;
-      const config = listing.booking_config;
+      if(value.includedGuests && value.includedGuests>listing.capacity)throw unprocessable({includedGuests:['Guests included cannot exceed capacity']});
+      const config = listing.booking_config || {};
+      if(value.includedGuests)config.pricingIncludedGuests=value.includedGuests;
       if (config?.slots)
         for (const schedule of Object.values(config.slots))
-          if (schedule.enabled)
-            schedule.extraGuestChargeMinor = (value.extraGuestCharge || 0) * 100;
+          if (schedule.enabled){schedule.extraGuestChargeMinor = (value.extraGuestCharge || 0) * 100;if(value.includedGuests)schedule.includedGuests=value.includedGuests;}
       await tx`UPDATE rentable SET extra_guest_charge_minor=${(value.extraGuestCharge || 0) * 100},booking_config=${JSON.stringify(config)}::text::jsonb,booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
     } else {
       await tx`UPDATE rentable SET deposit_minor=${value.depositAmount * 100},cancellation_tier=${value.cancellationTier},booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
     }
     const [after] =
       await tx`SELECT content_version,booking_config_version FROM rentable WHERE id=${id}`;
-    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES ('client',${ownerId},'rentable',${id},${'property_' + command + '_changed'},${JSON.stringify(before)}::text::jsonb,${JSON.stringify({ values: value, contentVersion: after.content_version, effectiveVersion: after.booking_config_version, effective: 'immediate' })}::text::jsonb)`;
+    if(!input.autosave) await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES ('client',${ownerId},'rentable',${id},${'property_' + command + '_changed'},${JSON.stringify(before)}::text::jsonb,${JSON.stringify({ values: value, contentVersion: after.content_version, effectiveVersion: after.booking_config_version, effective: 'immediate' })}::text::jsonb)`;
     return {
       ok: true,
       contentVersion: after.content_version,

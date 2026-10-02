@@ -115,6 +115,7 @@ export async function submitProperty(database, { id, clientId, ip = null }) {
       throw unprocessable({
         _: `Still to do: ${readiness.remaining.map((s) => s.label).join(', ')}`,
       });
+    data.workflowVersion=2;
     const pass = row.review_pass + 1;
     const [submission] =
       await tx`INSERT INTO listing_submission(rentable_id,content_version,pass_number,snapshot,submitted_by,assigned_to)
@@ -200,7 +201,7 @@ export async function readPropertyReview(database, id) {
     submissions: submissions.map(submissionDTO),
     history: history.map(camel),
     stale: !current || current.content_version !== owner.content_version,
-    readiness: current ? listingCompletion(current.snapshot.listing, current.snapshot) : null,
+    readiness: current ? listingCompletion(current.snapshot.listing,{...current.snapshot,legacySubmission:current.snapshot.workflowVersion!==2}) : null,
     verifications: await listVerifications(database, id),
     publication: await publicationState(database, id),
     checklist: checklistFor(owner.rental_unit).map(([key, label]) => ({ key, label })),
@@ -265,7 +266,7 @@ export async function decidePropertyReview(database, { id, adminId, input, ip = 
       throw conflict('ALREADY_DECIDED', 'This submission was already decided.');
     if (
       d.outcome === 'approved_for_visit' &&
-      listingCompletion(s.snapshot.listing, s.snapshot).remaining.length
+      listingCompletion(s.snapshot.listing,{...s.snapshot,legacySubmission:s.snapshot.workflowVersion!==2}).remaining.length
     )
       throw conflict('LISTING_INCOMPLETE', 'This submitted revision is incomplete.');
     const status = {

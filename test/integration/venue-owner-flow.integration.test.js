@@ -18,7 +18,7 @@ test(
       const id = venue.venue;
       // Reuse valid location/photo evidence while keeping venue-specific courts, hours and rates.
       await sql`UPDATE rentable v SET location=f.location,exact_address=f.exact_address,
-        description=f.description,photos=f.photos,house_rules='{"footwear":"non_marking"}'::jsonb
+        description=f.description,photos=f.photos,house_rules='{"footwear":"non_marking","cancellationConfirmed":true}'::jsonb
         FROM rentable f WHERE v.id=${id} AND f.id=${farm.listing}`;
       await sql`INSERT INTO amenity_vertical(amenity_id,vertical_code)
         SELECT amenity_id,'entertainment' FROM rentable_amenity WHERE rentable_id=${farm.listing}`;

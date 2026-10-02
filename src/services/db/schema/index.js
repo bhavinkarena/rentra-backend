@@ -736,8 +736,8 @@ export const rentable = pgTable(
     rentalUnit: rentalUnit('rental_unit').notNull().default('slot'),
 
     categoryId: uuid('category_id').notNull().references(() => category.id, { onDelete: 'restrict' }),
-    cityId: uuid('city_id').notNull().references(() => city.id, { onDelete: 'restrict' }),
-    areaId: uuid('area_id').notNull().references(() => area.id, { onDelete: 'restrict' }),
+    cityId: uuid('city_id').references(() => city.id, { onDelete: 'restrict' }),
+    areaId: uuid('area_id').references(() => area.id, { onDelete: 'restrict' }),
 
     /** 1 for a farmhouse. 800 for a tent-house's chairs. */
     totalUnits: integer('total_units').notNull().default(1),

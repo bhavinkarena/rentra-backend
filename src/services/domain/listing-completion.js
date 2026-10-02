@@ -80,11 +80,11 @@ export const ownershipDocTypesFor = (rentalUnit) => (rentalUnit === 'hour' ? VEN
 
 export function listingCompletion(
   listing,
-  { prices = [], amenities = [], photos = [], documents = [], resources = [], hourlyRates = [] } = {},
+  { prices = [], amenities = [], photos = [], documents = [], legacySubmission=false, resources = [], hourlyRates = [] } = {},
 ) {
   const l = listing ?? {};
   const photoList = Array.isArray(photos) ? photos : [];
-  const pricedSlots = prices.filter((p) => p.weekday > 0 || p.weekend > 0);
+  const pricedSlots = prices.filter((p) => p.weekday >= 500 && p.weekend >= 500);
 
   const liveDocs = documents.filter((d) => d.status !== 'rejected');
   const rejectedDoc = documents.find((d) => d.status === 'rejected');
@@ -110,7 +110,7 @@ export function listingCompletion(
       id: 'capacity',
       label: 'Size and capacity',
       hint: 'Guests, bedrooms, farm size',
-      done: Boolean(l.capacity > 0 && l.farmSize),
+      done: Boolean(l.capacity > 0 && Number.isInteger(l.bedrooms) && l.bedrooms >= 0),
       minutes: 2,
     },
     {
@@ -167,8 +167,8 @@ export function listingCompletion(
        * a classified ad.
        */
       done: liveDocs.length >= 1,
-      failed: Boolean(rejectedDoc),
-      note: rejectedDoc
+      failed: !liveDocs.length && Boolean(rejectedDoc),
+      note: !liveDocs.length && rejectedDoc
         ? `Rejected — ${rejectedDoc.reviewNote ?? 'please upload a clearer copy'}`
         : null,
       minutes: 3,
@@ -179,6 +179,11 @@ export function listingCompletion(
   // slots; venue rules replace the check-in window; hourly bands replace slot prices.
   if (l.rentalUnit === 'hour') sections = venueSections(sections, l, { resources, hourlyRates });
 
+  const by = id => sections.find(section=>section.id===id);
+  const story=by('basics'), rules=by('rules'), terms=by('terms');
+  const space=by(l.rentalUnit==='hour'?'venue':'capacity');
+  const availability=l.rentalUnit==='hour'?by('hours'):{id:'availability',label:'Availability',hint:'Arrival, departure and open dates',done:legacySubmission || l.bookingConfig?.inventoryReady===true,minutes:3};
+  sections=[{id:'type',label:'Type',done:Boolean(l.categoryId),minutes:1},by('location'),{...space,id:'space'},by('amenities'),by('photos'),{...story,id:'story',label:'Title and description'},by('pricing'),{...availability,id:'availability'}, {...rules,id:'rules',label:'Rules and cancellation',done:rules.done && terms.done && (legacySubmission || !['draft','rejected'].includes(l.status??'draft') || l.houseRules?.cancellationConfirmed===true)},by('ownership')];
   const total = sections.length;
   const done = sections.filter((s) => s.done).length;
   const remaining = sections.filter((s) => !s.done);

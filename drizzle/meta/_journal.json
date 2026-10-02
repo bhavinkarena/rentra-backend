@@ -407,6 +407,13 @@
       "when": 1790591500002,
       "tag": "0057_owner_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1790591500003,
+      "tag": "0058_owner_property_drafts",
+      "breakpoints": true
     }
   ]
 }

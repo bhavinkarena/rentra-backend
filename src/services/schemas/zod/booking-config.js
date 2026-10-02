@@ -19,6 +19,8 @@ const slot = z.union([z.object({ enabled: z.literal(false) }).strict(), enabledS
 
 export const bookingConfigSchema = z.object({
   timeZone: z.literal(BOOKING_POLICY.timeZone),
+  autoOpen: z.boolean().optional(),
+  pricingIncludedGuests:z.number().int().min(1).max(500).optional(),
   leadTimeMinutes: z.number().int().min(0).max(525600),
   bookingHorizonDays: z.number().int().min(1).max(365),
   slots: z.object({ day: slot, night: slot, full_day: slot }).strict(),
@@ -47,6 +49,8 @@ const openDay = z.array(openWindow).max(2);
 export const hourlyBookingConfigSchema = z.object({
   model: z.literal('hourly'),
   timeZone: z.literal(BOOKING_POLICY.timeZone),
+  autoOpen: z.boolean().optional(),
+  pricingIncludedGuests:z.number().int().min(1).max(500).optional(),
   leadTimeMinutes: z.number().int().min(0).max(10_080),
   bookingHorizonDays: z.number().int().min(1).max(180),
   stepMinutes: z.union([z.literal(30), z.literal(60)]),
