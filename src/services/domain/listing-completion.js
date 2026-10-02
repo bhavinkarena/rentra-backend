@@ -76,6 +76,15 @@ export const VENUE_OWNERSHIP_DOC_TYPES = [
 ];
 
 /** Which documents prove a listing, by booking model ('hour' = venue). */
+/** An electricity bill (YYYY-MM-DD) issued today or within the last 3 calendar months, UTC dates. */
+export function billIsFresh(issuedAt, now = new Date()) {
+  const issued = new Date(`${issuedAt}T00:00:00Z`);
+  if (!issuedAt || !Number.isFinite(+issued) || issued.toISOString().slice(0, 10) !== issuedAt) return false;
+  const today = new Date(`${now.toISOString().slice(0, 10)}T00:00:00Z`);
+  const cutoff = new Date(today);
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - 3);
+  return issued >= cutoff && issued <= today;
+}
 export const ownershipDocTypesFor = (rentalUnit) => (rentalUnit === 'hour' ? VENUE_OWNERSHIP_DOC_TYPES : OWNERSHIP_DOC_TYPES);
 
 export function listingCompletion(

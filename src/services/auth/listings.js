@@ -21,7 +21,7 @@ import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
   ownershipDocSchema, venueRulesSchema, termsSchema,
 } from '@/services/schemas/zod/listing';
-import { MAX_PHOTOS, ownershipDocTypesFor } from '@/services/domain/listing-completion';
+import { MAX_PHOTOS, billIsFresh, ownershipDocTypesFor } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
@@ -545,8 +545,7 @@ export async function uploadOwnershipDocument(_prev, formData) {
     return { errors: { docType: 'Choose one of the listed documents' } };
 
   if (parsed.data.docType==='electricity_bill') {
-    const issued=new Date(parsed.data.issuedAt+'T00:00:00Z'), today=new Date(new Date().toISOString().slice(0,10)+'T00:00:00Z'), cutoff=new Date(today); cutoff.setUTCMonth(cutoff.getUTCMonth()-3);
-    if (!parsed.data.issuedAt || !Number.isFinite(+issued) || issued.toISOString().slice(0,10)!==parsed.data.issuedAt || issued<cutoff || issued>today) return {errors:{issuedAt:'Use an electricity bill issued within the last 3 months'}};
+    if (!billIsFresh(parsed.data.issuedAt)) return {errors:{issuedAt:'Use an electricity bill issued within the last 3 months'}};
   }
   const file = formData.get('file');
   if (!file || file.size === 0) return { errors: { file: 'Choose the document' } };
