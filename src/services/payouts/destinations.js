@@ -86,7 +86,9 @@ async function touchApplication(tx, clientId) {
 }
 
 async function supersede(tx, clientId, states) {
-  await tx`UPDATE payout_destination SET state='superseded',updated_at=now()
+  // The row CHECK ties "no submitted_at" to the draft state, so a replaced draft
+  // records when it was set aside.
+  await tx`UPDATE payout_destination SET state='superseded',submitted_at=coalesce(submitted_at,now()),updated_at=now()
     WHERE client_id=${clientId} AND state = ANY(${states}::text[])`;
 }
 
