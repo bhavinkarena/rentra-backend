@@ -19,6 +19,8 @@ const slot = z.union([z.object({ enabled: z.literal(false) }).strict(), enabledS
 
 export const bookingConfigSchema = z.object({
   timeZone: z.literal(BOOKING_POLICY.timeZone),
+  weekendDays:z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
+  earlyArrivalMinutes:z.number().int().min(0).max(1440).optional(),
   autoOpen: z.boolean().optional(),
   pricingIncludedGuests:z.number().int().min(1).max(500).optional(),
   leadTimeMinutes: z.number().int().min(0).max(525600),
@@ -37,7 +39,7 @@ export const bookingConfigSchema = z.object({
 
 export const priceOverrideSchema = z.object({
   rentableId: z.string().uuid(), day: localDateSchema, slot: slotEnum,
-  rentMinor: z.number().int().min(0).max(50_000_000).nullable(),
+  rentMinor: z.number().int().min(50000,'Enter at least ?500, or close the slot instead').max(50_000_000).nullable(),
 }).strict();
 
 const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
@@ -49,6 +51,8 @@ const openDay = z.array(openWindow).max(2);
 export const hourlyBookingConfigSchema = z.object({
   model: z.literal('hourly'),
   timeZone: z.literal(BOOKING_POLICY.timeZone),
+  weekendDays:z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
+  earlyArrivalMinutes:z.number().int().min(0).max(1440).optional(),
   autoOpen: z.boolean().optional(),
   pricingIncludedGuests:z.number().int().min(1).max(500).optional(),
   leadTimeMinutes: z.number().int().min(0).max(10_080),

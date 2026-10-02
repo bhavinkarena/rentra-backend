@@ -106,7 +106,7 @@ function allocation(row, actor) {
     )
       held += funded;
     else if (['pending', 'processing'].includes(row.payout_status)) pending += funded;
-    if (row.booking_state !== 'completed') {
+    if (!['completed','no_show'].includes(row.booking_state)) {
       pending += remaining;
       if (remaining) reasons.push('Visit not completed; no payout eligibility.');
     } else if (!row.owner_id || !row.owner_active || row.current_destination_state !== 'verified') {

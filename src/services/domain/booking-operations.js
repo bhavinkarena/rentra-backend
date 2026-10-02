@@ -1,13 +1,14 @@
 /** Operational cues use actual visit state and precise instants, never payment state. */
-export function visitOperation(visit, now = new Date()) {
+export function visitOperation(visit, now = new Date(), earlyArrivalMinutes = 120) {
   const state = visit.state;
   if (state === 'cancelled') return { label: 'Cancelled — no arrival access', action: null };
+  if (state === 'no_show') return {label:'No show',action:null};
   if (state === 'completed') return { label: 'Completed', action: null };
   if (state === 'disputed') return { label: 'Disputed — contact Rentra support', action: null };
   if (!visit.hours_known || !visit.starts_at)
     return { label: 'Visit hours need reconciliation', action: null };
   if (state === 'confirmed')
-    return +new Date(visit.starts_at) <= +new Date(now)
+    return +new Date(visit.starts_at)-earlyArrivalMinutes*60000 <= +new Date(now)
       ? { label: 'Arrival due — record actual handover', action: 'handover' }
       : { label: 'Upcoming arrival', action: null };
   if (state === 'handed_over')

@@ -42,6 +42,7 @@ export async function seedReviewFixture(sql) {
   const [document] =
     await sql`INSERT INTO document(owner_type,owner_id,doc_type,storage_key,status) VALUES ('rentable',${listing.id},'extract_7_12','fixture/private-evidence','uploaded') RETURNING id`;
   await sql`UPDATE rentable SET booking_config=${JSON.stringify({ timeZone: 'Asia/Kolkata', leadTimeMinutes: 0, bookingHorizonDays: 90, inventoryReady: true, slots: { day: { enabled: true, startTime: '09:00', endTime: '18:00', endDayOffset: 0, bufferBeforeMinutes: 0, bufferAfterMinutes: 0, capacity: 12, includedGuests: 12, extraGuestChargeMinor: 0 }, night: { enabled: false }, full_day: { enabled: false } } })}::text::jsonb,house_rules='{"cancellationConfirmed":true}'::jsonb WHERE id=${listing.id}`;
+  await sql`UPDATE rentable SET house_rules=coalesce(house_rules,'{}'::jsonb)||'{"cancellationConfirmed":true}'::jsonb WHERE id=${listing.id}`;
   return {
     owner: owner.id,
     other: other.id,

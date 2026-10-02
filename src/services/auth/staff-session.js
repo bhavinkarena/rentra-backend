@@ -86,7 +86,7 @@ export const getCurrentStaff = cache(async () => {
     ownerId: row.client_id,
     ownerName: row.owner_name,
     ownerPhone: row.owner_phone,
-    permissions: { evidence: row.permissions?.evidence === true },
+    permissions: { evidence: row.permissions?.evidence === true,guestContact:row.permissions?.guestContact!==false },
     properties: properties.map((p) => ({ id: p.id, title: p.title })),
     capabilities: capabilitiesFor(actor, 'staff'),
   };

@@ -26,7 +26,7 @@ async function perform(form, run, command, draft = false) {
       if (['open','block'].includes(command)) {
         const start = new Date(String(form.get('from')));
         const end = new Date(String(form.get('to')));
-        if (!Number.isFinite(+start) || !Number.isFinite(+end) || end < start || end-start > 30*86400000) throw new RangeError('Choose at most 31 ordered dates.');
+        if (!Number.isFinite(+start) || !Number.isFinite(+end) || end < start || end-start > 365*86400000) throw new RangeError('Choose at most 366 ordered dates.');
       }
       result = await calendarCommand(sql, owner.id, {
         rentableId, command, values, expectedCalendarVersion: form.get('expectedCalendarVersion'),
@@ -66,7 +66,7 @@ async function schedule(form, draft) {
     }
     return saveBookingConfiguration(database, ownerId, {
       rentableId, expectedVersion: Number(form.get('expectedVersion')),
-      configuration: { timeZone: 'Asia/Kolkata', leadTimeMinutes: Number(form.get('leadTimeMinutes')), bookingHorizonDays: Number(form.get('bookingHorizonDays')), slots },
+      configuration: { timeZone: 'Asia/Kolkata', autoOpen:form.get('autoOpen')==='on', earlyArrivalMinutes:Number(form.get('earlyArrivalMinutes')??120),weekendDays:String(form.get('weekendDays')||'6,0').split(',').map(Number), leadTimeMinutes: Number(form.get('leadTimeMinutes')), bookingHorizonDays: Number(form.get('bookingHorizonDays')), slots },
     });
   }, 'schedule', draft);
 }

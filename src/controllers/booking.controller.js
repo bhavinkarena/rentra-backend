@@ -1,3 +1,9 @@
+import {
+  addOfflineBooking,
+  regenerateCalendarFeed,
+  saveOwnerBookingNote,
+} from '../services/booking/owner-experience.js';
+import { changeCalendarCells, undoCalendarCells } from '../services/booking/calendar-bulk.js';
 import { sql } from '@/config/database.js';
 import { requestBookingQuote } from '@/services/booking/actions.js';
 import {
@@ -70,3 +76,56 @@ async function readCalendar(ownerId, query) {
     throw error;
   }
 }
+
+export const calendarDay = asyncHandler(async (req, res) => {
+  const page = await readCalendar(req.user.id, {
+    from: req.query.date,
+    days: 1,
+    property: req.params.id,
+  });
+  if (!page.items.length) throw notFound();
+  return ok(res, page.items[0]);
+});
+export const calendarBulk = asyncHandler(async (req, res) => {
+  let change;
+  try {
+    change = JSON.parse(req.body.change);
+  } catch {
+    throw badRequest('INVALID_CALENDAR_CHANGE', 'Choose dates, slots and one change');
+  }
+  return ok(
+    res,
+    await changeCalendarCells(sql, req.user.id, {
+      rentableId: req.params.id,
+      change,
+      expectedCalendarVersion: req.body.expectedCalendarVersion,
+      preview: req.body.mode === 'preview',
+      previewToken: req.body.previewToken,
+    }),
+  );
+});
+
+export const offlineBooking = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await addOfflineBooking(sql, req.user.id, {
+      ...req.body,
+      rentableId: req.params.id,
+      guests: Number(req.body.guests),
+      collectedMinor: req.body.collectedMinor ? Number(req.body.collectedMinor) : undefined,
+    }),
+  ),
+);
+export const calendarFeed = asyncHandler(async (req, res) =>
+  ok(res, await regenerateCalendarFeed(sql, req.user.id, req.params.id)),
+);
+export const ownerNote = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await saveOwnerBookingNote(sql, req.user.id, { orderId: req.params.id, body: req.body.body }),
+  ),
+);
+
+export const calendarUndo = asyncHandler(async (req, res) =>
+  ok(res, await undoCalendarCells(sql, req.user.id, req.body.token)),
+);

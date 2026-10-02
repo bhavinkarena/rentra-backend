@@ -24,8 +24,8 @@ export async function ownerCalendarPage(database, ownerId, rentableId) {
     const rows = await tx`
       SELECT r.id, r.blocked_start_at, r.blocked_end_at, r.reason, r.resource_id, rs.name AS resource_name
       FROM inventory_reservation r LEFT JOIN rentable_resource rs ON rs.id = r.resource_id
-      WHERE r.rentable_id=${rentableId} AND r.source='owner_block' AND r.state='committed'
-      ORDER BY r.blocked_start_at`;
+      WHERE r.rentable_id=${rentableId} AND r.source='owner_block' AND r.state='committed' AND r.blocked_end_at>now()
+      ORDER BY r.blocked_start_at LIMIT 100`;
     const resources = listing.rental_unit === 'hour'
       ? await tx`SELECT id, name, capacity, is_active AS "isActive" FROM rentable_resource WHERE rentable_id=${rentableId} ORDER BY sort_order, name, id`
       : [];

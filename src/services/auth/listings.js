@@ -93,7 +93,7 @@ async function load(id) {
  * approval defeats the entire verification, which is why the two are not
  * treated the same. Existing confirmed bookings are untouched either way.
  */
-async function applyEdit(listing, fields, changed, { expected = null, children = null } = {}) {
+async function applyEdit(listing, fields, changed, { expected = null, children = null,autosave=false } = {}) {
 
   /**
    * The status decision is made on the row as it is NOW, under its lock, not
@@ -120,6 +120,7 @@ async function applyEdit(listing, fields, changed, { expected = null, children =
     const [owner] = await tx.select({ status: users.accountStatus }).from(users).where(eq(users.id, listing.clientId)).for('share');
     if (!owner || (owner.status !== 'active' && !(owner.status === 'pending_application' && current.status === 'draft'))) throw notFound();
     assertVersion(current.contentVersion, expected);
+    if(autosave){const booked=await tx.execute(raw`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`);if(!['draft','rejected'].includes(current.status)||booked.length)throw conflict('EXPLICIT_SAVE_REQUIRED','Use Save for properties with bookings');}
     // Pressing Save without changing anything must not take a live property out of search.
     const touchesTrust =
       trustChanges(current, fields, changed.filter((f) => TRUST_FIELDS.has(f))).length > 0;
@@ -205,7 +206,7 @@ export async function saveBasics(_prev, formData) {
     slug: `${slugify(d.title)}-${listing.publicCode}`,
     description: d.description,
     highlight: d.highlight || null,
-  }, ['categoryId', 'title'], { expected: expectedVersion(formData) });
+  }, ['categoryId', 'title'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -229,7 +230,7 @@ export async function saveLocation(_prev, formData) {
     areaId: d.areaId,
     location: { x: d.lng, y: d.lat },
     exactAddress: d.exactAddress,
-  }, ['location', 'exactAddress'], { expected: expectedVersion(formData) });
+  }, ['location', 'exactAddress'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -252,7 +253,7 @@ export async function saveCapacity(_prev, formData) {
     farmSize: d.farmSize || null,
     farmSizeUnit: d.farmSizeUnit,
     poolSize: d.poolSize || null,
-  }, ['capacity', 'bedrooms'], { expected: expectedVersion(formData) });
+  }, ['capacity', 'bedrooms'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -285,7 +286,7 @@ export async function saveAmenities(_prev, formData) {
 
 export async function saveRules(_prev, formData) {
   const { listing } = await load(String(formData.get('id')));
-  if (formData.get('wizardRules')==='1') { const terms=termsSchema.safeParse(Object.fromEntries(formData)); if (!terms.success) return {errors:fieldErrors(terms.error)}; if(formData.get('cancellationConfirmed')!=='on') return {errors:{cancellationConfirmed:'Confirm your cancellation policy'}}; }
+  if (formData.get('wizardRules')==='1') { const [booking]=await sql`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`;if(!['draft','rejected'].includes(listing.status)||booking)throw conflict('EXPLICIT_SAVE_REQUIRED','Use the policy preview for this property'); const terms=termsSchema.safeParse(Object.fromEntries(formData)); if (!terms.success) return {errors:fieldErrors(terms.error)}; if(formData.get('cancellationConfirmed')!=='on') return {errors:{cancellationConfirmed:'Confirm your cancellation policy'}}; }
   if (listing.rentalUnit === 'hour') return saveVenueRules(listing, formData);
   const parsed = rulesSchema.safeParse({
     checkInFrom: formData.get('checkInFrom'),
@@ -320,7 +321,7 @@ export async function saveRules(_prev, formData) {
     checkOutBy: d.checkOutBy,
     houseRules,
     ...(formData.get('wizardRules')==='1'?{depositMinor:termsSchema.parse(Object.fromEntries(formData)).depositAmount*100,cancellationTier:termsSchema.parse(Object.fromEntries(formData)).cancellationTier,bookingConfigVersion:raw`${rentable.bookingConfigVersion}+1`}:{}),
-  }, ['houseRules'], { expected: expectedVersion(formData) });
+  }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -346,7 +347,7 @@ async function saveVenueRules(listing, formData) {
     notes: d.extraRules || null,
     cancellationConfirmed: formData.get('wizardRules')==='1' ? true : listing.houseRules?.cancellationConfirmed,
   };
-  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules, ...(formData.get('wizardRules')==='1'?{depositMinor:termsSchema.parse(Object.fromEntries(formData)).depositAmount*100,cancellationTier:termsSchema.parse(Object.fromEntries(formData)).cancellationTier,bookingConfigVersion:raw`${rentable.bookingConfigVersion}+1`}:{}) }, ['houseRules'], { expected: expectedVersion(formData) });
+  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules, ...(formData.get('wizardRules')==='1'?{depositMinor:termsSchema.parse(Object.fromEntries(formData)).depositAmount*100,cancellationTier:termsSchema.parse(Object.fromEntries(formData)).cancellationTier,bookingConfigVersion:raw`${rentable.bookingConfigVersion}+1`}:{}) }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
   return { ok: true, contentVersion, sentBack };
 }
 
@@ -441,7 +442,7 @@ export async function uploadListingPhotos(_prev, formData) {
   }
 
   const { sentBack, contentVersion } = await applyEdit(
-    listing, { photos: [...photos, ...added] }, ['photos'], { expected: expectedVersion(formData) },
+    listing, { photos: [...photos, ...added] }, ['photos'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) },
   );
 
   await audit({
@@ -465,7 +466,7 @@ export async function removeListingPhoto(_prev, formData) {
 
   const { sentBack, contentVersion } = await applyEdit(
     listing, { photos: renumberPhotos(next, listing.title) }, [],
-    { expected: expectedVersion(formData) ?? listing.contentVersion },
+    {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) ?? listing.contentVersion },
   );
   if(key.startsWith(`rentra/listings/${listing.id}/`)) await destroyListingPhoto(key).catch(()=>null);
   return { ok: true, contentVersion, sentBack, remaining: next.length };

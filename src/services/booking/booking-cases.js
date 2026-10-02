@@ -282,7 +282,7 @@ const resolveSchema = z
   .object({
     caseId: uuid,
     expectedVersion: z.number().int().min(1),
-    outcome: z.enum(['visits_cancelled', 'declined', 'no_change']),
+    outcome: z.enum(['visits_cancelled', 'declined', 'no_change','no_show','partial_refund']),refundMinor:z.number().int().min(1).max(50000000).optional(),
     basis: z.enum(REFUND_BASES).nullable().default(null),
     hash: z.string().regex(/^[a-f0-9]{64}$/).nullable().default(null),
     note: z.string().trim().min(10).max(1000),
@@ -311,6 +311,27 @@ export async function resolveBookingCase(database, actor, input) {
     if (fresh.version !== value.expectedVersion) throw new CaseError('CASE_CHANGED', 'Case changed', { status: 409 });
     let cancellationId = null,
       refundIds = [];
+
+    if(['no_show','partial_refund'].includes(value.outcome)){
+      const visits=await tx`SELECT b.*,o.policy_snapshot FROM booking_case_visit cv JOIN booking b ON b.id=cv.booking_id JOIN booking_order o ON o.id=b.order_id WHERE cv.case_id=${fresh.id} ORDER BY b.id FOR UPDATE OF b`;
+      if(!visits.length)throw new CaseError('INVALID_OUTCOME','Choose the affected visits');
+      if(value.outcome==='no_show'){
+        if(fresh.type!=='no_show'||visits.some(v=>v.state!=='confirmed'||!v.hours_known||new Date(v.starts_at)>new Date()))throw new CaseError('INVALID_OUTCOME','No-show requires an overdue arrival with no recorded check-in');
+        if(visits.some(v=>(v.policy_snapshot?.cancellation?.noShow??0)!==0))throw new CaseError('POLICY_UNSUPPORTED','This accepted no-show policy needs refund review before resolution');
+        await tx`UPDATE booking_case SET outcome='no_show',outcome_note=${value.note},state='resolved',resolved_by=${actor.id},resolved_at=now(),resolve_key=${value.requestKey},resolve_hash=${requestHash},version=version+1,updated_at=now() WHERE id=${fresh.id}`;
+        await tx`UPDATE booking SET state='no_show',lifecycle_version=lifecycle_version+1,updated_at=now() WHERE id IN ${tx(visits.map(v=>v.id))}`;
+        // Paid inventory and accepted policy remain intact; no extra charge or automatic bank movement.
+        await lifecycle(tx,fresh.order_id,'no_show_'+value.requestKey.replaceAll('-',''),{visitIds:visits.map(v=>v.id),caseId:fresh.id});
+      }else{
+        if(!value.refundMinor||visits.some(v=>!['handed_over','returned','completed'].includes(v.state)))throw new CaseError('INVALID_OUTCOME','Partial refunds require a checked-in visit and an amount');
+        const sources=await capturedAllocations(tx,visits.map(v=>v.id));
+        if(!sources.length||!testSourcesOnly(sources))throw new CaseError('PAYMENT_UNSUPPORTED','Use the existing refund review process for payments outside the supported Test provider');
+        const available=sources.reduce((n,a)=>n+Math.max(0,Number(a.actual_minor)-Number(a.reserved)),0);
+        if(value.refundMinor>available)throw new CaseError('REFUND_EXCEEDS_CAPTURE','Refund cannot exceed the remaining verified captured amount');
+        let remaining=value.refundMinor;const refunds=sources.map(a=>{const amount=Math.min(remaining,Math.max(0,Number(a.actual_minor)-Number(a.reserved)));remaining-=amount;return {allocationId:a.id,transactionId:a.transaction_id,component:a.component,amount,bookingId:a.booking_id};}).filter(a=>a.amount>0);
+        refundIds=await createRefundObligations(tx,visits.map(v=>({id:v.id,refunds:refunds.filter(a=>a.bookingId===v.id)})),{reason:`Partial refund ? ${fresh.reference}`,idempotencyKey:value.requestKey,requestHash});
+      }
+    }
     if (value.outcome === 'visits_cancelled') {
       const planned = await casePlan(tx, fresh, value.basis);
       if (planned.hash !== value.hash) throw new CaseError('PREVIEW_CHANGED', 'The effects changed since the preview.', { status: 409 });
@@ -344,7 +365,7 @@ export async function resolveBookingCase(database, actor, input) {
         actualBankRefundMinor: 0,
       });
     }
-    const [resolved] = await tx`UPDATE booking_case SET state='resolved',outcome=${value.outcome},outcome_note=${value.note},
+    const [resolved] = value.outcome==='no_show' ? [{version:fresh.version+1}] : await tx`UPDATE booking_case SET state='resolved',outcome=${value.outcome},outcome_note=${value.note},
       refund_basis=${value.outcome === 'visits_cancelled' ? value.basis : null},cancellation_id=${cancellationId},resolved_at=clock_timestamp(),
       resolved_by=${actor.id},resolve_key=${value.requestKey},resolve_hash=${requestHash},version=version+1,updated_at=clock_timestamp()
       WHERE id=${fresh.id} RETURNING version`;

@@ -1,4 +1,5 @@
 import 'server-only';
+import {destroyDocument} from './cloudinary.js';
 import { isCloudinaryConfigured, signedUrl, uploadPrivateEvidence } from './cloudinary.js';
 
 /**
@@ -9,6 +10,7 @@ import { isCloudinaryConfigured, signedUrl, uploadPrivateEvidence } from './clou
  */
 const cloudinaryStore = Object.freeze({
   configured: () => isCloudinaryConfigured(),
+  remove:key=>destroyDocument(key),
   async put({ folder, name, buffer }) {
     return { key: (await uploadPrivateEvidence({ buffer, folder, publicId: name })).publicId };
   },
@@ -35,6 +37,7 @@ export function memoryEvidenceStore() {
   const files = new Map();
   return {
     files,
+    remove:async key=>files.delete(key),
     configured: () => true,
     async put({ folder, name, buffer }) {
       const key = `${folder}/${name}`;

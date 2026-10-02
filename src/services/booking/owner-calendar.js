@@ -1,4 +1,5 @@
 import 'server-only';
+import {calendarCells} from '../domain/owner-calendar.js';
 import { createHash, createHmac } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -11,14 +12,15 @@ import { addLocalDays, isLocalDate, propertyToday } from '../domain/booking-date
 
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-export async function calendarSnapshot(tx, listing) {
-  const state = await getInventoryState(tx, listing);
+export async function calendarSnapshot(tx, listing, window=null) {
+  const state = await getInventoryState(tx, listing,window);
   const overrides =
-    await tx`SELECT day::text,slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} ORDER BY day,slot`;
+    await tx`SELECT day::text,slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} AND (${window?.from||null}::timestamptz IS NULL OR day BETWEEN (${window?.from||null}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date AND (${window?.to||null}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date) ORDER BY day,slot`;
+  const rates=await tx`SELECT slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${listing.id} ORDER BY slot`;
   return {
     ...state,
     overrides,
-    version: digest([listing.booking_config_version, listing.content_version, state, overrides]),
+    version: digest([listing.booking_config, state, overrides,rates]),
   };
 }
 
@@ -39,16 +41,22 @@ export async function calendarCommand(database, ownerId, input, run) {
     return await withListingInventory(database, rentableId, async (tx, listing) => {
       if (listing.client_id !== ownerId)
         throw new InventoryError('NOT_FOUND', 'Property unavailable.');
-      const before = await calendarSnapshot(tx, listing);
-      if (!expectedCalendarVersion || expectedCalendarVersion !== before.version) {
+      const [block]=command==='unblock'?await tx`SELECT blocked_start_at,blocked_end_at FROM inventory_reservation WHERE id=${values.blockId} AND rentable_id=${rentableId} AND source='owner_block'`:[];
+      const dates=values.cells ? JSON.parse(values.cells).map(c=>c.date).sort() : [values.from||values.day||(values.blockedStartAt?propertyToday(values.blockedStartAt):block?propertyToday(block.blocked_start_at):null),values.to||values.day||(values.blockedEndAt?propertyToday(values.blockedEndAt):block?propertyToday(block.blocked_end_at):null)].filter(Boolean);
+      const window=dates.length?{from:`${dates[0]}T00:00:00+05:30`,to:`${addLocalDays(dates.at(-1),2)}T00:00:00+05:30`}:null;
+      const before = await calendarSnapshot(tx, listing,window);
+      if (!expectedCalendarVersion) {
         throw new InventoryError(
           'CALENDAR_CHANGED',
           'The calendar changed. Reload it and preview again.',
         );
       }
-      const token = createHmac('sha256', process.env.SESSION_SECRET)
+      const changeHash=digest([command,values]);
+      const signature = createHmac('sha256', process.env.SESSION_SECRET)
         .update(JSON.stringify([ownerId, rentableId, before.version, command, values]))
         .digest('hex');
+      const token=`${changeHash}.${before.version}.${signature}`;
+      if(!preview && previewToken?.split('.')[0]===changeHash && previewToken?.split('.')[1]!==before.version)throw new InventoryError('CALENDAR_CHANGED','These dates changed. Preview the latest changes before confirming.');
       if (!preview && token !== previewToken)
         throw new InventoryError(
           'PREVIEW_REQUIRED',
@@ -80,7 +88,7 @@ export async function calendarCommand(database, ownerId, input, run) {
               (r) =>
                 new Date(r.blocked_start_at) < end &&
                 new Date(r.blocked_end_at) > start &&
-                (r.state === 'committed' || new Date(r.hold_expires_at) > new Date()),
+                (r.state === 'committed' || new Date(r.hold_expires_at) > new Date()) && (!values.resourceId || !r.resource_id || r.resource_id===values.resourceId),
             )
             .map((r) => ({ source: r.source, from: r.blocked_start_at, to: r.blocked_end_at }));
         }
@@ -112,7 +120,7 @@ export async function ownerPortfolioCalendar(database, ownerId, query = {}) {
   const page = Number(query.page || 1);
   if (
     !isLocalDate(from) ||
-    ![7, 31].includes(days) ||
+    ![1,7,14,30,31,42].includes(days) ||
     !Number.isInteger(page) ||
     page < 1 ||
     page > 10000 ||
@@ -129,12 +137,12 @@ export async function ownerPortfolioCalendar(database, ownerId, query = {}) {
   for (const property of properties.slice(0, 10)) {
     const item = await withListingSnapshot(database, property.id, async (tx, listing) => {
       if (listing.client_id !== ownerId) return null;
-      const snapshot = await calendarSnapshot(tx, listing);
+      const snapshot = await calendarSnapshot(tx, listing,{from:`${from}T00:00:00+05:30`,to:`${to}T00:00:00+05:30`});
       const reservations =
-        await tx`SELECT r.id,r.source,r.state,r.reason,r.blocked_start_at,r.blocked_end_at,r.hold_expires_at,
-        b.order_id,b.slot,b.starts_at,b.ends_at,b.reference,b.guests,b.slot_snapshot->'activity'->>'name' AS activity,
+        await tx`SELECT r.id,r.source,r.state,r.reason,r.kind,r.details,r.blocked_start_at,r.blocked_end_at,r.hold_expires_at,
+        b.order_id,b.slot,b.starts_at,b.ends_at,b.reference,b.guests,b.state AS booking_state,b.amount_rent_minor AS rent_minor,b.slot_snapshot->>'includedGuests' AS included_guests,CASE WHEN b.state IN ('confirmed','handed_over','returned','disputed') OR (b.state='completed' AND EXISTS(SELECT 1 FROM visit_evidence e WHERE e.booking_id=b.id AND e.kind='complete' AND e.occurred_at>now()-interval '7 days')) THEN o.listing_snapshot->'contact'->>'name' END AS guest_name,CASE WHEN b.state IN ('confirmed','handed_over','returned','disputed') OR (b.state='completed' AND EXISTS(SELECT 1 FROM visit_evidence e WHERE e.booking_id=b.id AND e.kind='complete' AND e.occurred_at>now()-interval '7 days')) THEN o.listing_snapshot->'contact'->>'phone' END AS guest_phone,b.slot_snapshot->'activity'->>'name' AS activity,
         r.resource_id,rs.name AS resource_name
-        FROM inventory_reservation r LEFT JOIN booking b ON b.id=r.booking_id LEFT JOIN rentable_resource rs ON rs.id=r.resource_id
+        FROM inventory_reservation r LEFT JOIN booking b ON b.id=r.booking_id LEFT JOIN rentable_resource rs ON rs.id=r.resource_id LEFT JOIN booking_order o ON o.id=b.order_id
         WHERE r.rentable_id=${listing.id} AND (r.state='committed' OR (r.state='held' AND r.hold_expires_at>now()))
         AND r.blocked_start_at < (${to}::date::timestamp AT TIME ZONE 'Asia/Kolkata')
         AND r.blocked_end_at > (${from}::date::timestamp AT TIME ZONE 'Asia/Kolkata')
@@ -143,7 +151,10 @@ export async function ownerPortfolioCalendar(database, ownerId, query = {}) {
       const resources = listing.rental_unit === 'hour'
         ? await tx`SELECT id,name,sort_order AS "sortOrder",is_active AS "isActive" FROM rentable_resource WHERE rentable_id=${listing.id} ORDER BY sort_order,name,id`
         : [];
+      const rates=await tx`SELECT slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${listing.id}`;
       return {
+        cells: listing.rental_unit==='hour'?[]:calendarCells(listing,snapshot,rates,from,days),
+        config:listing.booking_config,
         id: listing.id,
         title: listing.title,
         rentalUnit: listing.rental_unit,

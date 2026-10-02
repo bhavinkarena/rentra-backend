@@ -26,6 +26,17 @@ export const operationalHistoryQuery = historyQuery.extend({
   tab: z
     .enum(['all', 'upcoming', 'today', 'action_needed', 'with_rentra', 'past', 'cancelled'])
     .default('all'),
+  from: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.literal(''))
+    .optional(),
+  to: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.literal(''))
+    .optional(),
+  event: z.enum(['all', 'arriving', 'leaving']).optional(),
   property: z.union([uuid, z.literal('')]).optional(),
   /** One court of the chosen property. */
   resource: z.union([uuid, z.literal('')]).optional(),

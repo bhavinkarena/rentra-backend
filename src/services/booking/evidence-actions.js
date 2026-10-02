@@ -126,3 +126,5 @@ export async function visitAttachmentFile(kind, orderId, attachmentId, ip) {
   const actor = await bookingActor(kind);
   return readVisitAttachment(sql, actor, orderId, attachmentId, { ip });
 }
+
+export async function reportStaffIncident(previous,form){return incident('staff',form);}

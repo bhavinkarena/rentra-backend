@@ -148,7 +148,7 @@ export const visitOutcome = pgEnum('visit_outcome', ['passed', 'failed', 'no_sho
 /** Same 7 states describe a guest checking in AND a camera leaving a shop. */
 export const bookingState = pgEnum('booking_state', [
   'requested', 'confirmed', 'handed_over', 'returned',
-  'completed', 'cancelled', 'disputed',
+  'completed', 'cancelled', 'disputed','no_show',
 ]);
 
 export const cancellationTier = pgEnum('cancellation_tier', [
@@ -182,6 +182,7 @@ export const reservationState = pgEnum('reservation_state', ['held', 'committed'
  * One account = one role, fixed at signup. Admins and caretakers are separate principals.
  */
 export const role = pgTable('role', {
+  ownerNote:text('owner_note').notNull().default(''),
   code: varchar('code', { length: 16 }).primaryKey(),
   label: varchar('label', { length: 60 }).notNull(),
   description: text('description'),
@@ -765,6 +766,7 @@ export const rentable = pgTable(
     cancellationTier: cancellationTier('cancellation_tier').notNull().default('moderate'),
     /** Explicit owner schedules; null is unavailable until reviewed/configured. */
     bookingConfig: jsonb('booking_config'),
+    arrivalGuide:jsonb('arrival_guide').notNull().default({}),
     bookingConfigVersion: integer('booking_config_version').notNull().default(0),
     extraGuestChargeMinor: minor('extra_guest_charge_minor').notNull().default(0),
 
@@ -1263,6 +1265,7 @@ export const booking = pgTable(
  * Expiry must be transitioned under the listing lock; a clock predicate is unsafe.
  */
 export const inventoryReservation = pgTable('inventory_reservation', {
+  kind:text('kind').notNull().default('block'), details:jsonb('details').notNull().default({}),
   id: uuid('id').primaryKey().defaultRandom(),
   bookingId: uuid('booking_id'), // Null for an owner block.
   rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
@@ -1747,7 +1750,7 @@ export const visitEvidence = pgTable('visit_evidence', {
 }, t => [uniqueIndex('visit_evidence_kind_idx').on(t.bookingId, t.kind),
   uniqueIndex('visit_evidence_request_idx').on(t.actorKind, t.actorId, t.requestKey),
   check('visit_evidence_valid_chk', sql`${t.kind} IN ('handover','return','complete') AND ${t.nature} IN ('actual','simulation')
-    AND ${t.actorKind} IN ('owner','admin','staff') AND length(trim(${t.note})) BETWEEN 20 AND 1000
+    AND ${t.actorKind} IN ('owner','admin','staff','system') AND length(trim(${t.note})) BETWEEN 0 AND 1000
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.occurredAt} <= ${t.recordedAt}`)]);
 
 /**
@@ -1778,7 +1781,7 @@ export const visitIncident = pgTable('visit_incident', {
   uniqueIndex('visit_incident_request_idx').on(t.actorKind, t.actorId, t.requestKey),
   index('visit_incident_booking_idx').on(t.bookingId, t.createdAt),
   check('visit_incident_valid_chk', sql`${t.category} IN ('damage','safety','access','conduct','amenity','other')
-    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin') AND ${t.state} IN ('open','closed')
+    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin','staff') AND ${t.state} IN ('open','closed')
     AND length(trim(${t.summary})) BETWEEN 5 AND 120 AND length(trim(${t.description})) BETWEEN 20 AND 2000
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.occurredAt} <= ${t.createdAt} AND ${t.version} >= 1
     AND ((${t.state}='open' AND ${t.closedAt} IS NULL AND ${t.closedBy} IS NULL AND ${t.resolutionNote} IS NULL)
@@ -1885,7 +1888,7 @@ export const bookingCase = pgTable('booking_case', {
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.version} >= 1 AND ${t.state} IN ('open','resolved')
     AND ((${t.state}='open' AND ${t.outcome} IS NULL AND ${t.outcomeNote} IS NULL AND ${t.refundBasis} IS NULL AND ${t.cancellationId} IS NULL
         AND ${t.resolvedAt} IS NULL AND ${t.resolvedBy} IS NULL AND ${t.resolveKey} IS NULL AND ${t.resolveHash} IS NULL)
-      OR (${t.state}='resolved' AND ${t.outcome} IN ('visits_cancelled','declined','no_change') AND length(trim(${t.outcomeNote})) BETWEEN 10 AND 1000
+      OR (${t.state}='resolved' AND ${t.outcome} IN ('visits_cancelled','declined','no_change','no_show','partial_refund') AND length(trim(${t.outcomeNote})) BETWEEN 10 AND 1000
         AND ${t.resolvedAt} IS NOT NULL AND ${t.resolvedBy} IS NOT NULL AND ${t.resolveKey} IS NOT NULL AND ${t.resolveHash} ~ '^[a-f0-9]{64}$'
         AND ((${t.outcome}='visits_cancelled') = (${t.cancellationId} IS NOT NULL))
         AND ((${t.outcome}='visits_cancelled') = (${t.refundBasis} IN ('policy','full')))))`)]);
@@ -2114,3 +2117,5 @@ export const contentPublication = pgTable('content_publication', {
   index('content_publication_current_idx').on(t.kind,t.effectiveAt),
   check('content_publication_review_chk', sql`(${t.isBaseline}=false AND ${t.reviewedBy} IS NOT NULL) OR (${t.isBaseline}=true AND ${t.kind}='contact' AND ${t.version}='2026-09-21')`),
   check('content_publication_kind_chk', sql`${t.kind} IN ('terms','privacy','cancellation','help','contact')`)]);
+
+export const calendarFeed=pgTable('calendar_feed',{rentableId:uuid('rentable_id').primaryKey().references(()=>rentable.id,{onDelete:'cascade'}),tokenHash:text('token_hash').notNull().unique(),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),revokedAt:timestamp('revoked_at',{withTimezone:true})});

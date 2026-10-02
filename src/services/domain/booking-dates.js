@@ -40,9 +40,9 @@ export function propertyToday(now = new Date(), timeZone = BOOKING_POLICY.timeZo
   return new Date(instant.getTime() + KOLKATA_OFFSET_MINUTES * MINUTE_MS).toISOString().slice(0, 10);
 }
 
-export function isWeekendLocalDate(value) {
+export function isWeekendLocalDate(value, weekendDays=[6,0]) {
   const day = parseLocalDate(value).getUTCDay();
-  return day === 0 || day === 6;
+  return weekendDays.includes(day);
 }
 
 export function formatLocalDate(value, options = {}) {

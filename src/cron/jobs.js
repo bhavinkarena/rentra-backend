@@ -1,3 +1,4 @@
+import { completeReturnedVisits } from '../services/booking/visit-lifecycle.js';
 import { cleanListingPhotoOrphans } from '../services/uploads/cloudinary.js';
 import { autoOpenDates } from '../services/booking/owner-settings.js';
 import { resumeEndedPauses } from '../services/auth/listings.js';
@@ -15,6 +16,12 @@ import {
 // One registry per worker keeps the existing sequential cadence and retry policy.
 export function createJobs(sql) {
   return [
+    {
+      name: 'complete-returned-visits',
+      run: () => completeReturnedVisits(sql),
+      intervalMs: 3600000,
+      lastRun: 0,
+    },
     {
       name: 'listing-photo-orphans',
       run: () => cleanListingPhotoOrphans(sql),

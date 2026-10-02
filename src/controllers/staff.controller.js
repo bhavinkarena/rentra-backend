@@ -1,3 +1,4 @@
+import { reportStaffIncident } from '../services/booking/evidence-actions.js';
 import { Readable } from 'node:stream';
 import { sql } from '@/config/database.js';
 import {
@@ -79,3 +80,5 @@ export const attachment = asyncHandler(async (req, res) => {
   res.set('X-Robots-Tag', 'noindex, nofollow');
   return Readable.fromWeb(file.body).pipe(res);
 });
+
+export const incident = runAction(reportStaffIncident);

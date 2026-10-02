@@ -12,11 +12,12 @@ async function ownerAccess(tx, listing, ownerId, draft = false) {
   if (!owner || listing.client_id !== ownerId) throw new InventoryError('FORBIDDEN', 'Property access unavailable.');
 }
 
-export async function saveBookingConfiguration(database, ownerId, { rentableId, expectedVersion, configuration }) {
+export async function saveBookingConfiguration(database, ownerId, { rentableId, expectedVersion, configuration, draftOnly = false }) {
   z.string().uuid().parse(rentableId);
   z.number().int().nonnegative().parse(expectedVersion);
   return withListingInventory(database, rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId, true);
+    if(draftOnly && (!['draft','rejected'].includes(listing.status) || (await tx`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`).length)) throw new InventoryError('EXPLICIT_SAVE_REQUIRED','Use the booking rules preview for this property.');
     // The listing's booking model picks the schema; a config in the other shape is refused.
     const hourly = bookingModel(listing) === 'hourly';
     const parsed = (hourly ? hourlyBookingConfigSchema : bookingConfigSchema).parse(configuration);
@@ -55,6 +56,7 @@ export async function saveBookingPriceOverride(database, ownerId, input) {
   const value = priceOverrideSchema.parse(input);
   return withListingInventory(database, value.rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId);
+    if(!listing.booking_config?.slots?.[value.slot]?.enabled || !(await tx`SELECT 1 FROM rentable_price WHERE rentable_id=${listing.id} AND slot=${value.slot}`).length)throw new InventoryError('SLOT_UNAVAILABLE','This slot is not offered. Enable it before setting a date price.');
     if (value.rentMinor === null) {
       await tx`DELETE FROM booking_price_override WHERE rentable_id=${listing.id} AND day=${value.day} AND slot=${value.slot}`;
     } else {

@@ -6,6 +6,7 @@ import { savedListingHref } from '../domain/saved-places.js';
 import { listingPath } from '../domain/listing-url.js';
 import { addLocalDays, propertyToday } from '../domain/booking-dates.js';
 import { visitOperation } from '../domain/booking-operations.js';
+import {isLocalDate} from '../domain/booking-dates.js';
 import { z } from 'zod';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
@@ -27,6 +28,7 @@ export function historyFilters(input = {}, operational = false) {
       // Entertainment plan, Phase 11: one court of a venue (only with a property).
       resource: uuid.safeParse(input.resource).success ? input.resource : ''} : {}),
     vertical: ['farmhouse', 'entertainment'].includes(input.vertical) ? input.vertical : '',
+    from:isLocalDate(input.from)?input.from:'',to:isLocalDate(input.to)?input.to:'',event:['arriving','leaving'].includes(input.event)?input.event:'all',
     q: typeof input.q === 'string' ? input.q.trim().slice(0, 100) : '' };
 }
 
@@ -63,7 +65,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
     // An unpaid or abandoned checkout is not a booking the owner has to handle.
     const allowed = actor.kind === 'owner' ? tx`${scoped} AND o.state NOT IN ('held','expired')` : scoped;
     const upcoming = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','disputed') AND v.ends_at>clock_timestamp())`;
-    const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed') AND v.ends_at<=clock_timestamp())`;
+    const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed','no_show') AND v.ends_at<=clock_timestamp())`;
     const cancelled = tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))`;
     const today = tx`EXISTS(SELECT 1 FROM booking b WHERE b.order_id=o.id AND ${ownerVisitDay(tx, propertyToday())})`;
     // CP13: an open incident needs Rentra follow-up, so it is admin work, not owner work.
@@ -72,7 +74,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       ? tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.hours_known AND (v.state='returned' OR (v.state='confirmed' AND v.starts_at<=clock_timestamp()) OR (v.state='handed_over' AND v.ends_at<=clock_timestamp())))`
       : tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (v.state IN ('returned','disputed') OR (v.state='confirmed' AND v.starts_at<=clock_timestamp()) OR (v.state='handed_over' AND v.ends_at<=clock_timestamp()) OR (v.state IN ('confirmed','handed_over') AND NOT v.hours_known) ${openIncident}))`;
     const withRentra = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (v.state='disputed' OR (v.state IN ('confirmed','handed_over','returned') AND NOT v.hours_known)))`;
-    const property = tx`${operational && filters.property ? tx`o.rentable_id=${filters.property}` : tx`true`}
+    const property = tx`((${filters.from}='' AND ${filters.to}='') OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (${filters.from}='' OR v.local_day>=NULLIF(${filters.from},'')::date) AND (${filters.to}='' OR v.local_day<=NULLIF(${filters.to},'')::date))) AND ${operational && filters.property ? tx`o.rentable_id=${filters.property}` : tx`true`}
       AND ${operational && filters.property && filters.resource ? tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.resource_id=${filters.resource})` : tx`true`}
       AND ${filters.vertical ? tx`EXISTS(SELECT 1 FROM category c WHERE c.id=r.category_id AND c.vertical_code=${filters.vertical})` : tx`true`}`;
     const tab = filters.tab === 'with_rentra' ? withRentra : filters.tab === 'today' ? today : filters.tab === 'action_needed' ? actionNeeded : filters.tab === 'upcoming' ? upcoming
@@ -81,6 +83,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
     // POSITION treats percent/underscore literally; customer search cannot widen its ownership scope.
     const match = tx`(${filters.q}='' OR position(lower(${filters.q}) in lower(o.reference))>0
       OR position(lower(${filters.q}) in lower(coalesce(o.listing_snapshot->>'title','')))>0
+      OR (${operational} AND (position(lower(${filters.q}) in lower(coalesce(o.listing_snapshot->'contact'->>'name','')))>0 OR position(${filters.q} in coalesce(o.listing_snapshot->'contact'->>'phone',''))>0))
       OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND position(lower(${filters.q}) in lower(v.reference))>0))`;
     const [summary] = await tx`SELECT count(*)::int total,
       count(*) FILTER (WHERE ${upcoming})::int upcoming,
@@ -88,18 +91,19 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       count(*) FILTER (WHERE ${cancelled})::int cancelled,
       count(*) FILTER (WHERE ${today})::int today, count(*) FILTER (WHERE ${actionNeeded})::int action_needed, count(*) FILTER (WHERE ${withRentra})::int with_rentra
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${match}`;
+    const properties=operational?await tx`SELECT r.id,r.title FROM rentable r WHERE ${actor.kind==='owner'?tx`r.client_id=${actor.id}`:tx`true`} ORDER BY r.title,r.id`:[];
     // Filter choices: the verticals this actor has bookings in, and the chosen property's courts.
     const verticals = (await tx`SELECT DISTINCT c.vertical_code AS code FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
       JOIN category c ON c.id=r.category_id WHERE ${allowed} ORDER BY 1`).map(row => row.code);
     const resources = operational && filters.property ? await tx`SELECT rs.id,rs.name FROM rentable_resource rs JOIN rentable r ON r.id=rs.rentable_id
       WHERE rs.rentable_id=${filters.property} AND ${scoped} ORDER BY rs.sort_order,rs.name` : [];
     if (actor.kind === 'owner') {
-      let visits = await ownerDayVisits(tx, actor.id, { filters, limit: filters.tab === 'today' ? size : 0, offset: filters.tab === 'today' ? (filters.page-1)*size : 0 });
+      let visits = await ownerDayVisits(tx, actor.id, { filters, event:filters.event, limit: filters.tab === 'today' ? size : 0, offset: filters.tab === 'today' ? (filters.page-1)*size : 0 });
       summary.today = visits.total;
       if (filters.tab === 'today') {
         const pages = Math.max(1,Math.ceil(visits.total/size)), page = Math.min(filters.page,pages);
-        if(page !== filters.page) visits = await ownerDayVisits(tx, actor.id, {filters,limit:size,offset:(page-1)*size});
-        return { ...filters,page,pages,total:visits.total,summary,items:visits.items,verticals,resources };
+        if(page !== filters.page) visits = await ownerDayVisits(tx, actor.id, {filters,event:filters.event,limit:size,offset:(page-1)*size});
+        return { ...filters,page,pages,total:visits.total,summary,items:visits.items,verticals,resources,properties };
       }
     }
     const count = filters.tab === 'all' ? summary.total : summary[filters.tab];
@@ -112,7 +116,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       : filters.tab === 'all' ? tx`(${upcoming}) DESC,CASE WHEN ${upcoming} THEN ${nextStart} END ASC,${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`
       : tx`${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`;
     const pages = Math.max(1, Math.ceil(count / size)), page = Math.min(filters.page, pages);
-    const rows = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
+    const rows = await tx`SELECT o.*,r.booking_config,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
       (SELECT min(v.local_day)::text FROM booking v WHERE v.order_id=o.id) first_visit,
       (SELECT count(*)::int FROM booking v WHERE v.order_id=o.id) visit_count,
       (SELECT row_to_json(f) FROM (SELECT v.slot,v.local_day,v.starts_at,v.ends_at,v.hours_known,v.time_zone,v.slot_snapshot,rs.name AS resource_name
@@ -123,7 +127,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${tab} AND ${match}
       ORDER BY ${order} LIMIT ${size} OFFSET ${(page - 1) * size}`;
-    return { ...filters, verticals, resources, page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), ...(operational ? {propertyId:row.rentable_id} : {}), visitCount: row.visit_count,
+    return { ...filters, verticals, resources, properties,page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), ...(operational ? {propertyId:row.rentable_id} : {}), visitCount: row.visit_count,
       visitStates: row.visit_states || [], payments: row.payments || [], vertical: row.vertical,
       // The first visit's own words and start, so a list says when and which court.
       firstVisitLabel: row.first_row ? visitLabel(row.first_row) : null, firstVisitSlot: row.first_row?.slot ?? null,
@@ -155,20 +159,21 @@ export async function readBookingRecord(database, actor, orderId, env = process.
   if (!uuid.safeParse(orderId).success) throw new BookingRecordError();
   return database.begin(async tx => {
     const { condition: allowed } = await scope(tx, actor, env);
-    const [order] = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
+    const [order] = await tx`SELECT o.*,r.booking_config,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
       WHERE o.id=${orderId} AND ${allowed}`;
     if (!order) throw new BookingRecordError();
     const [{now}] = await tx`SELECT clock_timestamp() now`;
     const rows = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,
       b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.created_at,b.confirmed_at,b.cancelled_at,b.updated_at,b.lifecycle_version,b.visit_provenance,
-      b.resource_id,rs.name AS resource_name,b.slot_snapshot->'activity' AS activity
+      b.slot_snapshot,b.resource_id,rs.name AS resource_name,b.slot_snapshot->'activity' AS activity
       FROM booking b LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
       WHERE b.order_id=${order.id} ORDER BY b.item_position NULLS LAST,b.local_day,b.id`;
     const [{ vertical }] = await tx`SELECT c.vertical_code AS vertical FROM rentable r JOIN category c ON c.id=r.category_id WHERE r.id=${order.rentable_id}`;
-    const visits = rows.map(row => ({ ...(actor.kind === 'customer' ? {} : {operation:visitOperation(row,now)}), id: row.id, reference: row.reference, state: row.state,
+    const visits = rows.map(row => ({ ...(actor.kind === 'customer' ? {} : {operation:visitOperation(row,now,order.booking_config?.earlyArrivalMinutes??120)}), id: row.id, reference: row.reference, state: row.state,
       date: row.local_day instanceof Date ? row.local_day.toISOString().slice(0, 10) : String(row.local_day).slice(0, 10), slot: row.slot, guests: row.guests,
       startsAt: row.hours_known ? instant(row.starts_at) : null, endsAt: row.hours_known ? instant(row.ends_at) : null,
       rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor),
+      includedGuests:row.slot_snapshot?.includedGuests??null,
       version: row.lifecycle_version, provenance: row.visit_provenance,
       label: visitLabel({ ...row, slot_snapshot: { activity: row.activity }, time_zone: order.time_zone }),
       // Time-booked visits (courts): which court and activity. Null for slot visits.
@@ -194,7 +199,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     const events = await tx`SELECT kind,created_at,payload->>'phase' phase FROM booking_lifecycle_event WHERE order_id=${order.id} ORDER BY created_at,id`;
     let arrival = null;
     const arrivalStates = actor.kind === 'customer' ? activeStates : ['confirmed','handed_over','returned','disputed'];
-    const operationalContact = visits.some(v=>arrivalStates.includes(v.state));
+    const operationalContact = visits.some(v=>arrivalStates.includes(v.state)) || (actor.kind==='owner' && (await tx`SELECT 1 FROM visit_evidence e JOIN booking b ON b.id=e.booking_id WHERE b.order_id=${order.id} AND b.state='completed' AND e.kind='complete' AND e.occurred_at>now()-interval '7 days' LIMIT 1`).length>0);
     // No private listing fields are even selected until ownership and confirmed visit status are established.
     if (visits.some(visit => arrivalStates.includes(visit.state))) {
       const [place] = await tx`SELECT r.exact_address,ST_X(r.location) longitude,ST_Y(r.location) latitude,u.name,u.phone
@@ -210,7 +215,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     }
     const cases = await casesForOrder(tx, order.id, actor.kind);
     const rebookHref = actor.kind === 'customer' ? await hourlyRebookHref(tx, order.id) : null;
-    return { ...orderDTO(order), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases,
+    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.rentMinor,0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.feeMinor,0)}:{}),
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
       policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,

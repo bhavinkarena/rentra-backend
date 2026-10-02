@@ -28,7 +28,7 @@ export const CASE_LABELS = Object.freeze({
   late_arrival: 'Late arrival',
   operational: 'Operational issue',
 });
-export const OUTCOME_LABELS = Object.freeze({
+export const OUTCOME_LABELS = Object.freeze({no_show:'Guest did not arrive',partial_refund:'Partial refund recorded',
   visits_cancelled: 'Visits cancelled',
   declined: 'Declined',
   no_change: 'Resolved without booking changes',

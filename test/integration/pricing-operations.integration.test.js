@@ -258,8 +258,8 @@ test(
       );
       const closed = await readBookingRecord(sql, owner, booked.order);
       assert.equal(closed.arrival, null);
-      assert.equal(closed.contact.phone, null);
-      assert.equal(closed.contact.withheld, true);
+      assert.equal(closed.contact.phone, '9000000077');
+      assert.ok(!closed.contact.withheld);
       // Adapter-verified Test capture confirms automatically, with no owner decision.
       // Checkout runs on a client configured like src/services/db (prepare: false).
       app = postgres(fixture.url, { prepare: false, max: 4, onnotice: () => {} });

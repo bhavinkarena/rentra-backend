@@ -1,3 +1,4 @@
+import {offlineBookings} from '../booking/owner-experience.js';
 import { z } from 'zod';
 import { forbidden } from '../../utils/apiError.js';
 import { clientTasks } from './client-inbox.js';
@@ -21,22 +22,24 @@ export function bookedRent(items) {
 }
 
 async function needsYou(database, ownerId) {
-  const [base, dates, reviews, disputes, support] = await Promise.all([
+  const [base, dates, reviews, disputes, support, incidents] = await Promise.all([
     clientTasks(database,ownerId),
     database`SELECT r.id,r.title,max(a.day)::text last_day FROM rentable r JOIN availability a ON a.rentable_id=r.id
-      WHERE r.client_id=${ownerId} AND r.status='live' AND r.rental_unit::text<>'hour' AND a.units_available>0
+      WHERE r.client_id=${ownerId} AND r.status='live' AND r.rental_unit::text<>'hour' AND coalesce(r.booking_config->>'autoOpen','false')<>'true' AND a.units_available>0
         AND a.day>=(clock_timestamp() AT TIME ZONE 'Asia/Kolkata')::date
       GROUP BY r.id HAVING max(a.day)<=(clock_timestamp() AT TIME ZONE 'Asia/Kolkata')::date+14`,
     database`SELECT v.id,r.title FROM public_customer_review v JOIN rentable r ON r.id=v.rentable_id
       WHERE r.client_id=${ownerId} AND v.owner_reply IS NULL ORDER BY v.id LIMIT 20`,
     database`SELECT id,subject FROM dispute_case WHERE owner_id=${ownerId} AND state='open' AND requested_party='owner' ORDER BY response_due NULLS LAST,id LIMIT 20`,
     database`SELECT id,subject FROM support_request WHERE client_id=${ownerId} AND state='waiting_customer' ORDER BY updated_at,id LIMIT 20`,
+    database`SELECT i.id,b.order_id,r.title FROM visit_incident i JOIN booking b ON b.id=i.booking_id JOIN rentable r ON r.id=b.rentable_id WHERE r.client_id=${ownerId} AND i.state='open' ORDER BY i.created_at DESC LIMIT 20`,
   ]);
   return { tasks: [
     ...base.tasks.filter(t => t.key !== 'visits_today' && !(t.key==='updates_unread' && base.actionUnread>0)),
     ...dates.map(r => ({key:`dates_running_out:${r.id}`,kind:'action',count:1,label:`${r.title}: open dates end on ${r.last_day}.`,href:`/partner/listings/${r.id}/calendar`,action:'Open more dates'})),
     ...reviews.map(r => ({key:`reviews_unreplied:${r.id}`,kind:'action',count:1,label:`Reply to a guest review of ${r.title}.`,href:`/partner/reviews/${r.id}`,action:'Reply'})),
     ...disputes.map(r => ({key:`dispute_response_requested:${r.id}`,kind:'action',count:1,label:`Rentra needs your response: ${r.subject}.`,href:`/partner/disputes/${r.id}`,action:'Respond'})),
+    ...incidents.map(r=>({key:`visit_incident:${r.id}`,kind:'action',count:1,label:`An incident was reported at ${r.title}.`,href:`/partner/bookings/${r.order_id}`,action:'Read report'})),
     ...support.map(r => ({key:`support_awaiting_owner:${r.id}`,kind:'action',count:1,label:`Reply to Rentra about ${r.subject}.`,href:`/partner/support/${r.id}`,action:'Reply'})),
   ] };
 }
@@ -53,7 +56,7 @@ async function visits(database,ownerId) {
       WHERE r.client_id=${ownerId} AND o.state NOT IN ('held','expired') AND b.state='confirmed' AND b.hours_known
         AND b.starts_at>=(${today}::date+1)::timestamp AT TIME ZONE 'Asia/Kolkata' ORDER BY b.starts_at,b.id LIMIT 1`,
   ]);
-  return {date:today,total:all.total,arrivals:arrivals.items,arrivalCount:arrivals.total,
+  return {date:today,offline:await offlineBookings(database,ownerId),total:all.total,arrivals:arrivals.items,arrivalCount:arrivals.total,
     departures:departures.items,departureCount:departures.total,onSite:onSite.items,onSiteCount:onSite.total,
     next:next ? {title:next.title,startsAt:new Date(next.starts_at).toISOString(),label:visitLabel(next),href:`/partner/bookings/${next.order_id}#visit-${next.id}`} : null};
 }

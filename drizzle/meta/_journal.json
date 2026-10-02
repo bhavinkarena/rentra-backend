@@ -421,6 +421,13 @@
       "when": 1790591500004,
       "tag": "0059_owner_pause_until",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1790591500005,
+      "tag": "0060_owner_calendar_bookings",
+      "breakpoints": true
     }
   ]
 }

@@ -228,6 +228,23 @@ router.post('/listings/:id/pause', requireActiveClient, formFields(), listings.t
 /* ---------------------------------------------------------------- *
  * Booking calendar — Gate 1
  * ---------------------------------------------------------------- */
+router.get('/listings/:id/calendar/day', requireActiveClient, booking.calendarDay);
+router.post(
+  '/listings/:id/calendar/slots',
+  requireActiveClient,
+  formFields(),
+  booking.calendarBulk,
+);
+router.post(
+  '/listings/:id/calendar/price-overrides',
+  requireActiveClient,
+  formFields(),
+  booking.calendarBulk,
+);
+router.post('/listings/:id/calendar/offline', requireActiveClient, booking.offlineBooking);
+router.post('/listings/:id/calendar/feed', requireActiveClient, booking.calendarFeed);
+router.post('/records/:id/note', requireActiveClient, booking.ownerNote);
+router.post('/listings/:id/calendar/undo', requireActiveClient, booking.calendarUndo);
 router.get('/calendar', requireActiveClient, booking.portfolioCalendar);
 router.get(
   '/listings/:id/calendar',

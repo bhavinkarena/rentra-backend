@@ -156,6 +156,7 @@ export const availability = asyncHandler(async (req, res) => {
     rentableId: req.params.id,
     expectedVersion: input.expectedVersion,
     configuration,
+    draftOnly: true,
   });
   const data = await getListingForEdit(req.params.id, req.user.id);
   return ok(res, { ok: true, contentVersion: data.listing.contentVersion, ...result });
