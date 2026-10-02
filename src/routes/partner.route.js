@@ -180,6 +180,7 @@ router.post('/listings/:id/calendar/unblock', requireActiveClient, formFields(),
  * ---------------------------------------------------------------- */
 router.get('/updates', client, updates.list);
 router.get('/updates/unread', client, updates.unread);
+router.get('/nav-counts', client, updates.unread);
 router.post('/updates/read', client, formFields(), updates.read);
 router.get('/updates/preferences', client, updates.preferences);
 router.post('/updates/preferences', client, formFields(), updates.savePreferences);
