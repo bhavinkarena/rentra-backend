@@ -563,6 +563,15 @@ export async function reorderListingPhotos(_prev, formData) {
 export async function uploadOwnershipDocument(_prev, formData) {
   const { user, listing } = await load(String(formData.get('id')));
 
+  // The setup walkthrough's Continue submits this form; with no new file and a
+  // document already on record, there is nothing to upload.
+  const chosen = formData.get('file');
+  if (!chosen || chosen.size === 0) {
+    const [kept] = await sql`SELECT 1 FROM document WHERE owner_type='rentable' AND owner_id=${listing.id}
+      AND status IN ('uploaded','accepted') LIMIT 1`;
+    if (kept) return { ok: true, unchanged: true };
+  }
+
   if (!isCloudinaryConfigured()) {
     return { errors: { _: 'Document upload is not configured on this server yet.' } };
   }
