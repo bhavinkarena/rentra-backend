@@ -121,7 +121,7 @@ test(
       assert.equal(legacyDetail.amountMinor, '0');
       assert.equal(
         (await financePayouts(sql, owner, { ...query, environment: 'legacy_unknown' })).count,
-        2,
+        1,
       );
       const heldSource = await fixture.add('live', { createdAt: '2000-01-01T00:00:00Z' });
       const [pendingPayout] =

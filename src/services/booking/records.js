@@ -1,3 +1,4 @@
+import { ledger } from '../finance/statements.js';
 import { ownerDayVisits, ownerVisitDay } from './owner-visits.js';
 import 'server-only';
 import { houseRuleLines } from '../domain/venue-rules.js';
@@ -215,7 +216,8 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     }
     const cases = await casesForOrder(tx, order.id, actor.kind);
     const rebookHref = actor.kind === 'customer' ? await hourlyRebookHref(tx, order.id) : null;
-    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.rentMinor,0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.feeMinor,0)}:{}),
+    const earningLines = actor.kind==='owner' ? await tx`SELECT l.id,l.booking_id FROM (${ledger(tx)}) l WHERE l.order_id=${order.id} AND l.owner_id=${actor.id} AND l.component='rent' ORDER BY l.created_at,l.id` : [];
+    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note,earningLines:earningLines.map(r=>({id:r.id,visitId:r.booking_id}))}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.rentMinor,0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.feeMinor,0)}:{}),
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
       policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,

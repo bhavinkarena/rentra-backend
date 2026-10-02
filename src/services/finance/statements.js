@@ -28,7 +28,7 @@ export function statementFilters(query = {}) {
     throw badRequest('INVALID_FILTER', 'Choose a valid period, environment and property.');
   return parsed.data;
 }
-async function authorize(tx, actor) {
+export async function authorize(tx, actor) {
   if (!uuid.safeParse(actor?.id).success) throw forbidden();
   const rows =
     actor.kind === 'owner'
@@ -40,7 +40,7 @@ async function authorize(tx, actor) {
 }
 // Attribution comes only from immutable booking evidence or a funded, pinned payout.
 // Never use the property's current owner for historical financial access.
-function ledger(tx) {
+export function ledger(tx) {
   return tx`SELECT pa.id,pa.booking_id,pa.component,pa.actual_minor::text,pa.simulated_minor::text,pa.created_at,
     b.order_id,b.reference,b.rentable_id,b.state booking_state,b.amount_rent_minor::text quote_rent_minor,
     bo.listing_snapshot->>'title' title, r.client_id current_owner_id,
@@ -83,7 +83,7 @@ const keys = [
   'heldMinor',
   'settledMinor',
 ];
-function allocation(row, actor) {
+export function allocation(row, actor) {
   const cash = amount(row.actual_minor),
     refund = amount(row.refunded_minor),
     refundPending = amount(row.refund_pending_minor);
@@ -112,7 +112,7 @@ function allocation(row, actor) {
     } else if (!row.owner_id || !row.owner_active || row.current_destination_state !== 'verified') {
       held += remaining;
       if (remaining)
-        reasons.push('Historical owner attribution or verified destination is unavailable.');
+        reasons.push(!row.owner_id ? 'The owner at the time of booking could not be confirmed.' : !row.owner_active ? 'The owner account is currently unavailable.' : 'Your payout method has not been verified yet.');
     } else eligible = remaining;
     if (refundPending) reasons.push('An outstanding refund reserves funds.');
     if (row.payout_status === 'frozen') reasons.push('The recorded payout is frozen.');
@@ -140,6 +140,7 @@ function allocation(row, actor) {
     paymentOrderId: actor.kind === 'admin' ? row.payment_order_id : null,
     bookingLinkAvailable: actor.kind === 'admin' || row.current_owner_id === actor.id,
     quoteRentMinor: row.quote_rent_minor,
+    quotedRentMinor: row.quote_rent_minor,
     collectedMinor: row.actual_minor,
     simulatedMinor: row.simulated_minor,
     refundedMinor: row.refunded_minor,
@@ -180,7 +181,7 @@ async function readStatement(tx, actor, chosen) {
   const filters = { ...chosen, environment: chosen.environment ?? gateway?.environment ?? 'live' };
   if (actor.kind === 'owner' && filters.ownerId && filters.ownerId !== actor.id) throw notFound();
   const owner = actor.kind === 'owner' ? actor.id : filters.ownerId;
-  const start = `${filters.period}-01T00:00:00Z`;
+  const start = `${filters.period}-01T00:00:00${actor.kind==='owner'?'+05:30':'Z'}`;
   const rows =
     await tx`SELECT l.* FROM (${ledger(tx)}) l WHERE l.created_at>=${start}::timestamptz AND l.created_at<${start}::timestamptz+interval '1 month'
     AND l.environment=${filters.environment} AND (${owner}='' OR l.owner_id=${owner})
@@ -209,7 +210,7 @@ async function readStatement(tx, actor, chosen) {
     asOf: new Date().toISOString(),
     currency: 'INR',
     basis:
-      'Allocations received in this UTC month, with their current refund and payout outcomes. This is a current receipt-cohort statement, not a historical cash-flow or tax statement.',
+      `Allocations received in this ${actor.kind==='owner'?'IST':'UTC'} month, with their current refund and payout outcomes. This is a current receipt-cohort statement, not a historical cash-flow or tax statement.`,
     disbursementAvailable: false,
     settlementNotice:
       'Live payout execution and bank verification are unavailable. Accounting eligibility does not initiate a transfer.',
@@ -233,10 +234,14 @@ export async function financeAllocation(database, actor, id) {
   return database.begin('isolation level repeatable read read only', async (tx) => {
     await authorize(tx, actor);
     const [row] =
-      await tx`SELECT l.* FROM (${ledger(tx)}) l WHERE l.id=${id} AND (${actor.kind === 'admin'} OR l.owner_id=${actor.id})`;
+      await tx`SELECT l.* FROM (${ledger(tx)}) l WHERE l.id=${id} AND (${actor.kind === 'admin'} OR (l.owner_id=${actor.id} AND l.component='rent'))`;
     if (!row) throw notFound();
     return allocation(row, actor);
   });
+}
+function payoutEnvironment(tx) {
+  return tx`coalesce((SELECT l.environment FROM (${ledger(tx)}) l WHERE l.id=p.funding_allocation_id),
+    (SELECT CASE WHEN count(DISTINCT l.environment)=1 THEN min(l.environment) ELSE 'legacy_unknown' END FROM (${ledger(tx)}) l WHERE l.booking_id=p.booking_id),'legacy_unknown')`;
 }
 export async function financePayouts(database, actor, query = {}) {
   // Payout records exist only for live money.
@@ -245,11 +250,11 @@ export async function financePayouts(database, actor, query = {}) {
     await authorize(tx, actor);
     if (actor.kind === 'owner' && filters.ownerId && filters.ownerId !== actor.id) throw notFound();
     const owner = actor.kind === 'owner' ? actor.id : filters.ownerId;
-    const start = `${filters.period}-01T00:00:00Z`;
+    const start = `${filters.period}-01T00:00:00${actor.kind==='owner'?'+05:30':'Z'}`;
     const rows = await tx`SELECT p.id FROM payout p JOIN booking b ON b.id=p.booking_id
       WHERE (${owner}='' OR p.client_id::text=${owner}) AND (${filters.propertyId}='' OR b.rentable_id::text=${filters.propertyId})
       AND p.created_at>=${start}::timestamptz AND p.created_at<${start}::timestamptz+interval '1 month'
-      AND (${filters.environment}='legacy_unknown' AND NOT EXISTS(SELECT 1 FROM captured_payment_allocation c WHERE c.id=p.funding_allocation_id) OR ${filters.environment}='live' AND EXISTS(SELECT 1 FROM captured_payment_allocation c WHERE c.id=p.funding_allocation_id))
+      AND ${payoutEnvironment(tx)}=${filters.environment}
       ORDER BY p.created_at DESC,p.id LIMIT 1001`;
     if (rows.length > 1000)
       throw badRequest(
@@ -278,7 +283,8 @@ async function payoutDetails(tx, actor, ids) {
   const rows =
     await tx`SELECT p.*,b.order_id,b.reference,r.client_id current_owner_id,coalesce(bo.listing_snapshot->>'title','Historical property') title,
     d.version destination_version,d.state destination_state,d.method,d.account_last4,d.ifsc,d.upi_id,
-    EXISTS(SELECT 1 FROM captured_payment_allocation c WHERE c.id=p.funding_allocation_id) live
+    EXISTS(SELECT 1 FROM captured_payment_allocation c WHERE c.id=p.funding_allocation_id) live,
+    ${payoutEnvironment(tx)} environment
     FROM payout p JOIN booking b ON b.id=p.booking_id LEFT JOIN booking_order bo ON bo.id=b.order_id JOIN rentable r ON r.id=b.rentable_id
     LEFT JOIN payout_destination d ON d.id=p.destination_id WHERE p.id=ANY(${ids}::uuid[]) AND (${actor.kind === 'admin'} OR p.client_id=${actor.id}) ORDER BY p.created_at DESC,p.id`;
   return rows.map((p) => ({
@@ -291,9 +297,13 @@ async function payoutDetails(tx, actor, ids) {
     bookingLinkAvailable:
       Boolean(p.order_id) && (actor.kind === 'admin' || p.current_owner_id === actor.id),
     allocationId: p.funding_allocation_id,
-    environment: p.live ? 'live' : 'legacy_unknown',
+    environment: p.environment,
     status: p.status,
     amountMinor: p.live ? String(p.actual_net_minor) : '0',
+    legacyQuoteMinor: {
+      grossMinor: String(p.gross_minor), commissionMinor: String(p.commission_minor),
+      tdsMinor: String(p.tds_194o_minor), gstTcsMinor: String(p.gst_tcs_minor), netMinor: String(p.net_minor),
+    },
     legacyQuote: {
       grossRupees: Number(p.gross_minor) / 100,
       commissionRupees: Number(p.commission_minor) / 100,

@@ -109,6 +109,20 @@ router.delete('/documents', client, formFields(), documents.remove);
 router.post('/settings/account', client, formFields(), settings.account);
 router.get('/settings/payout', client, settings.payoutPage);
 router.post('/settings/payout', client, formFields(), settings.payout);
+router.post(
+  '/settings/payout/identity/code',
+  client,
+  requireActiveClient,
+  formFields(),
+  settings.payoutStepUp,
+);
+router.post(
+  '/settings/payout/identity/confirm',
+  client,
+  requireActiveClient,
+  formFields(),
+  settings.confirmPayoutIdentity,
+);
 router.post('/settings/payout/draft', client, formFields(), settings.payoutDraft);
 
 /* ---------------------------------------------------------------- *
@@ -385,6 +399,8 @@ router.get('/finance/allocations/:id', requireActiveClient, finance.allocation);
 router.get('/finance/payouts/:id', requireActiveClient, finance.payout);
 router.get('/finance/payouts', requireActiveClient, finance.payouts);
 router.get('/finance', requireActiveClient, finance.statement);
+router.get('/earnings', requireActiveClient, finance.earnings);
+router.get('/earnings/print', requireActiveClient, finance.earningsPrint);
 router.use('/disputes', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   next();

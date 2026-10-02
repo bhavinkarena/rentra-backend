@@ -428,6 +428,13 @@
       "when": 1790591500005,
       "tag": "0060_owner_calendar_bookings",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1790591500006,
+      "tag": "0061_owner_earnings",
+      "breakpoints": true
     }
   ]
 }

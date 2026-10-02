@@ -1,3 +1,5 @@
+import { sql } from '@/config/database.js';
+import { requestPayoutStepUp, confirmPayoutStepUp } from '@/services/auth/payout-step-up.js';
 import { saveAccountSettings } from '@/services/auth/settings.js';
 import {
   changePayoutDestination,
@@ -20,3 +22,14 @@ export const account = runAction(saveAccountSettings);
 export const payoutPage = asyncHandler(async (_req, res) => ok(res, await payoutDestinationPage()));
 export const payout = runAction(changePayoutDestination);
 export const payoutDraft = runAction(submitPayoutDraft);
+
+export const payoutStepUp = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  const actor = { kind: 'owner', id: req.user.id, sessionId: req.session?.sessionId };
+  ok(res, await requestPayoutStepUp(sql, actor));
+});
+export const confirmPayoutIdentity = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  const actor = { kind: 'owner', id: req.user.id, sessionId: req.session?.sessionId };
+  ok(res, await confirmPayoutStepUp(sql, actor, req.body));
+});

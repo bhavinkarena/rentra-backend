@@ -27,6 +27,7 @@ export function routeCapability(kind, method, path) {
   const segments = path.split('/').filter(Boolean);
   let domain = segments[0];
   if (kind === 'admin' && domain === 'users' && segments[2] === 'documents') domain = 'documents';
+  if (kind === 'client' && domain === 'earnings') domain = 'finance';
   if (kind === 'client' && domain === 'listings' && segments[2] === 'calendar') domain = 'calendar';
   const capability = `${kind}.${domain}.${['GET', 'HEAD'].includes(method) ? 'read' : 'write'}`;
   const known = kind === 'admin' ? ADMIN_CAPABILITIES : CLIENT_ACTIVE_CAPABILITIES;

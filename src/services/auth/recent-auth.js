@@ -10,12 +10,12 @@ export async function recentAuthentication(database, { kind, principalId, sessio
     return { fresh: false, authenticatedAt: null, freshUntil: null };
   }
   const owner = kind === 'admin' ? database`admin_id=${principalId}` : database`user_id=${principalId}`;
-  const [row] = await database`SELECT created_at,created_at+make_interval(mins=>${minutes}) fresh_until,
-      created_at+make_interval(mins=>${minutes})>clock_timestamp() fresh
+  const [row] = await database`SELECT coalesce(reauthenticated_at,created_at) authenticated_at,coalesce(reauthenticated_at,created_at)+make_interval(mins=>${minutes}) fresh_until,
+      coalesce(reauthenticated_at,created_at)+make_interval(mins=>${minutes})>clock_timestamp() fresh
     FROM auth_session WHERE id=${sessionId} AND ${owner} AND revoked_at IS NULL AND expires_at>clock_timestamp()`;
   return {
     fresh: Boolean(row?.fresh),
-    authenticatedAt: row ? new Date(row.created_at).toISOString() : null,
+    authenticatedAt: row ? new Date(row.authenticated_at).toISOString() : null,
     freshUntil: row ? new Date(row.fresh_until).toISOString() : null,
   };
 }

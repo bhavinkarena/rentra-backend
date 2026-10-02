@@ -290,9 +290,10 @@ export const otpChallenge = pgTable('otp_challenge', {
   index('otp_challenge_session_idx').on(t.sessionId).where(sql`${t.sessionId} IS NOT NULL`),
   index('otp_challenge_purge_idx').on(t.createdAt),
   check('otp_challenge_valid_chk', sql`${t.principalKind} IN ('customer','client','staff') AND ${t.channel} IN ('sms','email')
-    AND ${t.purpose} IN ('login','verify_phone','phone_change') AND ${t.attempts} >= 0
+    AND ${t.purpose} IN ('login','verify_phone','phone_change','payout_confirm') AND ${t.attempts} >= 0
     AND ${t.codeHash} ~ '^[a-f0-9]{64}$' AND ${t.expiresAt} > ${t.createdAt}
     AND (${t.browserHash} IS NULL OR ${t.browserHash} ~ '^[a-f0-9]{64}$')
+    AND (${t.purpose} <> 'payout_confirm' OR (${t.principalKind} = 'client' AND ${t.userId} IS NOT NULL AND ${t.sessionId} IS NOT NULL))
     AND (${t.purpose} <> 'phone_change' OR (${t.principalKind} = 'customer' AND ${t.userId} IS NOT NULL AND ${t.sessionId} IS NOT NULL))`),
 ]);
 
@@ -647,6 +648,7 @@ export const authSession = pgTable('auth_session', {
   /** CP16: a caretaker session; revoked with the caretaker's access. */
   staffId: uuid('staff_id').references(() => clientStaff.id, { onDelete: 'cascade' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  reauthenticatedAt: timestamp('reauthenticated_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 }, t => [
