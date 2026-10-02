@@ -13,8 +13,9 @@ export async function issuePortalSession(database, kind, id, ttlSeconds, verifie
       : kind === 'staff'
         ? await tx`SELECT s.id FROM client_staff s WHERE s.id=${id} AND s.is_active=true AND s.revoked_at IS NULL AND s.accepted_at IS NOT NULL
         AND EXISTS (SELECT 1 FROM "user" o WHERE o.id=s.client_id AND o.role='client' AND o.account_status='active') FOR UPDATE OF s`
-        : await tx`SELECT id,email FROM "user" WHERE id=${id} AND role='client' AND account_status IN ('active','pending_application') FOR UPDATE`;
+        : await tx`SELECT id,email,phone FROM "user" WHERE id=${id} AND role='client' AND account_status IN ('active','pending_application') FOR UPDATE`;
     if (!rows.length) return null;
+    if (verified.phone !== undefined && verified.phone !== rows[0].phone) return null;
     if (verified.email !== undefined && verified.email !== rows[0].email) return null;
     if (kind === 'admin' && verified.passwordHash !== undefined
       && (verified.passwordHash !== rows[0].password_hash || verified.totpSecret !== rows[0].totp_secret)) return null;

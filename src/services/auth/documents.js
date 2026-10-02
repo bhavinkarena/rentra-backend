@@ -12,7 +12,7 @@ import {
   isCloudinaryConfigured,
 } from '@/services/uploads/cloudinary';
 import { getCurrentUser } from './dal';
-import { getOrCreateApplication } from './application';
+import { getOrCreateApplication, onboardingNext } from './application';
 import { ID_DOCUMENT_BY_ID } from '@/services/constants';
 
 /**
@@ -74,8 +74,8 @@ function validateFile(file, side) {
   if (!file || typeof file.arrayBuffer !== 'function' || file.size === 0) {
     return `Choose a ${side} image`;
   }
-  if (file.size > UPLOAD_LIMITS.maxBytes) {
-    return `The ${side} image is ${(file.size / 1024 / 1024).toFixed(1)}MB — keep it under 2MB`;
+  if (file.size > 5 * 1024 * 1024) {
+    return `The ${side} image is ${(file.size / 1024 / 1024).toFixed(1)}MB — keep it under 5MB`;
   }
   return null;
 }
@@ -96,6 +96,7 @@ export async function uploadKycDocuments(_prev, formData) {
   }
 
   const app = await getOrCreateApplication(user.id);
+  if (user.accountStatus === 'active') redirect('/partner/settings?notice=verified');
   if (app.status === 'submitted') redirect('/partner?locked=in_review');
 
   const docType = String(formData.get('docType') ?? '');
@@ -118,11 +119,13 @@ export async function uploadKycDocuments(_prev, formData) {
 
   // Collect and validate every required side BEFORE uploading any of them, so
   // a bad back image cannot leave a stray front image in storage.
+  const existing = await listDocuments({ ownerType: 'client_application', ownerId: app.id });
   const staged = [];
   const errors = {};
 
   for (const side of spec.sides) {
     const file = formData.get(side);
+    if ((!file || file.size === 0) && existing.some(d => d.docType === docType && d.side === side && d.status !== 'rejected')) continue;
     const problem = validateFile(file, side);
     if (problem) {
       errors[side] = problem;
@@ -186,7 +189,7 @@ export async function uploadKycDocuments(_prev, formData) {
 
       uploaded.push(`${docType}/${item.side}`);
     }
-  } catch (err) {
+  } catch {
     return {
       errors: { _: `Upload failed: ${err.message}. Nothing was saved — please try again.` },
     };
@@ -211,7 +214,7 @@ export async function uploadKycDocuments(_prev, formData) {
     ip,
   });
 
-  redirect('/partner');
+  return onboardingNext(user.id, 'kyc');
 }
 
 /** Remove a document the Client uploaded — bytes destroyed, not just hidden. */
@@ -220,6 +223,7 @@ export async function deleteKycDocument(_prev, formData) {
   if (!user || user.role !== 'client') redirect('/partner/login');
 
   const app = await getOrCreateApplication(user.id);
+  if (user.accountStatus === 'active') redirect('/partner/settings?notice=verified');
   if (app.status === 'submitted') redirect('/partner?locked=in_review');
 
   const id = String(formData.get('documentId') ?? '');

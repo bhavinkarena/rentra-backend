@@ -1,3 +1,6 @@
+import { saveListingHours } from '@/services/booking/calendar-actions.js';
+import { runAction } from '@/utils/runAction.js';
+import { sql } from '@/services/db';
 import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
 import * as support from '@/controllers/support.controller.js';
@@ -42,6 +45,9 @@ import {
  * screens that fix their own rejection reason would be a dead end.
  * `requireActiveClient` is Gate 1, and guards publishing and the calendar.
  */
+import { readGuide, saveGuide, setupGuide } from '@/services/auth/owner-guide.js';
+import { asyncHandler } from '@/utils/asyncHandler.js';
+import { ok } from '@/utils/respond.js';
 const router = Router();
 const client = requireRole('client');
 router.use(requirePortalCapability('client'));
@@ -49,6 +55,22 @@ router.use(requirePortalCapability('client'));
 /* ---------------------------------------------------------------- *
  * Onboarding application
  * ---------------------------------------------------------------- */
+router.get(
+  '/guide-state',
+  client,
+  asyncHandler(async (req, res) => ok(res, await readGuide(sql, req.user.id))),
+);
+router.post(
+  '/guide-state',
+  client,
+  asyncHandler(async (req, res) => ok(res, await saveGuide(sql, req.user.id, req.body))),
+);
+router.get(
+  '/setup-guide',
+  requireActiveClient,
+  asyncHandler(async (req, res) => ok(res, await setupGuide(sql, req.user.id))),
+);
+
 router.get('/application', client, application.read);
 router.post('/application/details', client, formFields(), application.details);
 router.post('/application/payout', client, formFields(), application.payout);
@@ -123,6 +145,23 @@ for (const [step, handler] of [
   );
 }
 
+router.get(
+  '/listings/:id/hours',
+  client,
+  validate({ params: listingIdParam }),
+  booking.calendarPage,
+);
+router.post(
+  '/listings/:id/hours',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  (req, res, next) => {
+    req.body.rentableId = req.params.id;
+    next();
+  },
+  runAction(saveListingHours),
+);
 router.post('/listings/:id/photos', client, uploadLimiter, manyFiles('photos'), listings.addPhotos);
 router.delete('/listings/:id/photos', client, formFields(), listings.removePhoto);
 router.patch('/listings/:id/photos/order', client, formFields(), listings.reorderPhotos);

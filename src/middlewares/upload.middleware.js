@@ -38,7 +38,8 @@ export const singleFile = (field) => upload.single(field);
 export const manyFiles = (field, max = APP.uploadMaxFiles) => upload.array(field, max);
 
 /** Distinct field names, e.g. an ID document's front and back. */
-export const fileFields = (fields) => upload.fields(fields);
+export const fileFields = (fields) =>
+  multer({ storage, fileFilter, limits: { fileSize: 5 * 1024 * 1024, files: 2 } }).fields(fields);
 
 /**
  * CP13 visit evidence photos. No MIME filter here: a filtered file would be

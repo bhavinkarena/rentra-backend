@@ -16,6 +16,9 @@ import {
 import { issueOtp, verifyOtp, normaliseEmail, normalisePhone } from './otp';
 import { createSession, destroySession } from './session';
 import { getCurrentUser } from './dal';
+import { onboardingNext, getOrCreateApplication } from './application';
+import { phoneSchema, otpCodeSchema } from '@/services/schemas/zod/auth';
+import { z } from 'zod';
 
 /**
  * Server Actions for authentication.
@@ -57,34 +60,35 @@ function friendlyVerifyError(result) {
  * ------------------------------------------------------------------ */
 
 export async function requestClientOtp(_prev, formData) {
-  const parsed = requestEmailOtpSchema.safeParse({ email: formData.get('email') });
+  const mobile = formData.get('channel') === 'sms';
+  const parsed = (mobile ? requestPhoneOtpSchema : requestEmailOtpSchema).safeParse(mobile ? { phone: formData.get('phone') } : { email: formData.get('email') });
   if (!parsed.success) {
     return { step: 'email', errors: fieldErrors(parsed.error) };
   }
 
-  const email = normaliseEmail(parsed.data.email);
+  const email = mobile ? parsed.data.phone : normaliseEmail(parsed.data.email);
   const ip = await clientIp();
 
   const result = await issueOtp({
-    identifier: email, channel: 'email', purpose: 'login', ip,
+    identifier: email, channel: mobile ? 'sms' : 'email', purpose: 'login', ip,
   });
 
   if (!result.ok) {
-    return { step: 'email', email, errors: { email: friendlyIssueError(result) } };
+    return { step: 'email', channel: mobile ? 'sms' : 'email', email, phone: email, errors: { [mobile ? 'phone' : 'email']: friendlyIssueError(result) } };
   }
 
   await audit({
     actorType: 'system', entity: 'user', entityId: email,
-    action: 'otp_issued', after: { channel: 'email', purpose: 'login' }, ip,
+    action: 'otp_issued', after: { channel: mobile ? 'sms' : 'email', purpose: 'login' }, ip,
   });
 
-  return { step: 'code', email, sent: true };
+  return { step: 'code', channel: mobile ? 'sms' : 'email', email, phone: mobile ? email : undefined, sent: true };
 }
 
 export async function verifyClientOtp(_prev, formData) {
-  const parsed = verifyEmailOtpSchema.safeParse({
-    email: formData.get('email'),
-    code: formData.get('code'),
+  const mobile = formData.get('channel') === 'sms';
+  const parsed = (mobile ? z.object({ phone: phoneSchema, code: otpCodeSchema }) : verifyEmailOtpSchema).safeParse({
+    email: formData.get('email'), phone: formData.get('phone'), code: formData.get('code'),
   });
   if (!parsed.success) {
     return {
@@ -94,7 +98,7 @@ export async function verifyClientOtp(_prev, formData) {
     };
   }
 
-  const email = normaliseEmail(parsed.data.email);
+  const email = mobile ? parsed.data.phone : normaliseEmail(parsed.data.email);
   const ip = await clientIp();
 
   const result = await verifyOtp({
@@ -119,7 +123,7 @@ export async function verifyClientOtp(_prev, formData) {
   let [user] = await db
     .select({ id: users.id, role: users.role, accountStatus: users.accountStatus })
     .from(users)
-    .where(and(eq(users.email, email), eq(users.role, 'client')))
+    .where(and(mobile ? eq(users.phone, email) : eq(users.email, email), eq(users.role, 'client')))
     .limit(1);
 
   const isNew = !user;
@@ -130,9 +134,8 @@ export async function verifyClientOtp(_prev, formData) {
     [user] = await db
       .insert(users)
       .values({
-        email,
+        ...(mobile ? { phone: email, phoneVerifiedAt: new Date() } : { email, emailVerifiedAt: new Date() }),
         role: 'client',
-        emailVerifiedAt: new Date(),
         accountStatus: 'pending_application',
         lastLoginAt: new Date(),
       })
@@ -141,7 +144,7 @@ export async function verifyClientOtp(_prev, formData) {
     await db
       .update(users)
       .set({
-        emailVerifiedAt: new Date(),
+        ...(mobile ? { phoneVerifiedAt: new Date() } : { emailVerifiedAt: new Date() }),
         lastLoginAt: new Date(),
         updatedAt: new Date(),
       })
@@ -150,7 +153,7 @@ export async function verifyClientOtp(_prev, formData) {
 
   await createSession({
     userId: user.id,
-    verifiedEmail: email,
+    ...(mobile ? { verifiedPhone: email } : { verifiedEmail: email }),
     role: user.role,
     accountStatus: user.accountStatus,
   });
@@ -158,11 +161,11 @@ export async function verifyClientOtp(_prev, formData) {
   await audit({
     actorType: 'client', actorId: user.id, entity: 'user', entityId: user.id,
     action: isNew ? 'account_created' : 'login',
-    after: { via: result.viaBypass ? 'dev_bypass' : 'email_otp' },
+    after: { via: result.viaBypass ? 'dev_bypass' : mobile ? 'sms_otp' : 'email_otp' },
     ip,
   });
 
-  redirect('/partner');
+  return { ok: true, isNew, next: isNew ? '/partner/welcome' : '/partner' };
 }
 
 /* ------------------------------------------------------------------ *
@@ -172,6 +175,10 @@ export async function verifyClientOtp(_prev, formData) {
 export async function requestPhoneVerification(_prev, formData) {
   const user = await getCurrentUser();
   if (!user || user.role !== 'client') redirect('/partner/login');
+
+  const app = await getOrCreateApplication(user.id);
+  if (user.accountStatus === 'active') redirect('/partner/settings?notice=verified');
+  if (app.status === 'submitted') redirect('/partner?locked=in_review');
 
   const parsed = requestPhoneOtpSchema.safeParse({ phone: formData.get('phone') });
   if (!parsed.success) {
@@ -212,6 +219,10 @@ export async function confirmPhoneVerification(_prev, formData) {
   const user = await getCurrentUser();
   if (!user || user.role !== 'client') redirect('/partner/login');
 
+  const app = await getOrCreateApplication(user.id);
+  if (user.accountStatus === 'active') redirect('/partner/settings?notice=verified');
+  if (app.status === 'submitted') redirect('/partner?locked=in_review');
+
   const parsed = verifyPhoneOtpSchema.safeParse({
     phone: formData.get('phone'),
     code: formData.get('code'),
@@ -243,7 +254,8 @@ export async function confirmPhoneVerification(_prev, formData) {
     action: 'phone_verified', after: { phone }, ip: await clientIp(),
   });
 
-  redirect('/partner');
+  await onboardingNext(user.id, 'phone');
+  return onboardingNext(user.id, 'details');
 }
 
 /* ------------------------------------------------------------------ */
@@ -257,7 +269,7 @@ export async function logout() {
     });
   }
   await destroySession();
-  redirect('/');
+  redirect('/partner/login?session=ended');
 }
 
 /**

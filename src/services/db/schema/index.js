@@ -227,6 +227,7 @@ export const users = pgTable(
     /** Self-service edit token: customer profile/photo edits and client inbox preferences. */
     profileVersion: integer('profile_version').notNull().default(0),
     /** Client inbox: informational categories delivered already read (was client_update_preference). */
+    ownerGuide: jsonb('owner_guide').notNull().default({}),
     mutedUpdateCategories: jsonb('muted_update_categories').notNull().default([]),
 
     clientType: clientType('client_type'),
@@ -254,6 +255,7 @@ export const users = pgTable(
       AND ${t.mutedUpdateCategories} = '[]'::jsonb AND ${t.respondsWithinMins} IS NULL AND ${t.responseRate} IS NULL)`),
     check('user_customer_fields_chk', sql`${t.role} = 'customer' OR (${t.privacyErasurePending} = false AND ${t.privacyErasedAt} IS NULL)`),
     check('user_muted_shape_chk', sql`jsonb_typeof(${t.mutedUpdateCategories}) = 'array'`),
+    check('user_owner_guide_object_chk', sql`jsonb_typeof(${t.ownerGuide}) = 'object'`),
     check('user_versions_chk', sql`${t.profileVersion} >= 0 AND ${t.lifecycleVersion} > 0`),
   ],
 );

@@ -18,7 +18,7 @@ export async function changePropertyPolicy(database, ownerId, id, command, input
     throw unprocessable({ extraHourCharge: ['Extra-hour billing is not supported.'] });
   return withListingInventory(database, id, async (tx, listing) => {
     const [owner] =
-      await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`;
+      await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND (account_status='active' OR (account_status='pending_application' AND ${listing.status}='draft')) FOR SHARE`;
     if (!owner || listing.client_id !== ownerId) throw notFound();
     if (
       !Number.isInteger(input.expectedVersion) ||

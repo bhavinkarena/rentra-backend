@@ -7,8 +7,8 @@ import { localDateSchema } from '../schemas/zod/booking.js';
 import { addLocalDays, parseLocalDate } from '../domain/booking-dates.js';
 import { withListingInventory, auditInventoryReadiness, expireInventoryHolds, InventoryError } from './inventory.js';
 
-async function ownerAccess(tx, listing, ownerId) {
-  const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`;
+async function ownerAccess(tx, listing, ownerId, draft = false) {
+  const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND (account_status='active' OR (account_status='pending_application' AND ${draft} AND ${listing.status}='draft')) FOR SHARE`;
   if (!owner || listing.client_id !== ownerId) throw new InventoryError('FORBIDDEN', 'Property access unavailable.');
 }
 
@@ -16,7 +16,7 @@ export async function saveBookingConfiguration(database, ownerId, { rentableId, 
   z.string().uuid().parse(rentableId);
   z.number().int().nonnegative().parse(expectedVersion);
   return withListingInventory(database, rentableId, async (tx, listing) => {
-    await ownerAccess(tx, listing, ownerId);
+    await ownerAccess(tx, listing, ownerId, true);
     // The listing's booking model picks the schema; a config in the other shape is refused.
     const hourly = bookingModel(listing) === 'hourly';
     const parsed = (hourly ? hourlyBookingConfigSchema : bookingConfigSchema).parse(configuration);

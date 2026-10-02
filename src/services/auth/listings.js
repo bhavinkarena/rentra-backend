@@ -10,7 +10,7 @@ import { changePropertyPolicy } from '../booking/property-policy.js';
 import { changeHourlyRates } from '../booking/hourly-rates.js';
 import { saveVenueResources } from '../booking/venue.js';
 import {
-  rentable, rentableAmenity, documents,
+  rentable, rentableAmenity, documents, users,
   category, city, area,
 } from '@/services/db/schema/index.js';
 import { audit } from '@/services/audit';
@@ -30,15 +30,14 @@ import {
   isCloudinaryConfigured,
 } from '@/services/uploads/cloudinary';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
-import { requireActiveClient } from './dal';
+import { requireClient, requireActiveClient } from './dal';
 
 /**
  * GATE 2 — the listing builder.
  *
  * Every section saves independently, so a half-built listing survives a closed
- * tab and the sections can be done in any order. `requireActiveClient` on each
- * one is the enforcement of Gate 1: an approved account is the precondition for
- * touching a property at all.
+ * tab and the sections can be done in any order. Pending owners may edit
+ * drafts; publishing still requires an approved account.
  */
 
 /** Fields that, once changed on a LIVE listing, re-open Gate 2. */
@@ -77,11 +76,12 @@ function assertVersion(current, expected) {
 }
 
 async function load(id) {
-  const user = await requireActiveClient();
+  const user = await requireClient();
   const data = await getListingForEdit(id, user.id);
   // Scoped by clientId in the query: someone else's listing id returns null
   // rather than someone else's property.
   if (!data) redirect('/partner/listings');
+  if (user.accountStatus !== 'active' && data.listing.status !== 'draft') throw notFound();
   return { user, ...data };
 }
 
@@ -117,6 +117,8 @@ async function applyEdit(listing, fields, changed, { expected = null, children =
       .from(rentable)
       .where(eq(rentable.id, listing.id))
       .for('update');
+    const [owner] = await tx.select({ status: users.accountStatus }).from(users).where(eq(users.id, listing.clientId)).for('share');
+    if (!owner || (owner.status !== 'active' && !(owner.status === 'pending_application' && current.status === 'draft'))) throw notFound();
     assertVersion(current.contentVersion, expected);
     // Pressing Save without changing anything must not take a live property out of search.
     const touchesTrust =
@@ -148,7 +150,7 @@ async function applyEdit(listing, fields, changed, { expected = null, children =
 /* ------------------------------ create ------------------------------ */
 
 export async function createListingFromBasics(_prev, formData) {
-  const user = await requireActiveClient();
+  const user = await requireClient();
   const parsed = listingStartSchema.safeParse({
     categoryId: formData.get('categoryId'),
     title: formData.get('title'),
@@ -402,7 +404,7 @@ function jsonField(formData, key) {
 }
 
 async function policyAction(formData, command) {
-  const user = await requireActiveClient();
+  const user = await requireClient();
   const data = await getListingForEdit(String(formData.get('id')),user.id);
   if(!data) throw notFound();
   const {listing}=data;
@@ -428,7 +430,7 @@ export async function savePricing(_prev, formData) { return policyAction(formDat
 
 /** Courts, lanes and stations of a time-booked venue (wizard step `venue`). */
 export async function saveVenue(_prev, formData) {
-  const user = await requireActiveClient();
+  const user = await requireClient();
   const data = await getListingForEdit(String(formData.get('id')), user.id);
   if (!data) throw notFound();
   const result = await saveVenueResources(sql, user.id, {

@@ -41,7 +41,8 @@ export const UPI_RE = /^[\w.-]{2,64}@[a-zA-Z]{2,32}$/;
 export const payoutSchema = z.object({
   method: z.enum(['upi', 'bank']),
   upiId: z.string().trim().toLowerCase().optional().or(z.literal('')),
-  accountNumber: z.string().trim().optional().or(z.literal('')),
+  accountNumber: z.string().transform(v => v.replace(/[\s-]/g, '')).optional().or(z.literal('')),
+  confirmAccountNumber: z.string().transform(v => v.replace(/[\s-]/g, '')).optional().or(z.literal('')),
   ifsc: z.string().trim().toUpperCase().optional().or(z.literal('')),
   holderName: z.string().trim().min(3, 'Enter the account holder name').max(160),
 })
@@ -57,6 +58,11 @@ export const payoutSchema = z.object({
     (d) => d.method !== 'bank' || IFSC_RE.test(d.ifsc ?? ''),
     { message: 'IFSC looks like SBIN0001234', path: ['ifsc'] },
   );
+
+export const onboardingPayoutSchema = payoutSchema.refine(
+  d => d.method !== 'bank' || d.accountNumber === d.confirmAccountNumber,
+  { message: 'Account numbers do not match', path: ['confirmAccountNumber'] },
+);
 
 export const consentSchema = z.object({
   acceptTerms: z.literal('on', { message: 'You need to accept the terms to continue' }),

@@ -47,27 +47,12 @@ export function profileCompletion(user, application = null, documents = []) {
 
   const steps = [
     {
-      id: 'email',
-      label: 'Email verified',
-      hint: 'done at sign-in',
-      done: Boolean(user?.emailVerifiedAt),
-      href: null,
-    },
-    {
-      id: 'phone',
-      label: 'Mobile verified',
-      hint: 'how Rentra and guests reach you',
-      done: Boolean(user?.phoneVerifiedAt),
-      href: '/partner/onboarding/phone',
-      minutes: 1,
-    },
-    {
       id: 'details',
-      label: 'Your details',
+      label: 'About you and mobile',
       hint: 'name, address, language, owner or agent',
-      done: Boolean(user?.name && user?.clientType && app.residentialAddress),
+      done: Boolean(user?.name && user?.clientType && app.residentialAddress && user?.phoneVerifiedAt),
       href: '/partner/onboarding/details',
-      minutes: 2,
+      minutes: 3,
     },
     {
       id: 'kyc',
@@ -131,15 +116,15 @@ export function profileCompletion(user, application = null, documents = []) {
     ? new Set(app.flaggedFields)
     : new Set();
   for (const step of steps) {
-    if (!flagged.has(step.id)) continue;
+    if (!flagged.has(step.id) && !(step.id === 'details' && flagged.has('phone'))) continue;
     step.failed = true;
     step.flagged = true;
     step.note = 'Rentra asked you to review and update this step';
   }
 
   const total = steps.length;
-  const done = steps.filter((s) => s.done).length;
-  const remaining = steps.filter((s) => !s.done);
+  const done = steps.filter((s) => s.done && !s.flagged).length;
+  const remaining = steps.filter((s) => !s.done || s.flagged);
   const minutesLeft = remaining.reduce((sum, s) => sum + (s.minutes ?? 0), 0);
 
   const submitted = app.status === 'submitted';
@@ -154,7 +139,10 @@ export function profileCompletion(user, application = null, documents = []) {
     minutesLeft,
     /** Bar percentage for phase 1 only — it never represents the review wait. */
     percent: Math.round((done / total) * 100),
-    canSubmit: done === total && !submitted && !approved,
+    canSubmit: remaining.length === 0 && !submitted && !approved && user?.accountStatus === 'pending_application',
+    status: approved ? 'approved' : user?.accountStatus === 'blocked' ? 'blocked' : app.status ?? 'draft',
+    decisionReason: app.decisionReason ?? null,
+    strikesLeft: Math.max(0, 3 - (app.strikeCount ?? 0)),
     submitted,
     approved,
     changesRequested,
@@ -186,8 +174,8 @@ export function lockedCtaMessage(completion) {
   const n = completion.remaining.length;
   return {
     title: n === 1
-      ? 'One thing left before you can add a property'
-      : `${n} things left before you can add a property`,
+      ? 'One thing left before you can submit verification'
+      : `${n} things left before you can submit verification`,
     body: 'Then we review within 2 working days.',
     items: completion.remaining.map((s) => ({
       label: s.label,

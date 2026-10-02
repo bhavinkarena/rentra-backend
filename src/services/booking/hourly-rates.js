@@ -28,7 +28,7 @@ export async function changeHourlyRates(database, ownerId, id, input) {
   const shape = rows.map((row, index) => row.endMinute <= row.startMinute || row.endMinute > 1800 ? index : null).filter((index) => index != null);
   if (shape.length) throw unprocessable({ rates: [`Each price needs an end after its start, by 06:00 next day (rows ${shape.map((i) => i + 1).join(', ')}).`] });
   return withListingInventory(database, id, async (tx, listing) => {
-    const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`;
+    const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND (account_status='active' OR (account_status='pending_application' AND ${listing.status}='draft')) FOR SHARE`;
     if (!owner || listing.client_id !== ownerId) throw notFound();
     if (bookingModel(listing) !== 'hourly') throw conflict('UNSUPPORTED_INVENTORY', 'Hourly prices apply to time-booked venues only.');
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion !== listing.content_version) {

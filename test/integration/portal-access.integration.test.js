@@ -34,6 +34,9 @@ test(
         new URL('../../drizzle/0022_portal_access.sql', import.meta.url),
         'utf8',
       );
+      await database.unsafe(
+        await readFile(new URL('../../drizzle/0057_owner_onboarding.sql', import.meta.url), 'utf8'),
+      );
       await database.begin(async (tx) => {
         for (const statement of migration.split('--> statement-breakpoint'))
           await tx.unsafe(statement);
