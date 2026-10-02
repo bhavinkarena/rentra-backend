@@ -27,9 +27,10 @@ test(
         other = { kind: 'owner', id: f.other };
       const query = { period: fixture.period, environment: 'live' };
       const s = await financeStatement(sql, owner, query);
-      assert.equal(s.count, 2);
+      // Owners see their rent only; the guest's platform fee is Rentra's.
+      assert.equal(s.count, 1);
       assert.equal(s.totals.quotedRentMinor, '100000');
-      assert.equal(s.totals.collectedMinor, '108000');
+      assert.equal(s.totals.collectedMinor, '100000');
       assert.equal(s.totals.refundedMinor, '20000');
       assert.equal(s.totals.rentNetMinor, '80000');
       assert.equal(s.totals.refundPendingMinor, '10000');
@@ -52,7 +53,8 @@ test(
       assert.equal(payouts.totalMinor, '30000');
       assert.equal((await financePayout(sql, owner, fixture.payoutId)).amountMinor, '30000');
       const csv = await financeCsv(sql, owner, query);
-      assert.match(csv, /108000/);
+      assert.match(csv, /100000/);
+      assert.doesNotMatch(csv, /,fee,/);
       assert.match(csv, /Current|current/);
       assert.doesNotMatch(csv, /upi_id|holder_name/);
       assert.equal(
@@ -67,7 +69,7 @@ test(
         assert.equal(x.totals.settledMinor, '0');
       }
       const sim = await financeStatement(sql, owner, { ...query, environment: 'simulated' });
-      assert.equal(sim.totals.simulatedMinor, '108000');
+      assert.equal(sim.totals.simulatedMinor, '100000');
       assert.equal(sim.totals.collectedMinor, '0');
       assert.equal(
         (await financePayouts(sql, owner, { ...query, environment: 'legacy_unknown' })).totalMinor,
@@ -142,7 +144,7 @@ test(
       await sql`UPDATE payout SET status='pending' WHERE id=${pendingPayout.id}`;
       // Property transfer cannot move historical receipts. Existing operational links are suppressed.
       await sql`UPDATE rentable SET client_id=${f.other} WHERE id=${f.listing}`;
-      assert.equal((await financeStatement(sql, owner, query)).totals.collectedMinor, '108000');
+      assert.equal((await financeStatement(sql, owner, query)).totals.collectedMinor, '100000');
       assert.equal((await financeStatement(sql, other, query)).count, 0);
       assert.equal(
         (await financeAllocation(sql, owner, fixture.live.allocationId)).bookingLinkAvailable,

@@ -13,7 +13,8 @@ export function statementFilters(query = {}) {
         .string()
         .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
         .default(new Date().toISOString().slice(0, 7)),
-      environment: z.enum(['live', 'test', 'simulated', 'legacy_unknown']).default('live'),
+      // No choice = the gateway mode in use (resolved in readStatement).
+      environment: z.enum(['live', 'test', 'simulated', 'legacy_unknown']).optional(),
       propertyId: uuid.or(z.literal('')).default(''),
       ownerId: uuid.or(z.literal('')).default(''),
       page: z.coerce.number().int().min(1).max(10000).default(1),
@@ -169,8 +170,14 @@ function allocation(row, actor) {
       : null,
   };
 }
-async function readStatement(tx, actor, filters) {
+async function readStatement(tx, actor, chosen) {
   await authorize(tx, actor);
+  // While Rentra runs on the Test gateway, an owner's bookings are Test bookings;
+  // defaulting to live would show every owner ₹0.
+  const [gateway] = chosen.environment
+    ? []
+    : await tx`SELECT environment::text FROM payment_gateway_config ORDER BY version DESC LIMIT 1`;
+  const filters = { ...chosen, environment: chosen.environment ?? gateway?.environment ?? 'live' };
   if (actor.kind === 'owner' && filters.ownerId && filters.ownerId !== actor.id) throw notFound();
   const owner = actor.kind === 'owner' ? actor.id : filters.ownerId;
   const start = `${filters.period}-01T00:00:00Z`;
@@ -185,7 +192,8 @@ async function readStatement(tx, actor, filters) {
     );
   const properties =
     await tx`SELECT DISTINCT l.rentable_id id,l.title FROM (${ledger(tx)}) l WHERE l.created_at>=${start}::timestamptz AND l.created_at<${start}::timestamptz+interval '1 month' AND l.environment=${filters.environment} AND (${owner}='' OR l.owner_id=${owner}) ORDER BY l.title,l.rentable_id LIMIT 1000`;
-  const items = rows.map((r) => allocation(r, actor));
+  // The platform fee is the guest's payment to Rentra, not owner money.
+  const items = rows.map((r) => allocation(r, actor)).filter((item) => actor.kind !== 'owner' || item.component !== 'fee');
   const totals = Object.fromEntries(keys.map((k) => [k, 0n]));
   const visits = new Set();
   for (const item of items) {
@@ -231,7 +239,8 @@ export async function financeAllocation(database, actor, id) {
   });
 }
 export async function financePayouts(database, actor, query = {}) {
-  const filters = statementFilters(query);
+  // Payout records exist only for live money.
+  const filters = { ...statementFilters(query), environment: statementFilters(query).environment ?? 'live' };
   return database.begin('isolation level repeatable read read only', async (tx) => {
     await authorize(tx, actor);
     if (actor.kind === 'owner' && filters.ownerId && filters.ownerId !== actor.id) throw notFound();
