@@ -414,6 +414,13 @@
       "when": 1790591500003,
       "tag": "0058_owner_property_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1790591500004,
+      "tag": "0059_owner_pause_until",
+      "breakpoints": true
     }
   ]
 }

@@ -25,8 +25,9 @@ import { MAX_PHOTOS, ownershipDocTypesFor } from '@/services/domain/listing-comp
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
+import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { slugify } from '@/services/domain/listing-url';
-import { ownerEditEffect, ownerPauseTarget, trustChanges } from '@/services/domain/listing-lifecycle';
+import { ownerEditEffect, ownerPauseTarget, trustChanges, TRUST_FIELDS as TRUST_FIELD_LIST } from '@/services/domain/listing-lifecycle';
 import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
@@ -43,10 +44,7 @@ import { requireClient, requireActiveClient } from './dal';
  */
 
 /** Fields that, once changed on a LIVE listing, re-open Gate 2. */
-const TRUST_FIELDS = new Set([
-  'photos', 'location', 'exactAddress', 'capacity', 'bedrooms',
-  'categoryId', 'title', 'amenities', 'houseRules',
-]);
+const TRUST_FIELDS = new Set(TRUST_FIELD_LIST);
 
 async function clientIp() {
   const h = await headers();
@@ -622,11 +620,18 @@ export async function toggleListingPause(_prev, formData) {
 
   const target = ownerPauseTarget(listing.status);
   if (target.error) return { errors: { _: target.error } };
+  // PROP-05: an optional IST end date; the worker resumes on that day.
+  const until = target.next === 'paused' ? String(formData.get('until') || '') : '';
+  if (until) {
+    const today = propertyToday();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(until) || until <= today || until > addLocalDays(today, 365))
+      return { errors: { until: 'Choose a date from tomorrow up to a year ahead' } };
+  }
 
   // Conditional on the status the owner saw: a restriction, review or publish
   // committed since then wins, and the owner is told to reload.
   const [moved] = await db.update(rentable).set({
-    status: target.next, priorStatus: listing.status, updatedAt: new Date(),
+    status: target.next, priorStatus: listing.status, pausedUntil: until || null, updatedAt: new Date(),
   }).where(and(eq(rentable.id, listing.id), eq(rentable.status, listing.status)))
     .returning({ id: rentable.id });
   if (!moved) {
@@ -638,14 +643,27 @@ export async function toggleListingPause(_prev, formData) {
   await audit({
     actorType: 'client', actorId: user.id, entity: 'rentable',
     entityId: listing.id, action: target.next === 'paused' ? 'listing_paused' : 'listing_resumed',
-    before: { status: listing.status }, after: { status: target.next }, ip: await clientIp(),
+    before: { status: listing.status }, after: { status: target.next, pausedUntil: until || null }, ip: await clientIp(),
   });
 
   // Pausing removes the listing from every surface that lists it, so this is
   // the one case where `/` and the sitemap have to go too.
   revalidateListing(listing, { statusChanged: true });
 
-  return { ok: true, status: target.next };
+  return { ok: true, status: target.next, pausedUntil: until || null };
+}
+
+/** PROP-05 worker job: owner pauses whose end date has arrived take bookings again. */
+export async function resumeEndedPauses(database) {
+  const resumed = await database`UPDATE rentable SET status='live', prior_status='paused', updated_at=now()
+    WHERE status='paused' AND paused_until <= (now() AT TIME ZONE 'Asia/Kolkata')::date
+    RETURNING id, slug, public_code`;
+  for (const row of resumed) {
+    await database`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after")
+      VALUES ('system',NULL,'rentable',${row.id},'listing_resumed','{"status":"paused"}'::jsonb,'{"status":"live","reason":"pause_ended"}'::jsonb)`;
+    revalidateListing({ id: row.id, slug: row.slug, publicCode: row.public_code }, { statusChanged: true });
+  }
+  return { resumed: resumed.length };
 }
 
 export async function saveType(_prev, form) {

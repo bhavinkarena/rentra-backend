@@ -223,7 +223,7 @@ export async function closeReviewReport(database, adminId, input) {
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES('admin',${adminId},'review_report',${v.id},'review_report_closed',${JSON.stringify({ resolution: v.resolution })}::text::jsonb)`;
   });
 }
-export async function reviewQueue(database, actor, page = 1) {
+export async function reviewQueue(database, actor, page = 1, rentableId = null) {
   const offset =
     (Math.max(1, Math.min(10000, Number.isSafeInteger(Number(page)) ? Number(page) : 1)) - 1) * 30;
   return database.begin(async (tx) => {
@@ -241,9 +241,11 @@ export async function reviewQueue(database, actor, page = 1) {
       actor.kind === 'admin'
         ? tx`true`
         : tx`l.client_id=${actor.id} AND (r.id IN (SELECT id FROM public_customer_review) OR EXISTS(SELECT 1 FROM review_report rp WHERE rp.review_id=r.id AND rp.reporter_id=${actor.id}))`;
+    // PROP: one property's reviews (property hub Reviews tab).
+    const property = rentableId ? tx`AND r.rentable_id=${uuid.parse(rentableId)}` : tx``;
     const rows =
       await tx`SELECT r.id,r.rating,r.body,r.owner_reply,r.version,r.moderation_state,r.rentable_id,l.title
-      FROM review r JOIN rentable l ON l.id=r.rentable_id WHERE r.author_role='customer' AND ${condition}
+      FROM review r JOIN rentable l ON l.id=r.rentable_id WHERE r.author_role='customer' AND ${condition} ${property}
       ORDER BY r.created_at,r.id LIMIT 31 OFFSET ${offset}`;
     const reports =
       actor.kind === 'admin'

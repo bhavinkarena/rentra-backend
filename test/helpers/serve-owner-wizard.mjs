@@ -20,6 +20,29 @@ Object.assign(process.env, {
 });
 globalThis.__rentraSql = sql;
 const f = await seedReviewFixture(sql);
+if (process.env.OWNER_FIXTURE_HUB === '1') {
+  // Phase 6 gate: the seed property is live, and a copy of it was sent back by Rentra.
+  await sql`UPDATE rentable SET status='live',published_at=now(),bedrooms=3,highlight=NULL WHERE id=${f.listing}`;
+  const [copy] =
+    await sql`INSERT INTO rentable(client_id,slug,title,description,category_id,city_id,area_id,public_code,
+      capacity,bedrooms,farm_size,exact_address,check_in_from,check_out_by,photos,location,booking_config,house_rules,status,
+      cancellation_tier,deposit_minor)
+    SELECT client_id,'sent-back-farm','Sent Back Farm',description,category_id,city_id,area_id,'sentbk01',capacity,3,farm_size,
+      exact_address,check_in_from,check_out_by,photos,location,booking_config,house_rules,'draft',cancellation_tier,deposit_minor
+    FROM rentable WHERE id=${f.listing} RETURNING id,content_version`;
+  await sql`INSERT INTO rentable_price(rentable_id,slot,weekday_minor,weekend_minor)
+    SELECT ${copy.id},slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${f.listing}`;
+  await sql`INSERT INTO rentable_amenity(rentable_id,amenity_id) SELECT ${copy.id},amenity_id FROM rentable_amenity WHERE rentable_id=${f.listing}`;
+  await sql`INSERT INTO document(owner_type,owner_id,doc_type,storage_key,status) VALUES ('rentable',${copy.id},'extract_7_12','fixture/copy','uploaded')`;
+  const [current] = await sql`SELECT content_version FROM rentable WHERE id=${copy.id}`;
+  const [submission] =
+    await sql`INSERT INTO listing_submission(rentable_id,content_version,pass_number,snapshot,submitted_by)
+    VALUES (${copy.id},${current.content_version},1,'{}',${f.owner}) RETURNING id`;
+  await sql`UPDATE rentable SET review_pass=1 WHERE id=${copy.id}`;
+  await sql`INSERT INTO listing_review(rentable_id,pass_number,submission_id,outcome,reason,flagged_fields,reviewed_by)
+    VALUES (${copy.id},1,${submission.id},'changes_requested','Add a clear photo of the pool.','["photos","basics"]',${f.admin})`;
+  f.sentBack = copy.id;
+}
 const { issuePortalSession } = await import('../../src/services/auth/portal-sessions.js');
 const { encryptSession } = await import('../../src/services/auth/session-crypto.js');
 const owner = await encryptSession({

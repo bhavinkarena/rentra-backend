@@ -1,5 +1,6 @@
 import { cleanListingPhotoOrphans } from '../services/uploads/cloudinary.js';
 import { autoOpenDates } from '../services/booking/owner-settings.js';
+import { resumeEndedPauses } from '../services/auth/listings.js';
 import { runPaymentJobs } from '@/services/payments/jobs.js';
 import { runPrivacyJobs } from '@/services/customer/privacy-fulfillment.js';
 import { runExportJobs } from '@/services/admin/audit-browser.js';
@@ -20,6 +21,7 @@ export function createJobs(sql) {
       intervalMs: 86400000,
       lastRun: 0,
     },
+    { name: 'resume-paused', run: () => resumeEndedPauses(sql), intervalMs: 3600000, lastRun: 0 },
     { name: 'auto-open-dates', run: () => autoOpenDates(sql), intervalMs: 86400000, lastRun: 0 },
     { name: 'exports', run: () => runExportJobs(sql) },
     { name: 'privacy', run: () => runPrivacyJobs(sql) },

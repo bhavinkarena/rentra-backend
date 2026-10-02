@@ -18,6 +18,12 @@ test('owner trust edits need re-review, including a paused property', () => {
   });
   assert.deepEqual(ownerEditEffect({ status: 'live' }, false), { patch: {}, sentBack: false });
   assert.deepEqual(ownerEditEffect({ status: 'draft' }, true).patch, {});
+  // A trust edit after approval for verification restarts the review.
+  assert.deepEqual(ownerEditEffect({ status: 'pending_verification' }, true), {
+    patch: { status: 'pending_review' },
+    sentBack: true,
+  });
+  assert.deepEqual(ownerEditEffect({ status: 'pending_verification' }, false).patch, {});
 });
 
 test('owner edits never lift an admin restriction', () => {
@@ -55,8 +61,13 @@ test('only values that really differ count as trust edits', () => {
     trustChanges(current, same, ['categoryId', 'title', 'location', 'exactAddress', 'houseRules']),
     [],
   );
-  assert.deepEqual(trustChanges(current, { title: 'River Farm 2', categoryId: 'c1' }, ['categoryId', 'title']), ['title']);
-  assert.deepEqual(trustChanges(current, { capacity: 14, bedrooms: 3 }, ['capacity', 'bedrooms']), ['capacity']);
+  assert.deepEqual(
+    trustChanges(current, { title: 'River Farm 2', categoryId: 'c1' }, ['categoryId', 'title']),
+    ['title'],
+  );
+  assert.deepEqual(trustChanges(current, { capacity: 14, bedrooms: 3 }, ['capacity', 'bedrooms']), [
+    'capacity',
+  ]);
   // Child collections are compared by the caller; naming one means it changed.
   assert.deepEqual(trustChanges(current, {}, ['amenities']), ['amenities']);
 });

@@ -1,4 +1,6 @@
 import { listingCompletion } from '../services/domain/listing-completion.js';
+import { legacyStep } from '../services/domain/listing-steps.js';
+import { TRUST_FIELDS } from '../services/domain/listing-lifecycle.js';
 import { saveType, deleteDraft, signPhoto, attachPhoto } from '../services/auth/listings.js';
 import { getListingByCode } from '../services/db/queries.js';
 import { saveBookingConfiguration } from '../services/booking/owner-settings.js';
@@ -61,6 +63,14 @@ export const detail = asyncHandler(async (req, res) => {
   listing.listing.reviewNeedsResubmission = review?.needsResubmission ?? false;
   listing.listing.reviewFlaggedFields = listing.reviews.at(-1)?.flaggedFields ?? [];
   listing.listing.reviewOutcome = listing.reviews.at(-1)?.outcome ?? null;
+  // PROP-01/02: each flag names the wizard step that fixes it.
+  listing.listing.reviewFlags = listing.listing.reviewFlaggedFields.map((section) => ({
+    section,
+    step: legacyStep(section),
+  }));
+  // Nothing saved since the last submission Rentra reviewed.
+  listing.listing.reviewUnchanged = review ? !review.stale : false;
+  listing.listing.trustFields = TRUST_FIELDS;
   listing.listing.reviewVerification = review?.verification ?? null;
   listing.listing.restriction = review?.restriction ?? null;
   listing.listing.adminCorrection = review?.correction ?? null;

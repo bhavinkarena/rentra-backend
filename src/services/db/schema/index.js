@@ -782,6 +782,8 @@ export const rentable = pgTable(
      * A listing the owner had deliberately paused must come back paused.
      */
     priorStatus: listingStatus('prior_status'),
+    /** PROP-05: the owner's pause ends on this IST date (worker resumes). */
+    pausedUntil: date('paused_until', { mode: 'string' }),
 
     // The approved revision is listing_submission via published_submission_id.
     rejectionReason: text('rejection_reason'),

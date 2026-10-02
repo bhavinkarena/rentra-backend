@@ -6,6 +6,7 @@ import { addLocalDays, propertyToday } from '../domain/booking-dates.js';
 import { z } from 'zod';
 import { listingInventory } from '../admin/verification.js';
 import { listingPath } from '../domain/listing-url.js';
+import { propertyStrength } from '../domain/listing-strength.js';
 
 /**
  * The owner's property operations overview (CP09): saleable inventory,
@@ -82,7 +83,29 @@ export async function ownerPropertyOverview(database, ownerId, id) {
     WHERE entity='rentable' AND entity_id=${id}::text ORDER BY at DESC, id DESC LIMIT 60`;
 
   const publiclyVisible = row.status === 'live' && row.account_status === 'active';
+  // PROP-01: when each stage of Draft → In review → Verification → Live last happened.
+  const [stages] = await database`SELECT
+      (SELECT max(submitted_at) FROM listing_submission WHERE rentable_id=${id}) AS submitted,
+      (SELECT max(reviewed_at) FROM listing_review WHERE rentable_id=${id} AND outcome='approved_for_visit') AS approved,
+      (SELECT scheduled_at FROM verification_visit WHERE rentable_id=${id} ORDER BY created_at DESC LIMIT 1) AS visit,
+      (SELECT count(*)::int FROM booking WHERE rentable_id=${id} AND state IN ('confirmed','handed_over','completed')
+        AND date_trunc('month', local_day) = date_trunc('month', (now() AT TIME ZONE 'Asia/Kolkata')::date)) AS month_bookings`;
+  const facts = await strengthFacts(database, id);
   return {
+    timeline: {
+      draft: row.created_at,
+      submitted: stages.submitted,
+      approved: stages.approved,
+      visit: stages.visit,
+      live: row.published_at,
+    },
+    stats: {
+      bookingsThisMonth: stages.month_bookings,
+      rating: row.review_count ? Number(row.rating_avg) : null,
+      reviewCount: row.review_count,
+    },
+    strength: propertyStrength(facts, { venue: row.rental_unit === 'hour' }),
+    pausedUntil: row.paused_until ? dayOf(row.paused_until) : null,
     inventory: { ...inventory, nextOpenDate: next?.day ?? null },
     publicPath: publiclyVisible ? listingPath(row.slug, row.public_code) : null,
     upcomingVisits: {
@@ -102,5 +125,36 @@ export async function ownerPropertyOverview(database, ownerId, id) {
       })),
     },
     activity: audit.map(activityEntry).filter(Boolean).slice(0, 30),
+  };
+}
+
+/** One query for every fact the strength score needs. */
+export async function strengthFacts(database, id) {
+  const [row] = await database`SELECT
+      coalesce(jsonb_array_length(CASE WHEN jsonb_typeof(r.photos)='array' THEN r.photos END),0)::int AS photo_count,
+      EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.photos)='array' THEN r.photos ELSE '[]'::jsonb END) p
+        WHERE p->>'tag' IN ('Pool','Lawn','Court','Floodlights')) AS feature_photo,
+      coalesce(trim(r.highlight),'')<>'' AS highlight,
+      EXISTS (SELECT 1 FROM staff_property sp JOIN client_staff s ON s.id=sp.staff_id
+        WHERE sp.rentable_id=r.id AND s.is_active AND s.revoked_at IS NULL) AS caretaker,
+      CASE WHEN r.rental_unit::text='hour' THEN
+        EXISTS (SELECT 1 FROM rentable_rate rr WHERE rr.rentable_id=r.id AND rr.day_kind='weekday')
+        AND EXISTS (SELECT 1 FROM rentable_rate rr WHERE rr.rentable_id=r.id AND rr.day_kind='weekend')
+      ELSE EXISTS (SELECT 1 FROM rentable_price p WHERE p.rentable_id=r.id)
+        AND NOT EXISTS (SELECT 1 FROM rentable_price p WHERE p.rentable_id=r.id AND (p.weekday_minor=0 OR p.weekend_minor=0)) END AS both_day_prices,
+      CASE WHEN r.rental_unit::text='hour' THEN coalesce((r.booking_config->>'bookingHorizonDays')::int,0)
+      ELSE (SELECT count(DISTINCT a.day)::int FROM availability a WHERE a.rentable_id=r.id
+        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available>0) END AS open_days,
+      (SELECT count(*)::int FROM public_customer_review v WHERE v.rentable_id=r.id AND v.owner_reply IS NULL) AS unreplied
+    FROM rentable r WHERE r.id=${id}`;
+  if (!row) return null;
+  return {
+    photoCount: row.photo_count,
+    featurePhoto: row.feature_photo,
+    highlight: row.highlight,
+    caretaker: row.caretaker,
+    bothDayPrices: row.both_day_prices,
+    openDays: row.open_days,
+    unrepliedReviews: row.unreplied,
   };
 }

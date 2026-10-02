@@ -37,7 +37,12 @@ export const queue = asyncHandler(async (req, res) => {
   if (!['admin', 'owner'].includes(kind)) {
     throw badRequest('UNKNOWN_ACTOR', 'Unknown review scope.');
   }
-  return ok(res, await reviewQueue(sql, await bookingActor(kind), Number(req.query.page ?? 1)));
+  const property =
+    kind === 'owner' && typeof req.query.property === 'string' ? req.query.property : null;
+  return ok(
+    res,
+    await reviewQueue(sql, await bookingActor(kind), Number(req.query.page ?? 1), property),
+  );
 });
 
 export const submit = runAction(submitCustomerReview);

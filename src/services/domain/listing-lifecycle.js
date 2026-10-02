@@ -16,10 +16,22 @@ export function ownerEditEffect({ status, priorStatus }, touchesTrust) {
   if (!touchesTrust) return { patch: {}, sentBack: false };
   if (status === 'live' || status === 'paused')
     return { patch: { status: 'pending_review', priorStatus: status }, sentBack: true };
+  // The verified revision is no longer the one on file: review it again (PROP-03).
+  if (status === 'pending_verification')
+    return { patch: { status: 'pending_review' }, sentBack: true };
   if (status === 'hidden' && ['live', 'paused'].includes(priorStatus))
     return { patch: { priorStatus: 'pending_review' }, sentBack: true };
   return { patch: {}, sentBack: false };
 }
+
+/**
+ * Fields that, once changed on a published or in-review property, need Rentra
+ * to review it again. The owner editor names exactly these (GET listing sends them).
+ */
+export const TRUST_FIELDS = [
+  'title', 'categoryId', 'location', 'exactAddress', 'capacity', 'bedrooms',
+  'amenities', 'houseRules', 'photos',
+];
 
 export const RESTRICTED_MESSAGE =
   'Rentra has restricted this property. Only Rentra can restore it; contact support.';
