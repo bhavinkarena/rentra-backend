@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { ownerToday, todaySection } from '@/services/auth/owner-today.js';
 import { saveListingHours } from '@/services/booking/calendar-actions.js';
 import { runAction } from '@/utils/runAction.js';
 import { sql } from '@/services/db';
@@ -55,6 +57,12 @@ router.use(requirePortalCapability('client'));
 /* ---------------------------------------------------------------- *
  * Onboarding application
  * ---------------------------------------------------------------- */
+router.get(
+  '/today',
+  requireActiveClient,
+  validate({ query: z.object({ section: todaySection.optional() }) }),
+  asyncHandler(async (req, res) => ok(res, await ownerToday(sql, req.user.id, req.query.section))),
+);
 router.get(
   '/guide-state',
   client,

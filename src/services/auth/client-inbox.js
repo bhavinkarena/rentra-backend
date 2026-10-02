@@ -137,6 +137,7 @@ export async function clientTasks(database, clientId) {
     { key: 'updates_action', kind: 'action', count: counts.action, href: '/partner/updates?filter=action' },
     { key: 'properties_hidden', kind: 'info', count: hidden, href: '/partner/listings?status=hidden' },
     { key: 'properties_review', kind: 'info', count: review, href: '/partner/listings?status=review' },
+    { key: 'visits_with_rentra', kind: 'info', count: bookings.summary.with_rentra, href: '/partner/bookings?tab=with_rentra' },
     { key: 'visits_today', kind: 'info', count: bookings.summary.today, href: '/partner/bookings?tab=today' },
     { key: 'updates_unread', kind: 'info', count: counts.unread, href: '/partner/updates?filter=unread' },
   ];

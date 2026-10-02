@@ -23,7 +23,9 @@ export const historyQuery = z.object({
 });
 
 export const operationalHistoryQuery = historyQuery.extend({
-  tab: z.enum(['all', 'upcoming', 'today', 'action_needed', 'past', 'cancelled']).default('all'),
+  tab: z
+    .enum(['all', 'upcoming', 'today', 'action_needed', 'with_rentra', 'past', 'cancelled'])
+    .default('all'),
   property: z.union([uuid, z.literal('')]).optional(),
   /** One court of the chosen property. */
   resource: z.union([uuid, z.literal('')]).optional(),
