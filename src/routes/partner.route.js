@@ -1,3 +1,4 @@
+import { ownerSearch, ownerSearchQuery } from '@/services/auth/owner-search.js';
 import { z } from 'zod';
 import { ownerToday, todaySection } from '@/services/auth/owner-today.js';
 import { saveListingHours } from '@/services/booking/calendar-actions.js';
@@ -53,6 +54,12 @@ import { ok } from '@/utils/respond.js';
 const router = Router();
 const client = requireRole('client');
 router.use(requirePortalCapability('client'));
+router.get(
+  '/search',
+  client,
+  validate({ query: ownerSearchQuery }),
+  asyncHandler(async (req, res) => ok(res, await ownerSearch(sql, req.user.id, req.query))),
+);
 
 /* ---------------------------------------------------------------- *
  * Onboarding application

@@ -18,5 +18,8 @@ test('an offered slot needs both a weekday and a weekend price', () => {
 });
 
 test('a slot priced on both day types, or on neither, is accepted', () => {
-  assert.equal(pricingSchema.safeParse({ ...none, night_weekday: 3000, night_weekend: 3500 }).success, true);
+  assert.equal(
+    pricingSchema.safeParse({ ...none, night_weekday: 3000, night_weekend: 3500 }).success,
+    true,
+  );
 });

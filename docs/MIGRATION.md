@@ -128,7 +128,7 @@ The rules:
   added with `ALTER TYPE … ADD VALUE` cannot be used anywhere else in the same
   release's SQL (Postgres error `55P04`).
 
-What *is* shared is the pure domain code: files in `src/services/domain/` are
+What _is_ shared is the pure domain code: files in `src/services/domain/` are
 copied into `Rentra/lib/domain/`. `booking-policy.js` and `listing-share.js` are
 byte-identical. The others are Prettier-formatted copies there and must keep the
 same behaviour. Update both sides in the same change.

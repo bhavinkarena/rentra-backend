@@ -29,7 +29,11 @@ export function ownerChannelAdapter(config,fetcher=fetch) {
     async fetch(row){
       const result=await request(`https://api.resend.com/emails/${encodeURIComponent(row.provider_id)}`,{method:'GET',headers:{Authorization:`Bearer ${config.token}`}});
       if(result.id!==row.provider_id || !result.to?.includes(row.recipient) || result.from!==row.sender) throw new NotificationError('DELIVERY_SCOPE_MISMATCH');
-      return {id:result.id,state:result.last_event==='delivered'?'delivered':['bounced','failed','suppressed'].includes(result.last_event)?'undelivered':'accepted'};
+      // A complaint follows delivery. Keep it terminal and record it without resending.
+      if(['delivered','opened','clicked','complained'].includes(result.last_event)) return {id:result.id,state:'delivered',...(result.last_event==='complained'?{failureCode:'EMAIL_COMPLAINED'}:{})};
+      if(['bounced','failed','suppressed','canceled'].includes(result.last_event)) return {id:result.id,state:'undelivered',...(result.last_event==='canceled'?{failureCode:'EMAIL_CANCELED'}:{})};
+      if(!['sent','queued','scheduled','delivery_delayed'].includes(result.last_event)) throw new NotificationError('DELIVERY_STATUS_UNKNOWN');
+      return {id:result.id,state:'accepted'};
     },
   };
   const verify=(result,row)=>{

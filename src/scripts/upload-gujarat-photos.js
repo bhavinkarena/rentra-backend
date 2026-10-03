@@ -94,7 +94,9 @@ async function uploadAll() {
       } catch (err) {
         console.error(`  ✗ Error uploading ${publicId}:`, err.message);
         // Fallback: if already exists, derive direct secure url
-        uploaded[category].push(`https://res.cloudinary.com/dqmdurkd0/image/upload/seed/gujarat/${publicId}.jpg`);
+        uploaded[category].push(
+          `https://res.cloudinary.com/dqmdurkd0/image/upload/seed/gujarat/${publicId}.jpg`,
+        );
       }
     }
   }

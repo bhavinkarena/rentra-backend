@@ -74,7 +74,7 @@ export async function processOwnerNotification(database,id,options={}) {
     const fallback=outcome.state==='undelivered' && row.channel==='whatsapp';
     await database`UPDATE owner_notification SET state=${fallback?'pending':outcome.state==='undelivered'?'failed':outcome.state},channel=${fallback?'sms':row.channel},provider_id=${fallback?null:outcome.id},
       sent_at=coalesce(sent_at,now()),delivered_at=CASE WHEN ${outcome.state==='delivered'} THEN now() ELSE delivered_at END,
-      failure_code=${outcome.state==='undelivered'?'PROVIDER_UNDELIVERED':null},lease_token=NULL,lease_until=NULL,next_attempt_at=now()+interval '30 seconds' WHERE id=${id} AND lease_token=${token}`;
+      failure_code=${outcome.failureCode || (outcome.state==='undelivered'?'PROVIDER_UNDELIVERED':null)},lease_token=NULL,lease_until=NULL,next_attempt_at=now()+interval '30 seconds' WHERE id=${id} AND lease_token=${token}`;
   } catch(error) {
     const fallback=error.safeRetry && row.channel==='whatsapp' && error.code==='CHANNEL_REJECTED';
     const retry=error.safeRetry && row.attempts+1<5;

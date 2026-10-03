@@ -37,20 +37,20 @@ Merging those tables would make the design worse, not better. Section 14 explain
 
 The real problems are different. They come from features that were rebuilt without the old storage being removed:
 
-| # | Problem | Impact |
-|---|---|---|
-| 1 | Client payout details are stored in **three places**: `user.payout_*`, `client_application.payout_*`, `payout_destination`. Code dual-writes them (`payouts/destinations.js:83-90`). | Data can disagree; the approval gate reads the legacy copy. |
-| 2 | KYC data is split across `person` (unused at runtime), `client_application.kyc_*` (two columns dead) and `user.kyc_status`. | Unclear source of truth. |
-| 3 | `booking` carries a full legacy copy of itself: whole-rupee amounts next to paise amounts, `day` next to `local_day`, snapshots copied from `booking_order`, and dead backfill columns. `day`, `amount_rent` and `amount_fee` are `NOT NULL`, so every new booking must fill them. | Dual writes with no sync trigger; about 17 redundant columns. |
-| 4 | Legacy bookings (`order_id IS NULL`) were **never backfilled** into orders. The backfill planner (`domain/booking-legacy.js`) is imported by nothing. | Every booking query needs a legacy branch. |
-| 5 | Prices have three sources (`booking_price_override`, `availability.price_override`, `rentable_price`). Owner blocks have two (`availability.blocked_by_client`, `inventory_reservation`). | Confusing precedence rules in `quotes.js:43-91` and `inventory.js:175-196`. |
-| 6 | Money units are mixed: paise in `*_minor` columns, whole rupees in `rentable_price`, `rentable.deposit_amount`, `rentable.extra_guest_charge`, `payout.*`, `availability.price_override`. | The schema comment itself warns about this (schema:57-64). |
-| 7 | Dead tables and columns: `unit`, `person`, `booking.accept_deadline`, backfill columns, `user.payout_bank_ref` (write-only), `client_application.kyc_ref` / `kyc_verified_at`. | Noise; misleads future work. |
-| 8 | Customer sessions and partner sessions use two tables, although customers and clients share one cookie (`session-crypto.js:17`). Partner OTP and customer OTP use two tables; the partner one is weaker (plain-text IP, no browser binding). | Two revocation paths, two retention problems. |
-| 9 | About 24 foreign-key columns have no index. A few hot queries cannot use their index (geography cast on `rentable.location`, JSON lookup on `payment_event`). | Fine at today's size (largest table is 28,632 rows); a problem as data grows. |
-| 10 | No retention job for OTPs, rate rows, sessions, quotes or processed webhook jobs. The webhook claim query scans all historical jobs on every tick. | Tables and worker cost grow without bound. |
-| 11 | `document` uses a polymorphic owner with no foreign key. A re-upload overwrites the reviewed row in place, so the `superseded` status is never used and review history is lost. | Integrity and audit gap. |
-| 12 | The live database is missing migration 0040 (`operational_incident`, `operational_incident_event` are in the schema file but not in the live schema). | Schema drift. |
+| #   | Problem                                                                                                                                                                                                                                                                            | Impact                                                                        |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 1   | Client payout details are stored in **three places**: `user.payout_*`, `client_application.payout_*`, `payout_destination`. Code dual-writes them (`payouts/destinations.js:83-90`).                                                                                               | Data can disagree; the approval gate reads the legacy copy.                   |
+| 2   | KYC data is split across `person` (unused at runtime), `client_application.kyc_*` (two columns dead) and `user.kyc_status`.                                                                                                                                                        | Unclear source of truth.                                                      |
+| 3   | `booking` carries a full legacy copy of itself: whole-rupee amounts next to paise amounts, `day` next to `local_day`, snapshots copied from `booking_order`, and dead backfill columns. `day`, `amount_rent` and `amount_fee` are `NOT NULL`, so every new booking must fill them. | Dual writes with no sync trigger; about 17 redundant columns.                 |
+| 4   | Legacy bookings (`order_id IS NULL`) were **never backfilled** into orders. The backfill planner (`domain/booking-legacy.js`) is imported by nothing.                                                                                                                              | Every booking query needs a legacy branch.                                    |
+| 5   | Prices have three sources (`booking_price_override`, `availability.price_override`, `rentable_price`). Owner blocks have two (`availability.blocked_by_client`, `inventory_reservation`).                                                                                          | Confusing precedence rules in `quotes.js:43-91` and `inventory.js:175-196`.   |
+| 6   | Money units are mixed: paise in `*_minor` columns, whole rupees in `rentable_price`, `rentable.deposit_amount`, `rentable.extra_guest_charge`, `payout.*`, `availability.price_override`.                                                                                          | The schema comment itself warns about this (schema:57-64).                    |
+| 7   | Dead tables and columns: `unit`, `person`, `booking.accept_deadline`, backfill columns, `user.payout_bank_ref` (write-only), `client_application.kyc_ref` / `kyc_verified_at`.                                                                                                     | Noise; misleads future work.                                                  |
+| 8   | Customer sessions and partner sessions use two tables, although customers and clients share one cookie (`session-crypto.js:17`). Partner OTP and customer OTP use two tables; the partner one is weaker (plain-text IP, no browser binding).                                       | Two revocation paths, two retention problems.                                 |
+| 9   | About 24 foreign-key columns have no index. A few hot queries cannot use their index (geography cast on `rentable.location`, JSON lookup on `payment_event`).                                                                                                                      | Fine at today's size (largest table is 28,632 rows); a problem as data grows. |
+| 10  | No retention job for OTPs, rate rows, sessions, quotes or processed webhook jobs. The webhook claim query scans all historical jobs on every tick.                                                                                                                                 | Tables and worker cost grow without bound.                                    |
+| 11  | `document` uses a polymorphic owner with no foreign key. A re-upload overwrites the reviewed row in place, so the `superseded` status is never used and review history is lost.                                                                                                    | Integrity and audit gap.                                                      |
+| 12  | The live database is missing migration 0040 (`operational_incident`, `operational_incident_event` are in the schema file but not in the live schema).                                                                                                                              | Schema drift.                                                                 |
 
 ### What changes
 
@@ -69,18 +69,18 @@ The table count drops only a little. That is expected. The gain is one source of
 
 ### Order of work
 
-| Phase | Content | Risk |
-|---|---|---|
-| 0 | Rehearsal branch, drift check, audit queries | none |
-| 1 | Indexes, CHECKs, retention, worker fixes (additive only) | very low |
-| 2 | Remove dead tables, columns and indexes | low |
-| 3 | Identity consolidation: `user`, sessions, `person` | medium |
-| 4 | Payout details: single source | low to medium |
-| 5 | Inventory and pricing: single source | medium |
-| 6 | Booking legacy contraction | medium |
-| 7 | Money units to paise | medium |
-| 8 | Document owner FKs, naming (optional) | low |
-| 9 | OTP unification (optional hardening) | low to medium |
+| Phase | Content                                                  | Risk          |
+| ----- | -------------------------------------------------------- | ------------- |
+| 0     | Rehearsal branch, drift check, audit queries             | none          |
+| 1     | Indexes, CHECKs, retention, worker fixes (additive only) | very low      |
+| 2     | Remove dead tables, columns and indexes                  | low           |
+| 3     | Identity consolidation: `user`, sessions, `person`       | medium        |
+| 4     | Payout details: single source                            | low to medium |
+| 5     | Inventory and pricing: single source                     | medium        |
+| 6     | Booking legacy contraction                               | medium        |
+| 7     | Money units to paise                                     | medium        |
+| 8     | Document owner FKs, naming (optional)                    | low           |
+| 9     | OTP unification (optional hardening)                     | low to medium |
 
 ---
 
@@ -111,67 +111,67 @@ Legend: **Keep** = no structural change. **Tune** = keep the table and add index
 
 ### Identity and access (14 tables)
 
-| Table | Rows | Verdict | Reason |
-|---|---|---|---|
-| `user` | 22 | **Redesign** | Absorbs `customer_profile` and `client_update_preference`. Loses `person_id` and `payout_*`. Gains role CHECKs and case-insensitive email uniqueness. §4 |
-| `admin_user` | 1 | Keep | Separate on purpose: password + TOTP + lockout, no self-signup. §14 |
-| `person` | 11 | **Drop** | No runtime reader or writer; seeds only. §4.3 |
-| `customer_profile` | 3 | **Merge → `user`** | 1:1, same lifecycle; attributes are not customer-specific. §4.4 |
-| `client_update_preference` | 0 | **Merge → `user`** | 1:1, one JSON column. §4.4 |
-| `client_application` | 2 | **Slim** | Keep as the Gate 1 workflow record. Drop the dead KYC columns and the payout copy. §4.5, §5 |
-| `client_staff` | 12 | Keep | A delegated caretaker scoped to one owner, not a platform account. §14 |
-| `staff_invitation` | 1 | Keep | |
-| `staff_property` | 2 | Keep | |
-| `customer_session` | 15 | **Merge → `auth_session`** | Same shape as `portal_session`, same cookie. §9.1 |
-| `portal_session` | 17 | **Rename → `auth_session`** | Now holds all sessions. §9.1 |
-| `otp_token` | 37 | **Merge → `otp_challenge`** | Optional (Phase 9). §9.2 |
-| `customer_otp_challenge` | 16 | **Merge → `otp_challenge`** | Optional (Phase 9). §9.2 |
-| `customer_auth_rate` | 50 | **Rename → `auth_rate_event`**, Tune | Used for all principals after Phase 9; gets a CHECK. |
+| Table                      | Rows | Verdict                              | Reason                                                                                                                                                   |
+| -------------------------- | ---- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user`                     | 22   | **Redesign**                         | Absorbs `customer_profile` and `client_update_preference`. Loses `person_id` and `payout_*`. Gains role CHECKs and case-insensitive email uniqueness. §4 |
+| `admin_user`               | 1    | Keep                                 | Separate on purpose: password + TOTP + lockout, no self-signup. §14                                                                                      |
+| `person`                   | 11   | **Drop**                             | No runtime reader or writer; seeds only. §4.3                                                                                                            |
+| `customer_profile`         | 3    | **Merge → `user`**                   | 1:1, same lifecycle; attributes are not customer-specific. §4.4                                                                                          |
+| `client_update_preference` | 0    | **Merge → `user`**                   | 1:1, one JSON column. §4.4                                                                                                                               |
+| `client_application`       | 2    | **Slim**                             | Keep as the Gate 1 workflow record. Drop the dead KYC columns and the payout copy. §4.5, §5                                                              |
+| `client_staff`             | 12   | Keep                                 | A delegated caretaker scoped to one owner, not a platform account. §14                                                                                   |
+| `staff_invitation`         | 1    | Keep                                 |                                                                                                                                                          |
+| `staff_property`           | 2    | Keep                                 |                                                                                                                                                          |
+| `customer_session`         | 15   | **Merge → `auth_session`**           | Same shape as `portal_session`, same cookie. §9.1                                                                                                        |
+| `portal_session`           | 17   | **Rename → `auth_session`**          | Now holds all sessions. §9.1                                                                                                                             |
+| `otp_token`                | 37   | **Merge → `otp_challenge`**          | Optional (Phase 9). §9.2                                                                                                                                 |
+| `customer_otp_challenge`   | 16   | **Merge → `otp_challenge`**          | Optional (Phase 9). §9.2                                                                                                                                 |
+| `customer_auth_rate`       | 50   | **Rename → `auth_rate_event`**, Tune | Used for all principals after Phase 9; gets a CHECK.                                                                                                     |
 
 ### Catalogue and listings (13 tables)
 
-| Table | Rows | Verdict | Reason |
-|---|---|---|---|
-| `city` | 10 | Keep | |
-| `area` | 111 | Tune | Add unique `(id, city_id)` as the target of the new composite FK. §7.3 |
-| `category` | 1 | Keep | |
-| `amenity` | 43 | Keep | Three fixed label columns are fine; an i18n table would be over-normalisation. |
-| `rentable` | 123 | **Slim**, Tune | Drop `amenities` jsonb and `approved_snapshot`. Money columns to paise. Composite FK to `area`. §7 |
-| `rentable_amenity` | 665 | Tune | Index on `amenity_id`. |
-| `rentable_price` | 366 | **Redesign** | `weekday` / `weekend` rupees → `*_minor`. §8 |
-| `listing_submission` | 0 | Keep | Immutable snapshot per review pass. |
-| `listing_review` | 0 | Keep | |
-| `verification_visit` | 110 | Keep | |
-| `document` | 110 | **Redesign** | Real FKs for the owner; keep history on re-upload. §11 |
-| `redirect` | 0 | Keep | Read by `catalogues/service.js:82`, but nothing writes it. Add a writer when slugs change. |
-| `unit` | 0 | **Drop** | No reference outside the schema and the seed truncate list. §6 |
+| Table                | Rows | Verdict        | Reason                                                                                             |
+| -------------------- | ---- | -------------- | -------------------------------------------------------------------------------------------------- |
+| `city`               | 10   | Keep           |                                                                                                    |
+| `area`               | 111  | Tune           | Add unique `(id, city_id)` as the target of the new composite FK. §7.3                             |
+| `category`           | 1    | Keep           |                                                                                                    |
+| `amenity`            | 43   | Keep           | Three fixed label columns are fine; an i18n table would be over-normalisation.                     |
+| `rentable`           | 123  | **Slim**, Tune | Drop `amenities` jsonb and `approved_snapshot`. Money columns to paise. Composite FK to `area`. §7 |
+| `rentable_amenity`   | 665  | Tune           | Index on `amenity_id`.                                                                             |
+| `rentable_price`     | 366  | **Redesign**   | `weekday` / `weekend` rupees → `*_minor`. §8                                                       |
+| `listing_submission` | 0    | Keep           | Immutable snapshot per review pass.                                                                |
+| `listing_review`     | 0    | Keep           |                                                                                                    |
+| `verification_visit` | 110  | Keep           |                                                                                                    |
+| `document`           | 110  | **Redesign**   | Real FKs for the owner; keep history on re-upload. §11                                             |
+| `redirect`           | 0    | Keep           | Read by `catalogues/service.js:82`, but nothing writes it. Add a writer when slugs change.         |
+| `unit`               | 0    | **Drop**       | No reference outside the schema and the seed truncate list. §6                                     |
 
 ### Booking and inventory (13 tables)
 
-| Table | Rows | Verdict | Reason |
-|---|---|---|---|
-| `booking_quote` | 121 | Tune | FK indexes; retention for expired quotes. |
-| `booking_order` | 15 | Tune | Index on `rentable_id`. |
-| `booking` | 49 | **Slim** | Remove the legacy copy; `order_id NOT NULL`. §6.2, §10 |
-| `availability` | 28,632 | **Slim** | Keep as the open-date calendar only. Move prices and blocks out. §8 |
-| `booking_price_override` | 0 | Keep | Becomes the only per-date price source. |
-| `inventory_reservation` | 20 | Keep | Becomes the only block source. The GiST exclusion constraint is the double-booking lock. |
-| `booking_cancellation` | 2 | Keep | |
-| `booking_lifecycle_event` | 32 | Keep | Drives notifications and the client inbox through triggers. |
-| `booking_case`, `booking_case_update`, `booking_case_visit` | 0 | Keep | §14 |
-| `customer_favourite`, `customer_favourite_merge` | 7, 1 | Keep | The merge table is a replay receipt (`customer/saved.js:61-76`). |
+| Table                                                       | Rows   | Verdict  | Reason                                                                                   |
+| ----------------------------------------------------------- | ------ | -------- | ---------------------------------------------------------------------------------------- |
+| `booking_quote`                                             | 121    | Tune     | FK indexes; retention for expired quotes.                                                |
+| `booking_order`                                             | 15     | Tune     | Index on `rentable_id`.                                                                  |
+| `booking`                                                   | 49     | **Slim** | Remove the legacy copy; `order_id NOT NULL`. §6.2, §10                                   |
+| `availability`                                              | 28,632 | **Slim** | Keep as the open-date calendar only. Move prices and blocks out. §8                      |
+| `booking_price_override`                                    | 0      | Keep     | Becomes the only per-date price source.                                                  |
+| `inventory_reservation`                                     | 20     | Keep     | Becomes the only block source. The GiST exclusion constraint is the double-booking lock. |
+| `booking_cancellation`                                      | 2      | Keep     |                                                                                          |
+| `booking_lifecycle_event`                                   | 32     | Keep     | Drives notifications and the client inbox through triggers.                              |
+| `booking_case`, `booking_case_update`, `booking_case_visit` | 0      | Keep     | §14                                                                                      |
+| `customer_favourite`, `customer_favourite_merge`            | 7, 1   | Keep     | The merge table is a replay receipt (`customer/saved.js:61-76`).                         |
 
 ### Payments and payouts (13 tables)
 
-| Table | Rows | Verdict | Reason |
-|---|---|---|---|
-| `payment_gateway_config` | 1 | Keep | Immutable config revisions. |
-| `payment_order`, `payment_attempt`, `payment_transaction`, `payment_allocation` | 15, 14, 14, 38 | Keep, Tune | Ledger chain. §12 |
-| `payment_execution`, `payment_event`, `payment_event_job` | 15, 39, 39 | Keep, Tune | Mutable side tables for frozen parents. Fix the job claim scan. §12, §13 |
-| `refund`, `refund_allocation`, `refund_execution` | 1, 1, 1 | Keep, Tune | Partial index for the `requested` scan. |
-| `customer_payment_method` | 0 | Tune | Index on `customer_id`. |
-| `payout` | 29 | **Redesign** | Rupee columns → paise. §8.4 |
-| `payout_destination` | 1 | Keep | Becomes the only store of payout details. §5 |
+| Table                                                                           | Rows           | Verdict      | Reason                                                                   |
+| ------------------------------------------------------------------------------- | -------------- | ------------ | ------------------------------------------------------------------------ |
+| `payment_gateway_config`                                                        | 1              | Keep         | Immutable config revisions.                                              |
+| `payment_order`, `payment_attempt`, `payment_transaction`, `payment_allocation` | 15, 14, 14, 38 | Keep, Tune   | Ledger chain. §12                                                        |
+| `payment_execution`, `payment_event`, `payment_event_job`                       | 15, 39, 39     | Keep, Tune   | Mutable side tables for frozen parents. Fix the job claim scan. §12, §13 |
+| `refund`, `refund_allocation`, `refund_execution`                               | 1, 1, 1        | Keep, Tune   | Partial index for the `requested` scan.                                  |
+| `customer_payment_method`                                                       | 0              | Tune         | Index on `customer_id`.                                                  |
+| `payout`                                                                        | 29             | **Redesign** | Rupee columns → paise. §8.4                                              |
+| `payout_destination`                                                            | 1              | Keep         | Becomes the only store of payout details. §5                             |
 
 ### Support, disputes, evidence, reviews (14 tables)
 
@@ -191,12 +191,12 @@ All kept: `audit_log` (Tune, §13.3), `admin_export_job` (Tune), `privacy_job` (
 
 There are 14 identity-related tables. Only one of them, `user`, is actually a "users" table. The rest fall into four groups:
 
-| Kind | Tables |
-|---|---|
-| Principals (who can log in) | `user` (customers and clients), `admin_user`, `client_staff` |
-| Role extensions, 1:1 with `user` | `customer_profile`, `client_update_preference`, `client_application` |
-| Auth artefacts | `customer_session`, `portal_session`, `otp_token`, `customer_otp_challenge`, `customer_auth_rate`, `staff_invitation` |
-| Unused | `person` |
+| Kind                             | Tables                                                                                                                |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Principals (who can log in)      | `user` (customers and clients), `admin_user`, `client_staff`                                                          |
+| Role extensions, 1:1 with `user` | `customer_profile`, `client_update_preference`, `client_application`                                                  |
+| Auth artefacts                   | `customer_session`, `portal_session`, `otp_token`, `customer_otp_challenge`, `customer_auth_rate`, `staff_invitation` |
+| Unused                           | `person`                                                                                                              |
 
 So the request to have "a single well-designed users table" is already half true: customers and clients share `user`. The work is to decide what belongs on that row.
 
@@ -226,7 +226,7 @@ Why merging improves the design, and not only the table count:
 
 1. It is strictly 1:1 with the same lifecycle. It is created at onboarding and erased with the account.
 2. Photo and marketing consent describe the person, not the customer role. A client could have both.
-3. Today the *existence* of the row, plus a name, is the "onboarding done" flag (`customer-actions.js:62-64`). An explicit `profile_completed_at` column is clearer.
+3. Today the _existence_ of the row, plus a name, is the "onboarding done" flag (`customer-actions.js:62-64`). An explicit `profile_completed_at` column is clearer.
 4. Every account page, the privacy export and the admin customer view currently join two tables for one entity.
 
 `client_update_preference` (0 rows) holds one `muted` JSON array and a `version`. Its only readers are `auth/client-inbox.js:84-116` and the SQL function `client_update_insert()` (M0030:34-39). It is part of the account.
@@ -235,15 +235,15 @@ Both tables carry their own `version` token for optimistic concurrency. After th
 
 ### 4.5 Role-specific columns and KYC
 
-| Column | Used by | Status | Action |
-|---|---|---|---|
-| `client_type` | client | live | keep, CHECK NULL for customers |
-| `kyc_status` | client | live | keep as the account-level verdict. The values `rejected` and `more_info_needed` are never written, although `profile.js:88-90` reads `rejected`. Fix the writer or remove the values later. |
-| `payout_upi_id` | client | legacy mirror | **drop** (§5) |
-| `payout_bank_ref` | client | write-only | **drop** (§5) |
-| `responds_within_mins`, `response_rate` | client | read by the public listing (`db/queries.js:162-163`); only seeds write them | keep for now. Either add a job that computes them or remove them together with the UI. (§18) |
-| `privacy_erasure_pending`, `privacy_erased_at` | customer | live | keep, CHECK default values for clients |
-| `person_id` | — | dead | **drop** |
+| Column                                         | Used by  | Status                                                                      | Action                                                                                                                                                                                      |
+| ---------------------------------------------- | -------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client_type`                                  | client   | live                                                                        | keep, CHECK NULL for customers                                                                                                                                                              |
+| `kyc_status`                                   | client   | live                                                                        | keep as the account-level verdict. The values `rejected` and `more_info_needed` are never written, although `profile.js:88-90` reads `rejected`. Fix the writer or remove the values later. |
+| `payout_upi_id`                                | client   | legacy mirror                                                               | **drop** (§5)                                                                                                                                                                               |
+| `payout_bank_ref`                              | client   | write-only                                                                  | **drop** (§5)                                                                                                                                                                               |
+| `responds_within_mins`, `response_rate`        | client   | read by the public listing (`db/queries.js:162-163`); only seeds write them | keep for now. Either add a job that computes them or remove them together with the UI. (§18)                                                                                                |
+| `privacy_erasure_pending`, `privacy_erased_at` | customer | live                                                                        | keep, CHECK default values for clients                                                                                                                                                      |
+| `person_id`                                    | —        | dead                                                                        | **drop**                                                                                                                                                                                    |
 
 KYC after the change has one owner per fact:
 
@@ -329,7 +329,7 @@ Notes:
 - `ALTER COLUMN … TYPE` rewrites the table and rebuilds its indexes. It does not fire row triggers, so no session is revoked and no listing version is bumped. At 22 users and 49 bookings this takes milliseconds.
 - Check on the rehearsal branch that no function or view other than `public_customer_review` depends on these columns. Postgres refuses the `ALTER` if one does, so the migration fails safely instead of silently.
 - Drizzle: add `export const role = pgTable('role', …)`, change `role: userRole('role')` to `varchar('role', { length: 16 }).notNull().references(() => role.code)` (and the same for `authorRole`), and delete the `userRole` enum export. Nothing in `src/` imports `userRole` outside the schema file.
-- **Why `booking.cancelled_by` becomes `cancelled_by_kind` and does not reference `role`.** It records *who cancelled*, and that is not always a user role. A customer cancellation writes `'customer'` (`cancellation.js:86`). An admin cancellation through a booking case writes NULL (`booking-cases.js:321`). The hold-expiry and settlement paths set `cancelled_at` but no `cancelled_by` at all (`inventory.js:138`, `payments/settlement.js:99`). So today NULL means "admin, system or unknown". A CHECK over `('customer','client','admin','system')` lets each path say what happened. Update those three writers to set `'admin'` and `'system'`. The rename touches 2 files (`cancellation.js`, `booking-cases.js`). **The same migration must also replace `rentra_checkout_terms_immutable()` (M0015:64-83)**: its `mutable` array names `'cancelled_by'`. If that name is not changed to `'cancelled_by_kind'`, cancelling any booking whose order has a payment execution fails with "Accepted checkout terms are immutable".
+- **Why `booking.cancelled_by` becomes `cancelled_by_kind` and does not reference `role`.** It records _who cancelled_, and that is not always a user role. A customer cancellation writes `'customer'` (`cancellation.js:86`). An admin cancellation through a booking case writes NULL (`booking-cases.js:321`). The hold-expiry and settlement paths set `cancelled_at` but no `cancelled_by` at all (`inventory.js:138`, `payments/settlement.js:99`). So today NULL means "admin, system or unknown". A CHECK over `('customer','client','admin','system')` lets each path say what happened. Update those three writers to set `'admin'` and `'system'`. The rename touches 2 files (`cancellation.js`, `booking-cases.js`). **The same migration must also replace `rentra_checkout_terms_immutable()` (M0015:64-83)**: its `mutable` array names `'cancelled_by'`. If that name is not changed to `'cancelled_by_kind'`, cancelling any booking whose order has a payment execution fails with "Accepted checkout terms are immutable".
 
 ### 4.8 Can `admin_user` be removed and merged into `user`?
 
@@ -337,13 +337,13 @@ Short answer: it is technically possible, but it makes the design weaker. **Keep
 
 #### What depends on `admin_user` today
 
-| Dependency | Count | Where |
-|---|---|---|
-| Foreign keys pointing at `admin_user.id` | 27 live, 29 with M0040 | `reviewed_by`, `assigned_to`, `decided_by`, `resolved_by`, `published_by`, `changed_by` and others, on 21 tables |
-| Trigger checks that read `admin_user` | 13 | "is this actor an active admin, with this permission" in M0017:73, M0018:55, M0019:70, M0028:103,112, M0029:96-129, M0031:69, M0032:57, M0034:93-98 |
-| Service files | 34 | login, operators, every admin queue |
-| Admin-only columns | 9 | `password_hash`, `totp_secret`, `failed_attempts`, `locked_until`, `permissions`, `security_version`, `enrollment_hash`, `enrollment_secret`, `enrollment_expires_at` |
-| Columns shared with `user` | 5 | `email`, `name`, active flag, `last_login_at`, `created_at` |
+| Dependency                               | Count                  | Where                                                                                                                                                                 |
+| ---------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Foreign keys pointing at `admin_user.id` | 27 live, 29 with M0040 | `reviewed_by`, `assigned_to`, `decided_by`, `resolved_by`, `published_by`, `changed_by` and others, on 21 tables                                                      |
+| Trigger checks that read `admin_user`    | 13                     | "is this actor an active admin, with this permission" in M0017:73, M0018:55, M0019:70, M0028:103,112, M0029:96-129, M0031:69, M0032:57, M0034:93-98                   |
+| Service files                            | 34                     | login, operators, every admin queue                                                                                                                                   |
+| Admin-only columns                       | 9                      | `password_hash`, `totp_secret`, `failed_attempts`, `locked_until`, `permissions`, `security_version`, `enrollment_hash`, `enrollment_secret`, `enrollment_expires_at` |
+| Columns shared with `user`               | 5                      | `email`, `name`, active flag, `last_login_at`, `created_at`                                                                                                           |
 
 #### What a merge would look like
 
@@ -381,16 +381,16 @@ Timelines and the audit browser can join `principal` on `actor_id`. This is safe
 
 #### Other merge candidates checked again
 
-| Candidate | Verdict | Reason |
-|---|---|---|
-| `admin_user` into `user` | Keep separate | Above. |
-| `client_staff` into `user` | Keep separate | §14. Caretakers are delegated to one owner, with grants per property. |
-| `admin_user.permissions` jsonb into a `permission` table | Keep jsonb | 8 fixed capability strings, checked with `@>` in triggers. A table adds joins and nothing else. |
-| `admin_export_job` + `privacy_job` into one job table | Keep separate | Both hold an encrypted artifact and a state, but their parents, states and stages differ. `privacy_job` is keyed by its request. |
-| `payment_execution` + `refund_execution` | Keep separate | Different parents and different trigger rules for what may change (M0015:37, M0016:25). |
-| `client_update` + `notification_outbox` | Keep separate | An inbox that people read versus an SMS delivery queue with leases. |
-| `visit_evidence_correction` into `visit_evidence` | Keep separate | Evidence is immutable. Corrections form a chain that supersedes it without erasing it. |
-| `staff_invitation` into the OTP table | Keep separate | A long-lived, single-use link token versus a 5-minute code. |
+| Candidate                                                | Verdict       | Reason                                                                                                                           |
+| -------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `admin_user` into `user`                                 | Keep separate | Above.                                                                                                                           |
+| `client_staff` into `user`                               | Keep separate | §14. Caretakers are delegated to one owner, with grants per property.                                                            |
+| `admin_user.permissions` jsonb into a `permission` table | Keep jsonb    | 8 fixed capability strings, checked with `@>` in triggers. A table adds joins and nothing else.                                  |
+| `admin_export_job` + `privacy_job` into one job table    | Keep separate | Both hold an encrypted artifact and a state, but their parents, states and stages differ. `privacy_job` is keyed by its request. |
+| `payment_execution` + `refund_execution`                 | Keep separate | Different parents and different trigger rules for what may change (M0015:37, M0016:25).                                          |
+| `client_update` + `notification_outbox`                  | Keep separate | An inbox that people read versus an SMS delivery queue with leases.                                                              |
+| `visit_evidence_correction` into `visit_evidence`        | Keep separate | Evidence is immutable. Corrections form a chain that supersedes it without erasing it.                                           |
+| `staff_invitation` into the OTP table                    | Keep separate | A long-lived, single-use link token versus a 5-minute code.                                                                      |
 
 ### 4.9 Before and after
 
@@ -415,11 +415,11 @@ customer_auth_rate                            auth_rate_event (all principals)
 
 ## 5. Payout details are stored three times
 
-| Copy | Written by | Read by |
-|---|---|---|
-| `user.payout_upi_id`, `payout_bank_ref` | `application.js:162-163`, `destinations.js:89` (`mirrorLegacy`) | `profile.js:111` as a fallback; `payout_bank_ref` is never read |
-| `client_application.payout_upi_id`, `payout_account_ref`, `payout_ifsc`, `payout_holder_name`, `payout_name_match` | `application.js:152-164`, `destinations.js:83-90` | stepper `profile.js:106-114`; approval gate `admin/applications.js:36-37,100,138,244` |
-| `payout_destination` (versioned, verified, append-only by trigger) | `recordOnboardingDestination` (`application.js:171-173`), settings | payouts, finance |
+| Copy                                                                                                               | Written by                                                         | Read by                                                                               |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `user.payout_upi_id`, `payout_bank_ref`                                                                            | `application.js:162-163`, `destinations.js:89` (`mirrorLegacy`)    | `profile.js:111` as a fallback; `payout_bank_ref` is never read                       |
+| `client_application.payout_upi_id`, `payout_account_ref`, `payout_ifsc`, `payout_holder_name`, `payout_name_match` | `application.js:152-164`, `destinations.js:83-90`                  | stepper `profile.js:106-114`; approval gate `admin/applications.js:36-37,100,138,244` |
+| `payout_destination` (versioned, verified, append-only by trigger)                                                 | `recordOnboardingDestination` (`application.js:171-173`), settings | payouts, finance                                                                      |
 
 `payout_destination` is the correct design. It is versioned, stores no full account number, needs provider evidence to reach `verified`, and each payout is pinned to one destination version (`payout.destination_id`). The other two copies were left over from before migration 0033. Migration 0033 backfilled them with `source='migration'` (M0033:98-116), but rows that failed its regex or length checks stayed only in the legacy columns (comment at M0033:98-99).
 
@@ -443,26 +443,26 @@ Run the pre-check A.3 first. Rows that exist only in the legacy columns need a m
 
 ### 6.2 Columns
 
-| Table.column | Evidence | Action |
-|---|---|---|
-| `booking.accept_deadline` | no reader or writer; only the index `booking_state_deadline_idx` | drop, with the index |
-| `booking.legacy_advance_reported_minor`, `backfill_version`, `backfilled_at` | used only in `domain/booking-legacy.js`, which nothing imports | drop, with `booking_backfill_idx` and the dead file |
-| `booking.amount_advance_paid`, `balance_mode`, `balance_settled_at`, `check_in_code` | seeds only (`seed.js:477-487`) | drop, unless on the roadmap (§18). Drop the enum type `balance_mode` with them. |
-| `user.person_id`, `payout_upi_id`, `payout_bank_ref` | §4, §5 | drop |
-| `client_application.kyc_ref`, `kyc_verified_at` | no reader or writer outside M0004 | drop |
-| `client_application.payout_*` (5 columns) | §5 | drop |
-| `rentable.amenities` | written only by seeds; read only as a fallback when no join rows exist (`domain/listing-content.js:53-68`) | drop (§7.1) |
-| `rentable.requires_operator` | no reader or writer anywhere in `src/` (goods-rental placeholder, like `unit`) | drop |
-| `rentable.approved_snapshot` | copy of `listing_submission.snapshot`, which `published_submission_id` already points to (`admin/verification.js:336`) | drop (§7.2) |
+| Table.column                                                                         | Evidence                                                                                                               | Action                                                                          |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `booking.accept_deadline`                                                            | no reader or writer; only the index `booking_state_deadline_idx`                                                       | drop, with the index                                                            |
+| `booking.legacy_advance_reported_minor`, `backfill_version`, `backfilled_at`         | used only in `domain/booking-legacy.js`, which nothing imports                                                         | drop, with `booking_backfill_idx` and the dead file                             |
+| `booking.amount_advance_paid`, `balance_mode`, `balance_settled_at`, `check_in_code` | seeds only (`seed.js:477-487`)                                                                                         | drop, unless on the roadmap (§18). Drop the enum type `balance_mode` with them. |
+| `user.person_id`, `payout_upi_id`, `payout_bank_ref`                                 | §4, §5                                                                                                                 | drop                                                                            |
+| `client_application.kyc_ref`, `kyc_verified_at`                                      | no reader or writer outside M0004                                                                                      | drop                                                                            |
+| `client_application.payout_*` (5 columns)                                            | §5                                                                                                                     | drop                                                                            |
+| `rentable.amenities`                                                                 | written only by seeds; read only as a fallback when no join rows exist (`domain/listing-content.js:53-68`)             | drop (§7.1)                                                                     |
+| `rentable.requires_operator`                                                         | no reader or writer anywhere in `src/` (goods-rental placeholder, like `unit`)                                         | drop                                                                            |
+| `rentable.approved_snapshot`                                                         | copy of `listing_submission.snapshot`, which `published_submission_id` already points to (`admin/verification.js:336`) | drop (§7.2)                                                                     |
 
 ### 6.3 Indexes
 
-| Index | Why |
-|---|---|
+| Index                          | Why                                                                                                                           |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | `booking_order_idx (order_id)` | Redundant. It is the leading column of the unique indexes `booking_order_position_idx` and `booking_order_localday_slot_idx`. |
-| `booking_state_deadline_idx` | Indexes the dead `accept_deadline`. |
-| `booking_backfill_idx` | Indexes a dead column. |
-| `user_person_idx` | Goes with `person_id`. |
+| `booking_state_deadline_idx`   | Indexes the dead `accept_deadline`.                                                                                           |
+| `booking_backfill_idx`         | Indexes a dead column.                                                                                                        |
+| `user_person_idx`              | Goes with `person_id`.                                                                                                        |
 
 ---
 
@@ -476,14 +476,14 @@ Do not mass-insert them with SQL. The `amenity_content_version` trigger (M0026:5
 
 ### 7.2 Controlled denormalisation: what stays and what goes
 
-| Column | Copy of | Verdict |
-|---|---|---|
-| `rating_avg`, `review_count` | aggregate of `public_customer_review` | **keep**. Trigger-maintained (M0018:63-86) and guarded against manual writes. Needed so a listing card is one query. |
-| `verified_at`, `verified_by` | the completed `verification_visit` | **keep**. Used for the badge on cards; set once at publish. |
-| `rejection_reason` | the latest `listing_review.reason` | keep. Cheap and read on owner pages. |
-| `review_pass` | pointer to `listing_submission.pass_number` | keep. Used as a join key. |
-| `approved_snapshot` | `listing_submission.snapshot` via `published_submission_id` | **drop**. Read the snapshot through the FK instead (`admin/listings.js:72`). |
-| `form` | `category.form`, copied at create (`auth/listings.js:159`) | keep. Block changing `category.form` while live listings use it, in `catalogue_reference_guard`, or else the copies drift. |
+| Column                       | Copy of                                                     | Verdict                                                                                                                    |
+| ---------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `rating_avg`, `review_count` | aggregate of `public_customer_review`                       | **keep**. Trigger-maintained (M0018:63-86) and guarded against manual writes. Needed so a listing card is one query.       |
+| `verified_at`, `verified_by` | the completed `verification_visit`                          | **keep**. Used for the badge on cards; set once at publish.                                                                |
+| `rejection_reason`           | the latest `listing_review.reason`                          | keep. Cheap and read on owner pages.                                                                                       |
+| `review_pass`                | pointer to `listing_submission.pass_number`                 | keep. Used as a join key.                                                                                                  |
+| `approved_snapshot`          | `listing_submission.snapshot` via `published_submission_id` | **drop**. Read the snapshot through the FK instead (`admin/listings.js:72`).                                               |
+| `form`                       | `category.form`, copied at create (`auth/listings.js:159`)  | keep. Block changing `category.form` while live listings use it, in `catalogue_reference_guard`, or else the copies drift. |
 
 ### 7.3 City and area consistency
 
@@ -527,14 +527,14 @@ A later, optional step: make open dates rule-based, derived from `rentable.booki
 
 The codebase's own rule is "money in integer minor units in `*_minor` columns" (schema:57-65). These columns break it:
 
-| Column | Today | After |
-|---|---|---|
-| `rentable_price.weekday`, `weekend` | integer rupees | `weekday_minor`, `weekend_minor` bigint |
-| `rentable.deposit_amount` | integer rupees | `deposit_minor` bigint |
-| `rentable.extra_guest_charge` | integer rupees | `extra_guest_charge_minor` bigint |
-| `availability.price_override` | integer rupees | removed (§8.2) |
-| `payout.gross`, `commission`, `tds_194o`, `gst_tcs`, `net` | integer rupees | `*_minor` bigint |
-| `booking.amount_rent`, `amount_fee`, `amount_deposit`, `amount_advance_paid` | integer rupees, copies of `*_minor` | removed (§10) |
+| Column                                                                       | Today                               | After                                   |
+| ---------------------------------------------------------------------------- | ----------------------------------- | --------------------------------------- |
+| `rentable_price.weekday`, `weekend`                                          | integer rupees                      | `weekday_minor`, `weekend_minor` bigint |
+| `rentable.deposit_amount`                                                    | integer rupees                      | `deposit_minor` bigint                  |
+| `rentable.extra_guest_charge`                                                | integer rupees                      | `extra_guest_charge_minor` bigint       |
+| `availability.price_override`                                                | integer rupees                      | removed (§8.2)                          |
+| `payout.gross`, `commission`, `tds_194o`, `gst_tcs`, `net`                   | integer rupees                      | `*_minor` bigint                        |
+| `booking.amount_rent`, `amount_fee`, `amount_deposit`, `amount_advance_paid` | integer rupees, copies of `*_minor` | removed (§10)                           |
 
 Conversion method: `rentable`, `rentable_price` and `payout` have row triggers that react to `UPDATE`. `rentable_content_version` and `price_content_version` bump listing versions; `financial_scope` freezes funded payouts. So do **not** convert with `UPDATE ... SET x_minor = x * 100`. Instead:
 
@@ -555,12 +555,12 @@ No service code creates payouts; only seeds do. The finance statement labels the
 
 ### 9.1 Merge `customer_session` into `portal_session`, rename it `auth_session`
 
-| | `customer_session` | `portal_session` |
-|---|---|---|
-| Principal | `user_id` (customer) | exactly one of `user_id` (client), `admin_id`, `staff_id` (CHECK) |
-| Cookie | `rentra_session` | `rentra_session` (client), `rentra_admin`, `rentra_staff` |
-| Validity | role customer and status `active` (`customer-identity.js:107-114`) | client: `active` or `pending_application` (`portal-sessions.js:16,42`) |
-| Revocation trigger | `customer_status_session_revocation` (M0011:36-47) | `user_portal_access_revoked`, `admin_portal_access_revoked` (M0024:11-39) |
+|                    | `customer_session`                                                 | `portal_session`                                                          |
+| ------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Principal          | `user_id` (customer)                                               | exactly one of `user_id` (client), `admin_id`, `staff_id` (CHECK)         |
+| Cookie             | `rentra_session`                                                   | `rentra_session` (client), `rentra_admin`, `rentra_staff`                 |
+| Validity           | role customer and status `active` (`customer-identity.js:107-114`) | client: `active` or `pending_application` (`portal-sessions.js:16,42`)    |
+| Revocation trigger | `customer_status_session_revocation` (M0011:36-47)                 | `user_portal_access_revoked`, `admin_portal_access_revoked` (M0024:11-39) |
 
 These are one concept stored twice. Customers and clients already share a cookie. `portal_session.user_id` references `user` with no role restriction. The only difference is the validity rule, and that is a `CASE` on `user.role`.
 
@@ -650,15 +650,15 @@ Fixes (details in §13):
 
 Nothing deletes these rows today. The windows below are safe against the code's own time windows: OTP expiry 5 minutes, rate window 1 hour, session 30 days.
 
-| Table | Rule |
-|---|---|
-| `otp_token`, `customer_otp_challenge` (later `otp_challenge`) | delete when `created_at < now() - 7 days` |
-| `customer_auth_rate` (later `auth_rate_event`) | delete when `created_at < now() - 7 days` |
-| `customer_session`, `portal_session` (later `auth_session`) | delete when `coalesce(revoked_at, expires_at) < now() - 90 days` |
-| `booking_quote` | delete expired quotes older than 30 days that no `booking_order` references (the FK is `RESTRICT`) |
-| `payment_event_job` | delete when the event is `processed` (in code, §12) |
-| `notification_outbox` | keep; archive after 12 months if needed |
-| `audit_log` | cannot be pruned (append-only trigger, M0039). See §13.3. |
+| Table                                                         | Rule                                                                                               |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `otp_token`, `customer_otp_challenge` (later `otp_challenge`) | delete when `created_at < now() - 7 days`                                                          |
+| `customer_auth_rate` (later `auth_rate_event`)                | delete when `created_at < now() - 7 days`                                                          |
+| `customer_session`, `portal_session` (later `auth_session`)   | delete when `coalesce(revoked_at, expires_at) < now() - 90 days`                                   |
+| `booking_quote`                                               | delete expired quotes older than 30 days that no `booking_order` references (the FK is `RESTRICT`) |
+| `payment_event_job`                                           | delete when the event is `processed` (in code, §12)                                                |
+| `notification_outbox`                                         | keep; archive after 12 months if needed                                                            |
+| `audit_log`                                                   | cannot be pruned (append-only trigger, M0039). See §13.3.                                          |
 
 ### 13.2 Indexes
 
@@ -668,16 +668,16 @@ Postgres does not index foreign-key columns automatically. Without an index, eve
 
 Queries that cannot use an existing index:
 
-| Query | Problem | Fix |
-|---|---|---|
-| `getListingsNearby` (`db/queries.js:135`) | `ST_DWithin(location::geography, …)`. The cast stops it using the GiST index on `geometry`. | expression index `USING gist ((location::geography))` |
-| Owner booking history (`booking/records.js:69-81`) | filters `booking_order` by `rentable_id`; no index starts with it | `(rentable_id, created_at DESC)` |
-| Review totals trigger (M0018:63-86) | runs on **every booking state update**, recounts reviews per listing; `review.rentable_id` has no index | partial index on published customer reviews |
-| Discovery cursor (`db/discovery.js:44-59`) | `status='live' AND id > cursor ORDER BY id` | partial index `(id) WHERE status='live'` |
-| Payment investigation (`investigation.js:55-57`) | JSON field lookup | expression index on `(redacted_payload->>'orderId')` |
-| Export worker (`admin/audit-browser.js:488-491`) | `ORDER BY created_at` but the index is `(state, updated_at)`; expiry purge has no index | partial indexes |
-| Privacy worker (`privacy-fulfillment.js:543-545`) | expiry purge has no index | partial index |
-| Refund worker (`refunds.js:66-70`) | `state='requested'` has no index | partial index |
+| Query                                              | Problem                                                                                                 | Fix                                                   |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `getListingsNearby` (`db/queries.js:135`)          | `ST_DWithin(location::geography, …)`. The cast stops it using the GiST index on `geometry`.             | expression index `USING gist ((location::geography))` |
+| Owner booking history (`booking/records.js:69-81`) | filters `booking_order` by `rentable_id`; no index starts with it                                       | `(rentable_id, created_at DESC)`                      |
+| Review totals trigger (M0018:63-86)                | runs on **every booking state update**, recounts reviews per listing; `review.rentable_id` has no index | partial index on published customer reviews           |
+| Discovery cursor (`db/discovery.js:44-59`)         | `status='live' AND id > cursor ORDER BY id`                                                             | partial index `(id) WHERE status='live'`              |
+| Payment investigation (`investigation.js:55-57`)   | JSON field lookup                                                                                       | expression index on `(redacted_payload->>'orderId')`  |
+| Export worker (`admin/audit-browser.js:488-491`)   | `ORDER BY created_at` but the index is `(state, updated_at)`; expiry purge has no index                 | partial indexes                                       |
+| Privacy worker (`privacy-fulfillment.js:543-545`)  | expiry purge has no index                                                                               | partial index                                         |
+| Refund worker (`refunds.js:66-70`)                 | `state='requested'` has no index                                                                        | partial index                                         |
 
 Application-level issue, not a schema issue: with dates, discovery runs `previewBookingQuote` once per candidate listing, 4 at a time (`db/discovery.js:65`). That is the main search cost. It should become one set-based availability query. That is outside this schema plan, but it matters more than any index here.
 
@@ -709,7 +709,7 @@ Scale note: at today's volume (123 listings, 49 bookings), none of this is slow.
   - The user role is `client`, but actor columns say `owner`.
   - `support_request.property_id` and `dispute_case.visit_id` point to `rentable` and `booking`.
   - `dispute_case.owner_id` points to a client.
-  Do not rename the existing CHECK values: that would mean rewriting triggers for little gain. Do use `client_id`, `rentable_id` and `booking_id` for all new columns, and write the mapping (owner = client, visit = booking, property = rentable) into `docs/ARCHITECTURE.md`.
+    Do not rename the existing CHECK values: that would mean rewriting triggers for little gain. Do use `client_id`, `rentable_id` and `booking_id` for all new columns, and write the mapping (owner = client, visit = booking, property = rentable) into `docs/ARCHITECTURE.md`.
 - **Enum versus varchar with CHECK.** Older tables use `pgEnum`; newer tables use `varchar` with `CHECK IN (…)`. No document explains the mix. Recommend `varchar` + CHECK for new work: a CHECK can drop values and can change inside a transaction. Do not convert existing enums; that is churn with no gain.
 - **Missing CHECKs:** `customer_otp_challenge.purpose` and `delivery_mode`, and `customer_auth_rate.kind`, accept any string. Add CHECKs (Phase 1).
 - **Phone lengths:** `customer_otp_challenge.phone` is `varchar(10)`; phones elsewhere are `varchar(15)`. Standardise on `varchar(15)` in the new OTP table.
@@ -722,24 +722,24 @@ Scale note: at today's volume (123 listings, 49 bookings), none of this is slow.
 
 Rule applied: merge only when it removes a duplicated fact or a real inconsistency. Similar-looking columns are not a reason.
 
-| Candidate | Why rejected |
-|---|---|
-| `admin_user` into `user` | Different credentials, no self-signup, a separate cookie, 27 FKs that prove "is an admin", and `permissions IS NULL` meaning full access. Full analysis in §4.8. |
-| `client_staff` into `user` | A caretaker is a delegated sub-principal of one owner, with grants per property. Making it a `user` role would need a membership table and would change the portal auth model, for 12 rows. |
-| Customer and client rows into one row per human | See §4.2. It changes the meaning of every FK to `user` and every role filter and trigger. |
-| `client_application` into `user` | It is a workflow record with its own review lifecycle, version, assignee, strikes and decision. Different lifecycle from the account. |
-| `booking` into `booking_order` | Order is the checkout; booking is one of 1 to 10 visits. Different granularity. |
-| `booking_quote` into `booking_order` | A quote is a priced intent that expires. Most quotes never become orders (121 quotes, 15 orders). |
+| Candidate                                                                                                  | Why rejected                                                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `admin_user` into `user`                                                                                   | Different credentials, no self-signup, a separate cookie, 27 FKs that prove "is an admin", and `permissions IS NULL` meaning full access. Full analysis in §4.8.                                                                                                              |
+| `client_staff` into `user`                                                                                 | A caretaker is a delegated sub-principal of one owner, with grants per property. Making it a `user` role would need a membership table and would change the portal auth model, for 12 rows.                                                                                   |
+| Customer and client rows into one row per human                                                            | See §4.2. It changes the meaning of every FK to `user` and every role filter and trigger.                                                                                                                                                                                     |
+| `client_application` into `user`                                                                           | It is a workflow record with its own review lifecycle, version, assignee, strikes and decision. Different lifecycle from the account.                                                                                                                                         |
+| `booking` into `booking_order`                                                                             | Order is the checkout; booking is one of 1 to 10 visits. Different granularity.                                                                                                                                                                                               |
+| `booking_quote` into `booking_order`                                                                       | A quote is a priced intent that expires. Most quotes never become orders (121 quotes, 15 orders).                                                                                                                                                                             |
 | `booking_case`, `dispute_case`, `support_request`, `visit_incident`, `review_report` into one `case` table | Each has different states, outcomes, participants and CHECK invariants, all enforced by per-table scope and immutability triggers. One table would need a very large per-type CHECK and nullable FKs for every kind of subject. If admins need one inbox, add a view (§15.4). |
-| The `*_message` and `*_attachment` tables into shared tables | Same columns, different parents. A shared table needs a polymorphic parent without an FK, which is exactly the problem §11 removes from `document`. |
-| `payment_event_job`, `payment_execution`, `refund_execution` into their parents | The parents are frozen by trigger. These tables hold the changing lease and poll state, so the ledger rows stay immutable and do not churn. |
-| `payment_order`, `payment_attempt`, `payment_transaction` into one table | Ledger semantics: one order, several attempts, each with an authorisation and a capture fact. |
-| `customer_privacy_request` + `privacy_job`, and `listing_submission` + `listing_review` | Request versus worker state; immutable submission versus decision. Same pattern as the payment side tables. |
-| `content_draft` + `content_publication` | A mutable working copy versus an append-only published history. |
-| `booking_lifecycle_event` into `audit_log` | It drives notifications and the client inbox through triggers, with once-per-kind uniqueness (`booking_lifecycle_once_idx`). |
-| `customer_favourite_merge` into `customer_favourite` | It stores receipts for entries that were removed, so a replayed merge cannot bring them back. |
-| `rentable_price` into `booking_price_override` | A base weekly rate versus a date exception. Different concepts. |
-| Amenity labels into an i18n table; city, area and category into enums | Three fixed languages do not need an i18n table. The catalogue is admin-editable and drives SEO routes, so it must stay in tables. |
+| The `*_message` and `*_attachment` tables into shared tables                                               | Same columns, different parents. A shared table needs a polymorphic parent without an FK, which is exactly the problem §11 removes from `document`.                                                                                                                           |
+| `payment_event_job`, `payment_execution`, `refund_execution` into their parents                            | The parents are frozen by trigger. These tables hold the changing lease and poll state, so the ledger rows stay immutable and do not churn.                                                                                                                                   |
+| `payment_order`, `payment_attempt`, `payment_transaction` into one table                                   | Ledger semantics: one order, several attempts, each with an authorisation and a capture fact.                                                                                                                                                                                 |
+| `customer_privacy_request` + `privacy_job`, and `listing_submission` + `listing_review`                    | Request versus worker state; immutable submission versus decision. Same pattern as the payment side tables.                                                                                                                                                                   |
+| `content_draft` + `content_publication`                                                                    | A mutable working copy versus an append-only published history.                                                                                                                                                                                                               |
+| `booking_lifecycle_event` into `audit_log`                                                                 | It drives notifications and the client inbox through triggers, with once-per-kind uniqueness (`booking_lifecycle_once_idx`).                                                                                                                                                  |
+| `customer_favourite_merge` into `customer_favourite`                                                       | It stores receipts for entries that were removed, so a replayed merge cannot bring them back.                                                                                                                                                                                 |
+| `rentable_price` into `booking_price_override`                                                             | A base weekly rate versus a date exception. Different concepts.                                                                                                                                                                                                               |
+| Amenity labels into an i18n table; city, area and category into enums                                      | Three fixed languages do not need an i18n table. The catalogue is admin-editable and drives SEO routes, so it must stay in tables.                                                                                                                                            |
 
 ---
 
@@ -1144,10 +1144,10 @@ These follow `docs/ARCHITECTURE.md` §6-7 and the project's hosted-database caut
 2. **Checkpoint before every destructive step.** Before any `DROP`, create a named Neon branch as a restore point (for example `pre-phase-6`). Neon point-in-time restore is the fallback.
 3. **Forward-only Drizzle migrations.** Never edit applied SQL. Update `schema/index.js` in the same change. Put rollback SQL in `docs/rollback/phase-N.sql`, never in `drizzle/`.
 4. **Expand, migrate, contract.**
-   - *Expand:* add new structures. Old code keeps working.
-   - *Migrate:* deploy code that uses the new structures, and move the data.
-   - *Contract:* drop the old structures, in a **separate** later migration, after the new code has run cleanly.
-   Rollback before contract means redeploying the previous code. Rollback after contract means restoring the checkpoint branch.
+   - _Expand:_ add new structures. Old code keeps working.
+   - _Migrate:_ deploy code that uses the new structures, and move the data.
+   - _Contract:_ drop the old structures, in a **separate** later migration, after the new code has run cleanly.
+     Rollback before contract means redeploying the previous code. Rollback after contract means restoring the checkpoint branch.
 5. **Do not mass-update trigger-guarded tables.** `rentable`, `rentable_price`, `rentable_amenity` and `document` bump listing versions. `payout`, `payment_*` and `refund*` raise errors. Use generated columns and `ALTER TABLE` as shown below.
 6. **Apply explicitly.** Run `npm run db:check`, lint and tests, then `npm run db:migrate` during deploy. The app never migrates on start.
 7. **Update the seeds in the same phase as the schema.** `seed.js`, `seed-owner-listings.js` and `seed-gujarat-partners.js` write many of the columns being removed.
@@ -1368,7 +1368,7 @@ UPDATE booking b SET order_id = o.id, item_position = 1, local_day = b.day,
   FROM booking_order o WHERE o.reference = 'LEGACY-' || b.reference AND b.order_id IS NULL;
 ```
 
-   Check that `LEGACY-` plus the reference fits in `booking_order.reference` (varchar 64, fine). Payment and payout-destination triggers do not fire, because legacy rows have no `payment_order` or `payment_execution`. Rehearse on the branch anyway: `visit_transition_proof` and `review_visit_refresh` react to `booking.state`, which this does not change.
+Check that `LEGACY-` plus the reference fits in `booking_order.reference` (varchar 64, fine). Payment and payout-destination triggers do not fire, because legacy rows have no `payment_order` or `payment_execution`. Rehearse on the branch anyway: `visit_transition_proof` and `review_visit_refresh` react to `booking.state`, which this does not change.
 
 2. **Code:**
    - Switch `day` to `local_day` (`booking-cases.js:189,435`, `staff-visits.js:70`, `property-overview.js:59`, `privacy-fulfillment.js:342`).
@@ -1400,7 +1400,7 @@ ALTER TABLE booking DROP COLUMN balance_mode, DROP COLUMN balance_settled_at, DR
 DROP TYPE balance_mode;
 ```
 
-   After dropping `check_in_code` and `balance_settled_at`, replace `rentra_checkout_terms_immutable()` without those names in its `mutable` array. Removing a key that no longer exists is harmless, but keep the function tidy.
+After dropping `check_in_code` and `balance_settled_at`, replace `rentra_checkout_terms_immutable()` without those names in its `mutable` array. Removing a key that no longer exists is harmless, but keep the function tidy.
 
 **Verification:**
 
@@ -1486,34 +1486,34 @@ Every foreign key in `schema/index.js` and the SQL migrations was checked: 130 d
 
 These are well designed. Keep them as they are.
 
-| Relationship | Why it is correct |
-|---|---|
-| `booking (order_id, customer_id, rentable_id, currency, time_zone) → booking_order` | A composite FK proves that each visit's copied columns equal the order's. |
-| `inventory_reservation (booking_id, rentable_id) → booking (id, rentable_id)` + GiST exclusion | A reservation cannot point at a booking for another listing. Active holds cannot overlap. |
+| Relationship                                                                                                                      | Why it is correct                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `booking (order_id, customer_id, rentable_id, currency, time_zone) → booking_order`                                               | A composite FK proves that each visit's copied columns equal the order's.                                                                                                                         |
+| `inventory_reservation (booking_id, rentable_id) → booking (id, rentable_id)` + GiST exclusion                                    | A reservation cannot point at a booking for another listing. Active holds cannot overlap.                                                                                                         |
 | Money chain `payment_order → attempt → transaction → allocation → booking`, and `refund → refund_allocation → payment_allocation` | `rentra_financial_scope` (M0012:55-100) checks that each allocation belongs to the paying order and matches its mode and currency, and that each refund allocation matches its source allocation. |
-| `payment_execution`, `refund_execution`, `payment_event_job`, `privacy_job` | 1:1, enforced by using the parent id as the primary key. |
-| `client_application.user_id` UNIQUE | 1:1 per client. |
-| `listing_review.submission_id` UNIQUE | At most one decision per submission. |
-| `portal_session`, `visit_attachment`, `support_request` | "Exactly one parent" is enforced with `num_nonnulls` or `IS NULL` CHECKs. |
-| `staff_property`, `rentable_amenity`, `booking_case_visit` | Many-to-many junctions with a composite primary key. |
-| `dispute_case (order, visit, owner, customer)` | The copies are checked on insert by the `dispute_case_scope` trigger (M0034:81-89). |
-| `audit_log` without FKs | Deliberate. An audit row must outlive the thing it describes. |
-| `customer_favourite.rentable_id` without an FK | Deliberate (schema:1634). A deleted listing remains as an "unavailable" saved place. |
+| `payment_execution`, `refund_execution`, `payment_event_job`, `privacy_job`                                                       | 1:1, enforced by using the parent id as the primary key.                                                                                                                                          |
+| `client_application.user_id` UNIQUE                                                                                               | 1:1 per client.                                                                                                                                                                                   |
+| `listing_review.submission_id` UNIQUE                                                                                             | At most one decision per submission.                                                                                                                                                              |
+| `portal_session`, `visit_attachment`, `support_request`                                                                           | "Exactly one parent" is enforced with `num_nonnulls` or `IS NULL` CHECKs.                                                                                                                         |
+| `staff_property`, `rentable_amenity`, `booking_case_visit`                                                                        | Many-to-many junctions with a composite primary key.                                                                                                                                              |
+| `dispute_case (order, visit, owner, customer)`                                                                                    | The copies are checked on insert by the `dispute_case_scope` trigger (M0034:81-89).                                                                                                               |
+| `audit_log` without FKs                                                                                                           | Deliberate. An audit row must outlive the thing it describes.                                                                                                                                     |
+| `customer_favourite.rentable_id` without an FK                                                                                    | Deliberate (schema:1634). A deleted listing remains as an "unavailable" saved place.                                                                                                              |
 
 ### 19.2 Issue 1: delete rules are inconsistent, and some are dangerous
 
 Users, listings and admins are never hard-deleted in this system. They are anonymised (privacy erasure), hidden or deactivated. The delete rule should say the same thing: history is never removed by a cascade.
 
-| FK | Today | Problem | Change to |
-|---|---|---|---|
-| `review.booking_id → booking` | CASCADE | Deleting a visit silently deletes its review and changes the listing rating. | RESTRICT |
-| `review.author_id → user` | CASCADE | Deleting a user deletes their reviews. Privacy erasure anonymises instead, so the cascade only fires by mistake. | RESTRICT |
-| `client_staff.client_id → user` | CASCADE | Can never succeed: `staff_property`, `staff_invitation` and `portal_session.staff_id` are RESTRICT, so the cascade errors halfway. | RESTRICT |
-| `area.city_id → city` | CASCADE | Deleting a city silently deletes its areas, which are SEO routes. The catalogue retires rows with `is_active`. | RESTRICT |
-| `rentable_amenity.amenity_id → amenity` | CASCADE | Deleting an amenity strips it from every listing and bumps each listing's content version. | RESTRICT |
-| Admin attribution: `document.reviewed_by`, `client_application.reviewed_by`, `rentable.verified_by` / `published_by` / `restricted_by`, `verification_visit.created_by` / `recorded_by`, `listing_review.reviewed_by` | SET NULL | Erases *who* approved a KYC document, a publication or a visit. Newer tables (`booking_case`, `dispute_case`, `payout_destination`) already use RESTRICT for the same kind of column. | RESTRICT |
-| `document.uploaded_by → user` | SET NULL | Loses who uploaded identity evidence. | RESTRICT |
-| 11 FKs with no rule given (implicit NO ACTION): `rentable.category_id` / `city_id` / `area_id`, `listing_submission.*`, `listing_review.submission_id`, `verification_visit.submission_id`, `review.moderated_by` / `replied_by`, `review_report.resolved_by` | NO ACTION | Behaves almost like RESTRICT, but it is implicit and inconsistent with the rest of the schema. | explicit RESTRICT |
+| FK                                                                                                                                                                                                                                                            | Today     | Problem                                                                                                                                                                               | Change to         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `review.booking_id → booking`                                                                                                                                                                                                                                 | CASCADE   | Deleting a visit silently deletes its review and changes the listing rating.                                                                                                          | RESTRICT          |
+| `review.author_id → user`                                                                                                                                                                                                                                     | CASCADE   | Deleting a user deletes their reviews. Privacy erasure anonymises instead, so the cascade only fires by mistake.                                                                      | RESTRICT          |
+| `client_staff.client_id → user`                                                                                                                                                                                                                               | CASCADE   | Can never succeed: `staff_property`, `staff_invitation` and `portal_session.staff_id` are RESTRICT, so the cascade errors halfway.                                                    | RESTRICT          |
+| `area.city_id → city`                                                                                                                                                                                                                                         | CASCADE   | Deleting a city silently deletes its areas, which are SEO routes. The catalogue retires rows with `is_active`.                                                                        | RESTRICT          |
+| `rentable_amenity.amenity_id → amenity`                                                                                                                                                                                                                       | CASCADE   | Deleting an amenity strips it from every listing and bumps each listing's content version.                                                                                            | RESTRICT          |
+| Admin attribution: `document.reviewed_by`, `client_application.reviewed_by`, `rentable.verified_by` / `published_by` / `restricted_by`, `verification_visit.created_by` / `recorded_by`, `listing_review.reviewed_by`                                         | SET NULL  | Erases _who_ approved a KYC document, a publication or a visit. Newer tables (`booking_case`, `dispute_case`, `payout_destination`) already use RESTRICT for the same kind of column. | RESTRICT          |
+| `document.uploaded_by → user`                                                                                                                                                                                                                                 | SET NULL  | Loses who uploaded identity evidence.                                                                                                                                                 | RESTRICT          |
+| 11 FKs with no rule given (implicit NO ACTION): `rentable.category_id` / `city_id` / `area_id`, `listing_submission.*`, `listing_review.submission_id`, `verification_visit.submission_id`, `review.moderated_by` / `replied_by`, `review_report.resolved_by` | NO ACTION | Behaves almost like RESTRICT, but it is implicit and inconsistent with the rest of the schema.                                                                                        | explicit RESTRICT |
 
 Keep CASCADE only for data that has no value without its parent: sessions, OTP challenges, `customer_favourite` / `customer_favourite_merge` (privacy deletion relies on it), `customer_profile` (merged anyway), and the listing's own rows `rentable_price` and `availability`.
 
@@ -1563,20 +1563,20 @@ Pre-check: `SELECT count(*) FROM booking_order o JOIN "user" u ON u.id = o.custo
 
 Some tables store a second parent id that could be derived. The copy is fine for query speed, but it should be proven, the way `booking → booking_order` is.
 
-| Child | Copied column | Today | Fix |
-|---|---|---|---|
-| `review` | `rentable_id` (nullable) next to `booking_id` | Checked only when the review is shown (`rentra_review_eligible`, M0018:33-38). A mismatched row is silently hidden. | `rentable_id SET NOT NULL`; composite FK `(booking_id, rentable_id) → booking(id, rentable_id)`. The target unique index `booking_id_rentable_idx` already exists. |
-| `listing_review` | `rentable_id` next to `submission_id` | No check. | Unique index `listing_submission(id, rentable_id)`; composite FK `(submission_id, rentable_id)`. |
-| `verification_visit` | `rentable_id` next to `submission_id` | No check. | The same composite FK. |
-| `rentable` | `city_id` next to `area_id` | Trigger on rentable changes only. | Composite FK (§7.3). |
-| `listing_review.pass_number` | copy of `listing_submission.pass_number` | No check. | Include it in the composite FK, or drop it and read it through the join. |
+| Child                        | Copied column                                 | Today                                                                                                               | Fix                                                                                                                                                                |
+| ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `review`                     | `rentable_id` (nullable) next to `booking_id` | Checked only when the review is shown (`rentra_review_eligible`, M0018:33-38). A mismatched row is silently hidden. | `rentable_id SET NOT NULL`; composite FK `(booking_id, rentable_id) → booking(id, rentable_id)`. The target unique index `booking_id_rentable_idx` already exists. |
+| `listing_review`             | `rentable_id` next to `submission_id`         | No check.                                                                                                           | Unique index `listing_submission(id, rentable_id)`; composite FK `(submission_id, rentable_id)`.                                                                   |
+| `verification_visit`         | `rentable_id` next to `submission_id`         | No check.                                                                                                           | The same composite FK.                                                                                                                                             |
+| `rentable`                   | `city_id` next to `area_id`                   | Trigger on rentable changes only.                                                                                   | Composite FK (§7.3).                                                                                                                                               |
+| `listing_review.pass_number` | copy of `listing_submission.pass_number`      | No check.                                                                                                           | Include it in the composite FK, or drop it and read it through the join.                                                                                           |
 
 ### 19.5 Issue 4: missing FKs
 
-| Column | Points to | Action |
-|---|---|---|
-| `document.owner_id` | `client_application` or `rentable` | Generated FK columns (§11.1). |
-| `customer_otp_challenge.session_id` | `customer_session.id` | After the session merge, `REFERENCES auth_session(id) ON DELETE CASCADE`. |
+| Column                                                                                                                                                                                                           | Points to                                                         | Action                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `document.owner_id`                                                                                                                                                                                              | `client_application` or `rentable`                                | Generated FK columns (§11.1).                                                                                                                                                                                                                                                                                                                             |
+| `customer_otp_challenge.session_id`                                                                                                                                                                              | `customer_session.id`                                             | After the session merge, `REFERENCES auth_session(id) ON DELETE CASCADE`.                                                                                                                                                                                                                                                                                 |
 | `actor_id` / `created_by_id` on `visit_evidence`, `visit_incident`, `visit_evidence_correction`, `visit_attachment`, `booking_case`, `booking_case_update`, `support_message`, `dispute_case`, `dispute_message` | `user`, `admin_user` or `client_staff`, depending on `actor_kind` | Scope triggers validate these on insert, and principals are never deleted, so this is **acceptable as is**. If you want database-level FKs, use the §11.1 trick: one generated column per kind (for example `actor_admin_id uuid GENERATED ALWAYS AS (CASE WHEN actor_kind = 'admin' THEN actor_id END) STORED REFERENCES admin_user(id)`). Low priority. |
 
 ### 19.6 Issue 5: cardinality to confirm
@@ -1595,19 +1595,19 @@ Some tables store a second parent id that could be derived. The copy is fine for
 
 Implemented in migrations `0041`–`0051` with the matching code, seed and test changes. Everything is verified on local disposable PostgreSQL only; the hosted Neon database has not been touched.
 
-| Migration | Content |
-|---|---|
-| `0041_integrity_indexes` | FK and worker indexes, delete rules, composite FKs, case-insensitive email uniqueness |
-| `0042_remove_dead_objects` | `unit`, `person`, dead booking/application/listing columns |
-| `0043_identity_consolidation` | `role` table, profile and inbox preferences on `user`, `auth_session`, role-checked FKs, `cancelled_by_kind` |
-| `0044_payout_details_single_source` | `client_payout_current` view; legacy payout columns archived to `audit_log` and dropped |
-| `0045_inventory_pricing_single_source` | legacy price overrides and owner blocks moved; `availability` narrowed |
-| `0046_listing_content_cleanup` | amenity labels to taxonomy rows (unmatched ones archived); `approved_snapshot` dropped |
-| `0047_booking_legacy_contraction` | orderless bookings moved into `legacy` orders; booking legacy copy dropped |
-| `0048_money_minor_units` | prices, deposits, extra-guest charges and payouts in paise |
-| `0049_document_integrity` | owner FKs; re-upload supersedes instead of overwriting |
-| `0050_otp_unification` | `otp_challenge`, `auth_rate_event` |
-| `0051_worker_performance` | review refresh trigger only on completion changes |
+| Migration                              | Content                                                                                                      |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `0041_integrity_indexes`               | FK and worker indexes, delete rules, composite FKs, case-insensitive email uniqueness                        |
+| `0042_remove_dead_objects`             | `unit`, `person`, dead booking/application/listing columns                                                   |
+| `0043_identity_consolidation`          | `role` table, profile and inbox preferences on `user`, `auth_session`, role-checked FKs, `cancelled_by_kind` |
+| `0044_payout_details_single_source`    | `client_payout_current` view; legacy payout columns archived to `audit_log` and dropped                      |
+| `0045_inventory_pricing_single_source` | legacy price overrides and owner blocks moved; `availability` narrowed                                       |
+| `0046_listing_content_cleanup`         | amenity labels to taxonomy rows (unmatched ones archived); `approved_snapshot` dropped                       |
+| `0047_booking_legacy_contraction`      | orderless bookings moved into `legacy` orders; booking legacy copy dropped                                   |
+| `0048_money_minor_units`               | prices, deposits, extra-guest charges and payouts in paise                                                   |
+| `0049_document_integrity`              | owner FKs; re-upload supersedes instead of overwriting                                                       |
+| `0050_otp_unification`                 | `otp_challenge`, `auth_rate_event`                                                                           |
+| `0051_worker_performance`              | review refresh trigger only on completion changes                                                            |
 
 Differences from the plan above:
 

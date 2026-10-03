@@ -20,14 +20,24 @@ test(
         VALUES (1,'razorpay','test',true,'full',${f.admin})`;
 
       const byDefault = await financeStatement(sql, owner, { period: fixture.period });
-      assert.equal(byDefault.filters.environment, 'test', 'Test-mode bookings are shown without choosing a filter');
+      assert.equal(
+        byDefault.filters.environment,
+        'test',
+        'Test-mode bookings are shown without choosing a filter',
+      );
       assert.ok(byDefault.count > 0);
 
-      const live = await financeStatement(sql, owner, { period: fixture.period, environment: 'live' });
+      const live = await financeStatement(sql, owner, {
+        period: fixture.period,
+        environment: 'live',
+      });
       assert.deepEqual([...new Set(live.items.map((i) => i.component))], ['rent']);
       assert.equal(live.totals.collectedMinor, '100000', 'the ₹80 guest fee is not owner money');
       // Finance staff still see every component.
-      const staff = await financeStatement(sql, admin, { period: fixture.period, environment: 'live' });
+      const staff = await financeStatement(sql, admin, {
+        period: fixture.period,
+        environment: 'live',
+      });
       assert.ok(staff.items.some((i) => i.component === 'fee'));
     } finally {
       await db.drop();

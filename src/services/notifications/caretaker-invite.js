@@ -15,7 +15,12 @@ export async function deliverCaretakerInvite(database,ownerId,link,options={}){
  let state='unknown',providerId=null;
  try{
   let adapter=options.adapter?.(config)||ownerChannelAdapter(config,options.fetcher);
-  let outcome=await adapter.send(request,body);
+  let outcome;
+  try{outcome=await adapter.send(request,body);}catch(error){
+   // Fall back only after a definite rejection; an ambiguous send may have arrived.
+   if(config.channel!=='whatsapp' || !error.safeRetry || error.code!=='CHANNEL_REJECTED')throw error;
+   outcome={state:'undelivered'};
+  }
   if(outcome.state==='undelivered' && config.channel==='whatsapp'){
    config=ownerChannelConfiguration('sms','caretaker_invitation',env);request.recipient='+91'+row.phone;request.sender=config.sender;
    adapter=options.adapter?.(config)||ownerChannelAdapter(config,options.fetcher);outcome=await adapter.send(request,body);

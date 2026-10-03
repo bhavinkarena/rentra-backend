@@ -15,9 +15,17 @@ test(
       Object.assign(process.env, { NODE_ENV: 'production', DEV_OTP_BYPASS: 'false' });
       delete process.env.RESEND_API_KEY;
       const { issueOtp } = await import('@/services/auth/otp.js');
-      const result = await issueOtp({ identifier: 'owner@example.test', channel: 'email', purpose: 'login' });
+      const result = await issueOtp({
+        identifier: 'owner@example.test',
+        channel: 'email',
+        purpose: 'login',
+      });
       assert.deepEqual(result, { ok: false, reason: 'delivery_failed' });
-      assert.equal((await sql`SELECT count(*)::int n FROM otp_challenge`)[0].n, 0, 'a retry is not blocked by a code that never went out');
+      assert.equal(
+        (await sql`SELECT count(*)::int n FROM otp_challenge`)[0].n,
+        0,
+        'a retry is not blocked by a code that never went out',
+      );
     } finally {
       await fixture.drop();
     }

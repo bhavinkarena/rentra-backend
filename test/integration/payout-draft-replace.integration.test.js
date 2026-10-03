@@ -36,9 +36,9 @@ test(
       const second = await change(1, 'second@okaxis');
       assert.deepEqual([second.state, second.version], ['draft', 2]);
       assert.deepEqual(
-        (await sql`SELECT version,state FROM payout_destination WHERE client_id=${f.owner} ORDER BY version`).map(
-          (r) => [r.version, r.state],
-        ),
+        (
+          await sql`SELECT version,state FROM payout_destination WHERE client_id=${f.owner} ORDER BY version`
+        ).map((r) => [r.version, r.state]),
         [
           [1, 'superseded'],
           [2, 'draft'],

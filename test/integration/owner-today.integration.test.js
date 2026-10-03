@@ -24,6 +24,23 @@ test(
         await sql`SELECT (clock_timestamp() AT TIME ZONE 'Asia/Kolkata')::date::text AS date`;
       await sql`UPDATE booking SET starts_at=(${date.date}::date::timestamp AT TIME ZONE 'Asia/Kolkata')+interval '9 hours',ends_at=(${date.date}::date::timestamp AT TIME ZONE 'Asia/Kolkata')+interval '18 hours',local_day=${date.date},blocked_start_at=(${date.date}::date::timestamp AT TIME ZONE 'Asia/Kolkata')+interval '9 hours',blocked_end_at=(${date.date}::date::timestamp AT TIME ZONE 'Asia/Kolkata')+interval '18 hours',hours_known=true WHERE order_id=${booked.order}`;
       await sql`UPDATE booking_order SET listing_snapshot=jsonb_set(listing_snapshot,'{contact}','{"name":"Guest Test","phone":"9876543210"}'::jsonb) WHERE id=${booked.order}`;
+      await sql`UPDATE booking_order SET listing_snapshot=jsonb_set(listing_snapshot,'{ownerId}',to_jsonb(${f.owner}::text)) WHERE id=${booked.order}`;
+      const analytics = await ownerToday(sql, f.owner, 'analytics');
+      assert.equal(analytics.daily.length, 90);
+      assert.equal(analytics.monthly.length, 12);
+      assert.equal(analytics.daily.at(-1).visits, 1);
+      assert.equal(analytics.daily.at(-1).rentMinor, '100000');
+      assert.equal(analytics.monthly.at(-1).rentMinor, '100000');
+      assert.equal(
+        analytics.categories.reduce((sum, row) => sum + row.value, 0),
+        1,
+      );
+      assert.equal((await ownerToday(sql, f.other, 'analytics')).daily.at(-1).visits, 0);
+      await sql`UPDATE booking SET state='cancelled' WHERE order_id=${booked.order}`;
+      const cancelledAnalytics = await ownerToday(sql, f.owner, 'analytics');
+      assert.equal(cancelledAnalytics.daily.at(-1).cancelled, 1);
+      assert.equal(cancelledAnalytics.daily.at(-1).rentMinor, '0');
+      await sql`UPDATE booking SET state='confirmed' WHERE order_id=${booked.order}`;
       const first = await ownerToday(sql, f.owner, 'visits');
       assert.equal(first.total, 1);
       assert.equal(first.arrivalCount, 1);

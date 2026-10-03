@@ -699,6 +699,156 @@ test(
       assert.ok(erased.privacy_erased_at);
     }),
 );
+test(
+  'caretaker invites fall back only after definite WhatsApp failure and never repeat a claimed send',
+  options,
+  () =>
+    fixture(async (sql, f) => {
+      const env = {
+        ...enabled,
+        OWNER_WHATSAPP_TEMPLATES_JSON: JSON.stringify({
+          caretaker_invitation: 'HX' + 'b'.repeat(32),
+        }),
+      };
+      const cases = [
+        {
+          error: new NotificationError('CHANNEL_REJECTED', true),
+          channels: ['whatsapp', 'sms'],
+          state: 'accepted',
+        },
+        {
+          outcome: { state: 'undelivered', id: 'whatsapp-rejected' },
+          channels: ['whatsapp', 'sms'],
+          state: 'accepted',
+        },
+        {
+          error: new NotificationError('DELIVERY_OUTCOME_UNKNOWN'),
+          channels: ['whatsapp'],
+          state: 'unknown',
+        },
+        {
+          error: new NotificationError('PROVIDER_RATE_LIMIT', true),
+          channels: ['whatsapp'],
+          state: 'failed',
+        },
+        {
+          outcome: { state: 'accepted', id: 'whatsapp-accepted' },
+          channels: ['whatsapp'],
+          state: 'accepted',
+        },
+      ];
+      for (const [i, scenario] of cases.entries()) {
+        const link = await inviteStaff(sql, f.owner, {
+          name: 'Caretaker fixture',
+          phone: `987654320${i}`,
+          propertyIds: [f.listing],
+          evidence: true,
+        });
+        const attempted = [];
+        const adapter = (config) => ({
+          send: async (row, body) => {
+            attempted.push(config.channel);
+            assert.ok(body.includes(link.token));
+            if (config.channel === 'sms') {
+              assert.equal(row.recipient, '+91987654320' + i);
+              assert.equal(row.sender, env.TWILIO_FROM_NUMBER);
+              return { id: 'sms-accepted', state: 'accepted' };
+            }
+            if (scenario.error) throw scenario.error;
+            return scenario.outcome;
+          },
+        });
+        assert.equal(
+          (await deliverCaretakerInvite(sql, f.owner, link, { env, adapter })).deliveryState,
+          scenario.state,
+        );
+        assert.deepEqual(attempted, scenario.channels);
+        const [stored] =
+          await sql`SELECT delivery_state,provider_id FROM staff_invitation WHERE id=${link.invitationId}`;
+        assert.equal(stored.delivery_state, scenario.state);
+        assert.equal(
+          stored.provider_id,
+          scenario.channels.length === 2 ? 'sms-accepted' : scenario.outcome?.id || null,
+        );
+        await deliverCaretakerInvite(sql, f.owner, link, { env, adapter });
+        assert.deepEqual(
+          attempted,
+          scenario.channels,
+          'An already claimed invitation must not be resent',
+        );
+      }
+    }),
+);
+
+test('terminal email events settle the owner polling queue without another send', options, () =>
+  fixture(async (sql, f) => {
+    await sql`UPDATE "user" SET email_verified_at=now() WHERE id=${f.owner}`;
+    const booking = await seedConfirmedBooking(sql, f.listing);
+    await sql`INSERT INTO booking_lifecycle_event(order_id,kind,payload) VALUES(${booking.order},'confirmed','{}'::jsonb)`;
+    const [notice] =
+      await sql`SELECT n.id FROM owner_notification n JOIN client_update c ON c.id=n.update_id WHERE c.order_id=${booking.order} AND n.channel='email'`;
+    assert.ok(notice);
+    for (const [event, state, failureCode] of [
+      ['opened', 'delivered', null],
+      ['clicked', 'delivered', null],
+      ['complained', 'delivered', 'EMAIL_COMPLAINED'],
+      ['canceled', 'failed', 'EMAIL_CANCELED'],
+    ]) {
+      let calls = 0;
+      const fetcher = async (_url, init) => {
+        calls++;
+        assert.equal(init.method, 'GET', 'Polling must never resend the message');
+        const [row] =
+          await sql`SELECT recipient,sender,provider_id FROM owner_notification WHERE id=${notice.id}`;
+        return Response.json({
+          id: row.provider_id,
+          to: [row.recipient],
+          from: row.sender,
+          last_event: event,
+        });
+      };
+      await sql`UPDATE owner_notification SET state='accepted',provider_id='mail-fixture',provider_account='resend',sender=${enabled.OTP_EMAIL_FROM},recipient='owner@fixture.invalid',next_attempt_at=now()-interval '1 second',lease_token=NULL,lease_until=NULL,delivered_at=NULL WHERE id=${notice.id}`;
+      assert.equal(await processOwnerNotification(sql, notice.id, { env: enabled, fetcher }), true);
+      const [stored] =
+        await sql`SELECT state,failure_code,delivered_at FROM owner_notification WHERE id=${notice.id}`;
+      assert.equal(stored.state, state);
+      assert.equal(stored.failure_code, failureCode);
+      assert.equal(Boolean(stored.delivered_at), state === 'delivered');
+      await sql`UPDATE owner_notification SET next_attempt_at=now()-interval '1 second' WHERE id=${notice.id}`;
+      assert.equal(
+        await processOwnerNotification(sql, notice.id, { env: enabled, fetcher }),
+        false,
+      );
+      assert.equal(calls, 1, `${event} must be terminal`);
+    }
+  }),
+);
+
+test('email adapter maps documented events explicitly and rejects unknown statuses', async () => {
+  const row = {
+    provider_id: 'email-fixture',
+    recipient: 'owner@fixture.invalid',
+    sender: enabled.OTP_EMAIL_FROM,
+  };
+  for (const [event, state] of [
+    ...['delivered', 'opened', 'clicked', 'complained'].map((event) => [event, 'delivered']),
+    ...['bounced', 'failed', 'suppressed', 'canceled'].map((event) => [event, 'undelivered']),
+    ...['sent', 'queued', 'scheduled', 'delivery_delayed'].map((event) => [event, 'accepted']),
+    ['unexpected', null],
+  ]) {
+    const mail = ownerChannelAdapter({ channel: 'email', token: 'fixture' }, async () =>
+      Response.json({
+        id: row.provider_id,
+        to: [row.recipient],
+        from: row.sender,
+        last_event: event,
+      }),
+    );
+    if (state) assert.equal((await mail.fetch(row)).state, state, event);
+    else await assert.rejects(mail.fetch(row), { code: 'DELIVERY_STATUS_UNKNOWN' });
+  }
+});
+
 test('provider adapters validate pinned recipients and send approved WhatsApp variables or idempotent emails', async () => {
   const config = {
     channel: 'whatsapp',

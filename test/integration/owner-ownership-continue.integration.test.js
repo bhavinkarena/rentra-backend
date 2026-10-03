@@ -27,7 +27,9 @@ test(
       const send = (values) => {
         const form = new FormData();
         for (const [key, value] of Object.entries(values)) form.append(key, value);
-        return runWithContext({ req: { cookies: { rentra_session: token } } }, () => uploadOwnershipDocument(null, form));
+        return runWithContext({ req: { cookies: { rentra_session: token } } }, () =>
+          uploadOwnershipDocument(null, form),
+        );
       };
       const step = { id: f.listing, docType: 'extract_7_12', nameOnDocument: 'Property Owner' };
 
@@ -36,15 +38,27 @@ test(
       assert.deepEqual(await send(step), { ok: true, unchanged: true });
 
       // Changing what the form says still needs the file it describes.
-      assert.deepEqual((await send({ ...step, docType: 'sale_deed' })).errors, { file: 'Choose the document' });
-      assert.deepEqual((await send({ ...step, nameOnDocument: 'Someone Else' })).errors, { file: 'Choose the document' });
+      assert.deepEqual((await send({ ...step, docType: 'sale_deed' })).errors, {
+        file: 'Choose the document',
+      });
+      assert.deepEqual((await send({ ...step, nameOnDocument: 'Someone Else' })).errors, {
+        file: 'Choose the document',
+      });
 
       await sql`UPDATE document SET deleted_at=now() WHERE id=${f.document}`;
-      assert.deepEqual((await send(step)).errors, { file: 'Choose the document' }, 'a deleted document is not on file');
+      assert.deepEqual(
+        (await send(step)).errors,
+        { file: 'Choose the document' },
+        'a deleted document is not on file',
+      );
       await sql`UPDATE document SET deleted_at=NULL WHERE id=${f.document}`;
 
       await sql`UPDATE document SET status='rejected' WHERE id=${f.document}`;
-      assert.deepEqual((await send(step)).errors, { file: 'Choose the document' }, 'a rejected document still needs a new file');
+      assert.deepEqual(
+        (await send(step)).errors,
+        { file: 'Choose the document' },
+        'a rejected document still needs a new file',
+      );
     } finally {
       await fixture.drop();
     }

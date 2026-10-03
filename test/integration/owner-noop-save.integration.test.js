@@ -19,7 +19,8 @@ test(
       const { runWithContext } = await import('@/runtime/context.js');
       const { encryptSession } = await import('@/services/auth/session-crypto.js');
       const { issuePortalSession } = await import('@/services/auth/portal-sessions.js');
-      const { saveBasics, saveCapacity, saveAmenities } = await import('@/services/auth/listings.js');
+      const { saveBasics, saveCapacity, saveAmenities } =
+        await import('@/services/auth/listings.js');
       const token = await encryptSession({
         role: 'client',
         userId: f.owner,
@@ -29,11 +30,16 @@ test(
         const form = new FormData();
         for (const [key, value] of Object.entries(values))
           for (const one of [value].flat()) form.append(key, String(one));
-        return runWithContext({ req: { cookies: { rentra_session: token } } }, () => action(null, form));
+        return runWithContext({ req: { cookies: { rentra_session: token } } }, () =>
+          action(null, form),
+        );
       };
-      const status = async () => (await sql`SELECT status FROM rentable WHERE id=${f.listing}`)[0].status;
+      const status = async () =>
+        (await sql`SELECT status FROM rentable WHERE id=${f.listing}`)[0].status;
       const [row] = await sql`SELECT * FROM rentable WHERE id=${f.listing}`;
-      const amenityIds = (await sql`SELECT amenity_id FROM rentable_amenity WHERE rentable_id=${f.listing}`).map((r) => r.amenity_id);
+      const amenityIds = (
+        await sql`SELECT amenity_id FROM rentable_amenity WHERE rentable_id=${f.listing}`
+      ).map((r) => r.amenity_id);
 
       const basics = await asOwner(saveBasics, {
         id: f.listing,
