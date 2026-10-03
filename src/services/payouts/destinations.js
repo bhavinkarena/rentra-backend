@@ -1,7 +1,7 @@
 import 'server-only';
 import { z } from 'zod';
 import { quoteDigest } from '../booking/quotes.js';
-import { payoutSchema } from '../schemas/zod/application.js';
+import { payoutSchema, destinationPayoutSchema } from '../schemas/zod/application.js';
 import { recentAuthentication, RECENT_AUTH_MINUTES } from '../auth/recent-auth.js';
 import {
   STATE_LABELS,
@@ -86,7 +86,9 @@ async function touchApplication(tx, clientId) {
 }
 
 async function supersede(tx, clientId, states) {
-  await tx`UPDATE payout_destination SET state='superseded',updated_at=now()
+  // The row CHECK ties "no submitted_at" to the draft state, so a replaced draft
+  // records when it was set aside.
+  await tx`UPDATE payout_destination SET state='superseded',submitted_at=coalesce(submitted_at,now()),updated_at=now()
     WHERE client_id=${clientId} AND state = ANY(${states}::text[])`;
 }
 
@@ -97,11 +99,12 @@ async function audit(tx, actorType, actorId, entityId, action, after, before = n
 }
 
 /** Validate the declared details; the full account number never leaves this function. */
-function declared(input) {
-  const parsed = payoutSchema.safeParse({
+function declared(input, confirm = false) {
+  const parsed = (confirm ? destinationPayoutSchema : payoutSchema).safeParse({
     method: input.method,
     upiId: input.upiId ?? '',
     accountNumber: input.accountNumber ?? '',
+    confirmAccountNumber: input.confirmAccountNumber ?? '',
     ifsc: input.ifsc ?? '',
     holderName: input.holderName,
   });
@@ -150,7 +153,7 @@ const changeSchema = z
 export async function saveClientDestination(database, actor, input) {
   if (actor?.kind !== 'owner' || !uuid.safeParse(actor.id).success) throw new DestinationError('CLIENT_UNAVAILABLE', 'Not available', { status: 403 });
   const meta = changeSchema.parse(input);
-  const d = declared(input);
+  const d = declared(input, input.confirmAccountNumber !== undefined);
   const hash = quoteDigest({ ...d, expectedLatest: meta.expectedLatest });
   return database.begin(async (tx) => {
     const client = await lockClient(tx, actor.id);
@@ -179,6 +182,7 @@ export async function saveClientDestination(database, actor, input) {
           replaces: current ? { version: current.version, masked: maskedDestination(current), state: current.state } : null,
           pinnedPayouts: pinned,
           needsRecentAuth: needsFresh,
+          recentAuthMinutes: RECENT_AUTH_MINUTES,
           effect: pinned
             ? `${pinned} scheduled payout(s) stay pinned to version ${current.version}; only new payouts would use version ${latest + 1} after it is verified.`
             : `New payouts would use version ${latest + 1} after it is verified. Nothing is sent until then.`,

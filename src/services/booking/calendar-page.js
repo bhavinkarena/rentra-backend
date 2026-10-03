@@ -2,6 +2,8 @@ import 'server-only';
 import { withListingSnapshot } from './inventory.js';
 import { calendarSnapshot } from './owner-calendar.js';
 
+const BLOCKS_PER_PAGE = 20;
+
 /**
  * The owner's booking-calendar screen, assembled.
  *
@@ -13,7 +15,8 @@ import { calendarSnapshot } from './owner-calendar.js';
  * property's timezone is a booking rule, not a display preference — a browser
  * in another timezone must not render an owner's 9pm block as 3:30pm.
  */
-export async function ownerCalendarPage(database, ownerId, rentableId) {
+export async function ownerCalendarPage(database, ownerId, rentableId, { blocksPage = 1 } = {}) {
+  const page = Number.isInteger(Number(blocksPage)) && Number(blocksPage) >= 1 ? Number(blocksPage) : 1;
   const [listing] = await database`
     SELECT id, title, capacity, booking_config, booking_config_version, rental_unit::text AS rental_unit
     FROM rentable WHERE id=${rentableId} AND client_id=${ownerId}`;
@@ -24,8 +27,8 @@ export async function ownerCalendarPage(database, ownerId, rentableId) {
     const rows = await tx`
       SELECT r.id, r.blocked_start_at, r.blocked_end_at, r.reason, r.resource_id, rs.name AS resource_name
       FROM inventory_reservation r LEFT JOIN rentable_resource rs ON rs.id = r.resource_id
-      WHERE r.rentable_id=${rentableId} AND r.source='owner_block' AND r.state='committed'
-      ORDER BY r.blocked_start_at`;
+      WHERE r.rentable_id=${rentableId} AND r.source='owner_block' AND r.state='committed' AND r.blocked_end_at>now()
+      ORDER BY r.blocked_start_at, r.id LIMIT ${BLOCKS_PER_PAGE + 1} OFFSET ${(page - 1) * BLOCKS_PER_PAGE}`;
     const resources = listing.rental_unit === 'hour'
       ? await tx`SELECT id, name, capacity, is_active AS "isActive" FROM rentable_resource WHERE rentable_id=${rentableId} ORDER BY sort_order, name, id`
       : [];
@@ -38,7 +41,9 @@ export async function ownerCalendarPage(database, ownerId, rentableId) {
       listing: { id, title, capacity, extra_guest_charge: Number(current.extra_guest_charge_minor) / 100, booking_config, booking_config_version,
         rental_unit: listing.rental_unit, calendar_version: (await calendarSnapshot(tx, current)).version },
       resources,
-      blocks: rows.map(row => ({ id:row.id, reason:row.reason, label:`${format(row.blocked_start_at)} – ${format(row.blocked_end_at)}`,
+      blocksPage: page,
+      blocksHasMore: rows.length > BLOCKS_PER_PAGE,
+      blocks: rows.slice(0, BLOCKS_PER_PAGE).map(row => ({ id:row.id, reason:row.reason, label:`${format(row.blocked_start_at)} – ${format(row.blocked_end_at)}`,
         resource: row.resource_id ? { id: row.resource_id, name: row.resource_name } : null })),
     };
   });

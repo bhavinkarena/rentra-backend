@@ -41,7 +41,7 @@ export function targetIndex(from, move, total) {
   const to = move === 'cover' ? 0
     : move === 'back' ? from - 1
       : move === 'forward' ? from + 1
-        : from;
+        : /^\d+$/.test(String(move))?Number(move):from;
   return to < 0 || to >= total ? from : to;
 }
 

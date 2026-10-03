@@ -12,12 +12,14 @@ async function transition(kind, form) {
   const actor = await bookingActor(kind);
   try {
     const result = await recordVisitTransition(sql, actor, { visitId: form.get('visitId'), phase: form.get('phase'),
-      occurredAt: indiaInstant(form.get('occurredAt')), note: form.get('note'), attested: form.get('attested') === 'on', expectedVersion: Number(form.get('version')), requestKey: form.get('requestKey') },
+      occurredAt: indiaInstant(form.get('occurredAt')), note: form.get('note')||'', attested: form.get('attested') === 'on', expectedVersion: Number(form.get('version')), requestKey: form.get('requestKey') },
       { files: form.getAll('photos') });
     for (const base of ['/bookings','/partner/bookings','/admin/bookings','/staff/visits']) revalidatePath(`${base}/${result.orderId}`);
     return { message: 'Evidence recorded. The visit status has been updated.' };
   } catch (error) {
     if (error instanceof EvidenceError) return evidenceFailure(error);
+    if(error.code==='INVALID_EVIDENCE_TIME')return {error:'Check-in must be within the early-arrival window and not in the future.',code:error.code};
+    if(error.code==='PRIOR_EVIDENCE_REQUIRED')return {error:'Record check-in first, then check-out.',code:error.code};
     if (error.code === 'VISIT_CHANGED') return { error: 'The visit changed. Reload before recording another transition.', code: 'VISIT_CHANGED', status: 409 };
     return { error: 'Could not record this transition. Check the current status, time and required evidence.' };
   }

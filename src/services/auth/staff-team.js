@@ -34,12 +34,12 @@ export function staffPhone(value) {
 
 const fields = (error) =>
   Object.fromEntries(error.issues.map((issue) => [issue.path[0] ?? '_', issue.message]));
-const flag = z.preprocess((value) => value === true || value === 'on' || value === 'true' || value === '1', z.boolean());
+const flag = z.preprocess((value) => {const v=Array.isArray(value)?value.at(-1):value;return v === true || v === 'on' || v === 'true' || v === '1';}, z.boolean());
 const propertyIds = z
   .array(uuid, { invalid_type_error: 'Choose at least one property.' })
   .min(1, 'Choose at least one property.')
   .max(50);
-const accessInput = z.object({ propertyIds, evidence: flag });
+const accessInput = z.object({ propertyIds, evidence: flag,guestContact:flag.default(true) });
 const inviteInput = accessInput.extend({
   name: z.string().trim().min(2, 'Enter the caretaker’s name.').max(80),
   phone: z.string().transform((value, ctx) => {
@@ -94,8 +94,8 @@ async function issueLink(tx, staffId) {
     WHERE staff_id=${staffId} AND used_at IS NULL AND revoked_at IS NULL`;
   const token = newToken();
   const [row] = await tx`INSERT INTO staff_invitation(staff_id, token_hash, expires_at)
-    VALUES (${staffId}, ${hashToken(token)}, now() + ${INVITE_TTL_HOURS} * interval '1 hour') RETURNING expires_at`;
-  return { token, expiresAt: row.expires_at };
+    VALUES (${staffId}, ${hashToken(token)}, now() + ${INVITE_TTL_HOURS} * interval '1 hour') RETURNING id,expires_at`;
+  return { token, invitationId: row.id, expiresAt: row.expires_at };
 }
 
 const memberState = (row) =>
@@ -106,7 +106,7 @@ export async function listTeam(database, ownerId) {
       (SELECT max(p.created_at) FROM auth_session p WHERE p.staff_id=s.id) AS last_session_at,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'title', r.title) ORDER BY r.title), '[]'::jsonb)
          FROM staff_property sp JOIN rentable r ON r.id=sp.rentable_id WHERE sp.staff_id=s.id) AS properties,
-      (SELECT jsonb_build_object('expiresAt', i.expires_at, 'createdAt', i.created_at) FROM staff_invitation i
+      (SELECT jsonb_build_object('expiresAt', i.expires_at, 'createdAt', i.created_at, 'deliveryState', i.delivery_state) FROM staff_invitation i
          WHERE i.staff_id=s.id AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()
          ORDER BY i.created_at DESC LIMIT 1) AS pending
     FROM client_staff s WHERE s.client_id=${ownerId} ORDER BY s.revoked_at IS NOT NULL, s.created_at DESC`;
@@ -120,7 +120,7 @@ export async function listTeam(database, ownerId) {
       name: row.name,
       phone: row.phone,
       state: memberState(row),
-      permissions: { evidence: row.permissions?.evidence === true },
+      permissions: { evidence: row.permissions?.evidence === true,guestContact:row.permissions?.guestContact!==false },
       properties: row.properties,
       acceptedAt: row.accepted_at,
       revokedAt: row.revoked_at,
@@ -152,7 +152,7 @@ export async function inviteStaff(database, ownerId, input) {
     const [existing] = await tx`SELECT * FROM client_staff WHERE client_id=${ownerId} AND phone=${d.phone} FOR UPDATE`;
     if (existing && !existing.revoked_at)
       throw conflict('STAFF_EXISTS', 'This number is already on your team. Issue a new link for it instead.');
-    const permissions = JSON.stringify({ evidence: d.evidence });
+    const permissions = JSON.stringify({ evidence: d.evidence,guestContact:d.guestContact });
     const [staff] = existing
       ? await tx`UPDATE client_staff SET name=${d.name}, permissions=${permissions}::text::jsonb, is_active=true,
           revoked_at=NULL, revoked_reason=NULL, accepted_at=NULL, version=version+1, updated_at=now()
@@ -196,7 +196,7 @@ export async function updateStaffAccess(database, ownerId, staffId, input) {
     const ids = await ownedProperties(tx, ownerId, d.propertyIds);
     const before = (await tx`SELECT rentable_id FROM staff_property WHERE staff_id=${staff.id} ORDER BY rentable_id`).map((r) => r.rentable_id);
     await setProperties(tx, staff.id, ids);
-    const [row] = await tx`UPDATE client_staff SET permissions=${JSON.stringify({ evidence: d.evidence })}::text::jsonb,
+    const [row] = await tx`UPDATE client_staff SET permissions=${JSON.stringify({ evidence: d.evidence,guestContact:d.guestContact })}::text::jsonb,
         version=version+1, updated_at=now() WHERE id=${staff.id} RETURNING version`;
     await audit(tx, {
       actorType: 'client',

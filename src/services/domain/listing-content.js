@@ -82,3 +82,18 @@ export function publicSlotSchedules(bookingConfig) {
     includedGuests: schedule.includedGuests,
   }] : []);
 }
+
+const STAG = { no: 'No stag groups', on_request: 'Stag groups on request', yes: 'Stag groups welcome' };
+
+/** Guest-facing lines for farmhouse rules; the owner editor stores structured toggles. */
+export function publicHouseRules(rules) {
+  if (Array.isArray(rules)) return rules;
+  if (!rules || typeof rules !== 'object') return [];
+  return [
+    rules.petsAllowed ? 'Pets allowed' : 'No pets',
+    rules.alcoholAllowed ? 'Alcohol allowed' : 'No alcohol',
+    STAG[rules.stagGroups],
+    rules.musicCutoff ? `Music off by ${rules.musicCutoff}` : null,
+    rules.notes,
+  ].filter(Boolean);
+}

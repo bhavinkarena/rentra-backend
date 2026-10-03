@@ -123,7 +123,7 @@ export async function resolveAdminCase(_previous, form) {
     const result = await resolveBookingCase(sql, actor, {
       caseId: text(form, 'caseId'),
       expectedVersion: Number(text(form, 'version')),
-      outcome: text(form, 'outcome'),
+      outcome: text(form, 'outcome'),...(form.get('refundMinor')?{refundMinor:Number(form.get('refundMinor'))}:{}),
       basis: text(form, 'basis') || null,
       hash: text(form, 'hash') || null,
       note: text(form, 'note'),

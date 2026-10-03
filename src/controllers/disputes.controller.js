@@ -24,7 +24,15 @@ export const detail = asyncHandler(async (req, res) =>
   ok(res, await readDispute(sql, await actor(req), req.params.id)),
 );
 export const create = asyncHandler(async (req, res) =>
-  ok(res, await createDispute(sql, await actor(req), req.body)),
+  ok(
+    res,
+    await createDispute(
+      sql,
+      await actor(req),
+      req.body,
+      (req.files || []).map((f) => ({ size: f.size, arrayBuffer: async () => f.buffer })),
+    ),
+  ),
 );
 export const reply = asyncHandler(async (req, res) => {
   const files = (req.files || []).map((f) => ({ size: f.size, arrayBuffer: async () => f.buffer }));
@@ -42,7 +50,7 @@ export const attachment = asyncHandler(async (req, res) => {
     'Content-Type': file.mimeType,
     'Cache-Control': 'private, no-store',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Disposition': 'attachment; filename="dispute-evidence"',
+    'Content-Disposition': `attachment; filename="dispute-evidence.${{ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[file.mimeType] || 'bin'}"`,
     'Content-Security-Policy': "default-src 'none'; sandbox",
     'Referrer-Policy': 'no-referrer',
   });

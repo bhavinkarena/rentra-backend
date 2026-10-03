@@ -29,6 +29,7 @@ const otpIdentifier = (phone) => `staff:${phone}`;
 const key = () => new TextEncoder().encode(getEnv().SESSION_SECRET);
 
 function issueError(result) {
+  if (result.reason === 'delivery_failed') return 'We could not send the code just now. Try again in a minute.';
   if (result.reason === 'cooldown')
     return `Wait ${Math.ceil(result.retryInMs / 1000)} seconds before asking for a new code.`;
   return 'Too many codes requested for this number. Try again in an hour.';
@@ -85,7 +86,7 @@ export const getCurrentStaff = cache(async () => {
     ownerId: row.client_id,
     ownerName: row.owner_name,
     ownerPhone: row.owner_phone,
-    permissions: { evidence: row.permissions?.evidence === true },
+    permissions: { evidence: row.permissions?.evidence === true,guestContact:row.permissions?.guestContact!==false },
     properties: properties.map((p) => ({ id: p.id, title: p.title })),
     capabilities: capabilitiesFor(actor, 'staff'),
   };

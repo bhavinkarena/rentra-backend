@@ -124,13 +124,13 @@ export async function listingInventory(database, id, row) {
     const [category] = await database`SELECT slug FROM category WHERE id=${row.category_id}`;
     const completion = listingCompletion({ rentalUnit: 'hour', categorySlug: category?.slug, bookingConfig: config }, { resources, hourlyRates });
     const ready = (id) => completion.sections.find((s) => s.id === id).done;
-    const scheduleReady = ready('hours');
+    const scheduleReady = ready('availability');
     const courts = resources.filter((r) => r.isActive).length;
-    const bookable = scheduleReady && ready('venue') && ready('pricing');
+    const bookable = scheduleReady && ready('space') && ready('pricing');
     return {
       scheduleReady, openDates: null, courts, bookable,
       note: !scheduleReady ? 'Not bookable yet: confirm valid opening hours.'
-        : !ready('venue') ? 'Not bookable yet: add active courts offering the main activity.'
+        : !ready('space') ? 'Not bookable yet: add active courts offering the main activity.'
           : !ready('pricing') ? 'Not bookable yet: price every open hour for every offered activity.' : 'Bookable during the published opening hours.',
     };
   }
@@ -169,7 +169,7 @@ export async function publicationState(database, id) {
     blockers.push('The current submission has not been approved for verification.');
   else if (submission.content_version !== row.content_version)
     blockers.push('The property changed after submission; it needs a new review.');
-  if (submission && listingCompletion(submission.snapshot.listing, submission.snapshot).remaining.length)
+  if (submission && listingCompletion(submission.snapshot.listing, {...submission.snapshot,legacySubmission:submission.snapshot.workflowVersion!==2}).remaining.length)
     blockers.push('The submitted revision is incomplete.');
   if (!visit) blockers.push('No passed verification of this exact revision is recorded.');
   const inventory = await listingInventory(database, id, row);

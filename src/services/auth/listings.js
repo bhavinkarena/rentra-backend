@@ -1,5 +1,7 @@
 'use server';
 
+import { z } from 'zod';
+import { signListingPhoto, listingPhotoAsset, destroyListingPhoto } from '../uploads/cloudinary.js';
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { randomUUID } from 'node:crypto';
@@ -10,42 +12,39 @@ import { changePropertyPolicy } from '../booking/property-policy.js';
 import { changeHourlyRates } from '../booking/hourly-rates.js';
 import { saveVenueResources } from '../booking/venue.js';
 import {
-  rentable, rentableAmenity, documents,
+  rentable, rentableAmenity, documents, users,
   category, city, area,
 } from '@/services/db/schema/index.js';
 import { audit } from '@/services/audit';
 import { fieldErrors } from '@/services/schemas/zod';
 import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
-  ownershipDocSchema, venueRulesSchema,
+  ownershipDocSchema, venueRulesSchema, termsSchema,
 } from '@/services/schemas/zod/listing';
-import { MAX_PHOTOS, ownershipDocTypesFor } from '@/services/domain/listing-completion';
+import { MAX_PHOTOS, billIsFresh, ownershipDocTypesFor } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
+import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { slugify } from '@/services/domain/listing-url';
-import { ownerEditEffect, ownerPauseTarget } from '@/services/domain/listing-lifecycle';
+import { ownerEditEffect, ownerPauseTarget, trustChanges, TRUST_FIELDS as TRUST_FIELD_LIST } from '@/services/domain/listing-lifecycle';
 import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
 } from '@/services/uploads/cloudinary';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
-import { requireActiveClient } from './dal';
+import { requireClient, requireActiveClient } from './dal';
 
 /**
  * GATE 2 — the listing builder.
  *
  * Every section saves independently, so a half-built listing survives a closed
- * tab and the sections can be done in any order. `requireActiveClient` on each
- * one is the enforcement of Gate 1: an approved account is the precondition for
- * touching a property at all.
+ * tab and the sections can be done in any order. Pending owners may edit
+ * drafts; publishing still requires an approved account.
  */
 
 /** Fields that, once changed on a LIVE listing, re-open Gate 2. */
-const TRUST_FIELDS = new Set([
-  'photos', 'location', 'exactAddress', 'capacity', 'bedrooms',
-  'categoryId', 'title', 'amenities', 'houseRules',
-]);
+const TRUST_FIELDS = new Set(TRUST_FIELD_LIST);
 
 async function clientIp() {
   const h = await headers();
@@ -77,11 +76,12 @@ function assertVersion(current, expected) {
 }
 
 async function load(id) {
-  const user = await requireActiveClient();
+  const user = await requireClient();
   const data = await getListingForEdit(id, user.id);
   // Scoped by clientId in the query: someone else's listing id returns null
   // rather than someone else's property.
   if (!data) redirect('/partner/listings');
+  if (user.accountStatus !== 'active' && data.listing.status !== 'draft') throw notFound();
   return { user, ...data };
 }
 
@@ -93,8 +93,7 @@ async function load(id) {
  * approval defeats the entire verification, which is why the two are not
  * treated the same. Existing confirmed bookings are untouched either way.
  */
-async function applyEdit(listing, fields, changed, { expected = null, children = null } = {}) {
-  const touchesTrust = changed.some((f) => TRUST_FIELDS.has(f));
+async function applyEdit(listing, fields, changed, { expected = null, children = null,autosave=false } = {}) {
 
   /**
    * The status decision is made on the row as it is NOW, under its lock, not
@@ -107,11 +106,24 @@ async function applyEdit(listing, fields, changed, { expected = null, children =
         status: rentable.status,
         priorStatus: rentable.priorStatus,
         contentVersion: rentable.contentVersion,
+        title: rentable.title,
+        categoryId: rentable.categoryId,
+        capacity: rentable.capacity,
+        bedrooms: rentable.bedrooms,
+        exactAddress: rentable.exactAddress,
+        location: rentable.location,
+        houseRules: rentable.houseRules,
       })
       .from(rentable)
       .where(eq(rentable.id, listing.id))
       .for('update');
+    const [owner] = await tx.select({ status: users.accountStatus }).from(users).where(eq(users.id, listing.clientId)).for('share');
+    if (!owner || (owner.status !== 'active' && !(owner.status === 'pending_application' && current.status === 'draft'))) throw notFound();
     assertVersion(current.contentVersion, expected);
+    if(autosave){const booked=await tx.execute(raw`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`);if(!['draft','rejected'].includes(current.status)||booked.length)throw conflict('EXPLICIT_SAVE_REQUIRED','Use Save for properties with bookings');}
+    // Pressing Save without changing anything must not take a live property out of search.
+    const touchesTrust =
+      trustChanges(current, fields, changed.filter((f) => TRUST_FIELDS.has(f))).length > 0;
     // Child rows (amenities) are written under the same lock, after the check.
     if (children) await children(tx);
     const effect = ownerEditEffect(current, touchesTrust);
@@ -139,78 +151,25 @@ async function applyEdit(listing, fields, changed, { expected = null, children =
 /* ------------------------------ create ------------------------------ */
 
 export async function createListingFromBasics(_prev, formData) {
-  const user = await requireActiveClient();
-  const parsed = listingStartSchema.safeParse({
-    categoryId: formData.get('categoryId'),
-    title: formData.get('title'),
-    description: formData.get('description'),
-    highlight: formData.get('highlight') ?? '',
-    cityId: formData.get('cityId'),
-    areaId: formData.get('areaId'),
-  });
+  const user = await requireClient();
+  if(!formData.has('vertical')){const [category]=await sql`SELECT vertical_code FROM category WHERE id=${String(formData.get('categoryId'))}`;if(category)formData.set('vertical',category.vertical_code);}
+  const parsed = listingStartSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  const d = parsed.data;
-
-  // Browser UUIDs are still untrusted. Confirm that the taxonomy is active
-  // and, crucially, that the selected area belongs to the selected city
-  // before the first property row is written.
-  const [[selectedCategory], [selectedCity], [selectedArea]] = await Promise.all([
-    db
-      .select({
-        id: category.id,
-        form: category.form,
-        defaultRentalUnit: category.defaultRentalUnit,
-      })
-      .from(category)
-      // Only categories of a vertical that is open to partners (entertainment plan, Phase 4).
-      .where(and(eq(category.id, d.categoryId), eq(category.isActive, true),
-        raw`exists (select 1 from vertical v where v.code=${category.verticalCode} and v.status in ('partners','public'))`))
-      .limit(1),
-    db
-      .select({ id: city.id })
-      .from(city)
-      .where(and(eq(city.id, d.cityId), eq(city.isActive, true)))
-      .limit(1),
-    db
-      .select({ id: area.id })
-      .from(area)
-      .where(and(eq(area.id, d.areaId), eq(area.cityId, d.cityId), eq(area.isActive, true)))
-      .limit(1),
-  ]);
-
-  const selectionErrors = {};
-  if (!selectedCategory) selectionErrors.categoryId = 'Choose an available category';
-  if (!selectedCity) selectionErrors.cityId = 'Choose an available city';
-  if (!selectedArea) selectionErrors.areaId = 'Choose an area in this city';
-  if (Object.keys(selectionErrors).length) return { errors: selectionErrors };
-
-  const code = publicCode();
-
-  const [row] = await db
-    .insert(rentable)
-    .values({
-      clientId: user.id,
-      title: d.title,
-      slug: `${slugify(d.title)}-${code}`,
-      publicCode: code,
-      status: 'draft',
-      description: d.description,
-      highlight: d.highlight || null,
-      form: selectedCategory.form,
-      fulfilment: selectedCategory.form === 'fixed' ? 'visit_site' : 'pickup_from_owner',
-      rentalUnit: selectedCategory.defaultRentalUnit,
-      categoryId: selectedCategory.id,
-      cityId: selectedCity.id,
-      areaId: selectedArea.id,
-    })
-    .returning({ id: rentable.id });
-
-  await audit({
-    actorType: 'client', actorId: user.id, entity: 'rentable',
-    entityId: row.id, action: 'listing_draft_created', ip: await clientIp(),
+  const [choice] = await sql`SELECT c.* FROM category c JOIN vertical v ON v.code=c.vertical_code
+    WHERE c.id=${parsed.data.categoryId} AND c.is_active AND v.status IN ('partners','public') AND c.vertical_code=${parsed.data.vertical}`;
+  if (!choice) return { errors: { categoryId: 'Choose an available category for this property type' } };
+  const legacy=formData.has('title')?basicsSchema.safeParse(Object.fromEntries(formData)):null;
+  if(legacy&&!legacy.success)return {errors:fieldErrors(legacy.error)};
+  if(legacy){const [area]=await sql`SELECT a.id FROM area a JOIN city c ON c.id=a.city_id WHERE a.id=${String(formData.get('areaId'))} AND c.id=${String(formData.get('cityId'))} AND a.is_active AND c.is_active`;if(!area)return {errors:{areaId:'Choose an available area in this city'}};}
+  const row = await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${user.id + ':new-property'},0))`;
+    const [existing] = await tx`SELECT id FROM rentable WHERE client_id=${user.id} AND status='draft' AND title='' AND category_id=${choice.id} AND created_at>now()-interval '10 minutes' ORDER BY created_at DESC LIMIT 1`;
+    if (existing) return existing;
+    const code=publicCode();
+    const [created]=await tx`INSERT INTO rentable(client_id,title,slug,public_code,status,form,fulfilment,rental_unit,category_id,booking_config,city_id,area_id,description,highlight)
+      VALUES (${user.id},${legacy?.data.title||''},${legacy?slugify(legacy.data.title)+'-'+code:'untitled-'+code},${code},'draft',${choice.form},${choice.form==='fixed'?'visit_site':'pickup_from_owner'},${choice.default_rental_unit},${choice.id},${JSON.stringify(choice.default_rental_unit==='hour'?{model:'hourly',timeZone:'Asia/Kolkata',leadTimeMinutes:30,bookingHorizonDays:90,stepMinutes:60,minDurationMinutes:60,maxDurationMinutes:180,bufferBeforeMinutes:0,bufferAfterMinutes:0,weeklyHours:Object.fromEntries(['mon','tue','wed','thu','fri','sat','sun'].map(day=>[day,[{open:'08:00',close:'22:00',closesNextDay:false}]]))}:null)}::text::jsonb,${legacy?String(formData.get('cityId')):null},${legacy?String(formData.get('areaId')):null},${legacy?.data.description||null},${legacy?.data.highlight||null}) RETURNING id`;
+    return created;
   });
-
   redirect(`/partner/listings/${row.id}/setup/location`);
 }
 
@@ -218,7 +177,10 @@ export async function createListingFromBasics(_prev, formData) {
 
 export async function saveBasics(_prev, formData) {
   const { listing } = await load(String(formData.get('id')));
-  const parsed = basicsSchema.safeParse({
+  const autosave=formData.get('autosave')==='1';
+  if(autosave){ const [booking]=await sql`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`; if(!['draft','rejected'].includes(listing.status)||booking)throw conflict('EXPLICIT_SAVE_REQUIRED','Use Save for properties with bookings');}
+  const schema=autosave?basicsSchema.extend({title:z.string().trim().max(90),description:z.string().trim().max(4000)}):basicsSchema;
+  const parsed = schema.safeParse({
     categoryId: formData.get('categoryId'),
     title: formData.get('title'),
     description: formData.get('description'),
@@ -244,7 +206,7 @@ export async function saveBasics(_prev, formData) {
     slug: `${slugify(d.title)}-${listing.publicCode}`,
     description: d.description,
     highlight: d.highlight || null,
-  }, ['categoryId', 'title'], { expected: expectedVersion(formData) });
+  }, ['categoryId', 'title'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -261,12 +223,14 @@ export async function saveLocation(_prev, formData) {
   if (!parsed.success) return { errors: fieldErrors(parsed.error) };
 
   const d = parsed.data;
+  const [valid] = await sql`SELECT a.id FROM area a JOIN city c ON c.id=a.city_id WHERE a.id=${d.areaId} AND c.id=${d.cityId} AND a.is_active AND c.is_active`;
+  if (!valid) return {errors:{areaId:'Choose an available area in this city'}};
   const { sentBack, contentVersion } = await applyEdit(listing, {
     cityId: d.cityId,
     areaId: d.areaId,
     location: { x: d.lng, y: d.lat },
     exactAddress: d.exactAddress,
-  }, ['location', 'exactAddress'], { expected: expectedVersion(formData) });
+  }, ['location', 'exactAddress'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -286,10 +250,10 @@ export async function saveCapacity(_prev, formData) {
   const { sentBack, contentVersion } = await applyEdit(listing, {
     capacity: d.capacity,
     bedrooms: d.bedrooms,
-    farmSize: d.farmSize,
+    farmSize: d.farmSize || null,
     farmSizeUnit: d.farmSizeUnit,
     poolSize: d.poolSize || null,
-  }, ['capacity', 'bedrooms'], { expected: expectedVersion(formData) });
+  }, ['capacity', 'bedrooms'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -308,7 +272,9 @@ export async function saveAmenities(_prev, formData) {
 
   // Replace wholesale: the form submits the complete set, so a diff would only
   // add a way for the two to disagree.
-  const { sentBack, contentVersion } = await applyEdit(listing, {}, ['amenities'], {
+  const key = (list) => list.map((r) => `${r.amenityId}=${r.value ?? ''}`).sort().join('|');
+  const stored = await sql`SELECT amenity_id::text AS "amenityId",value FROM rentable_amenity WHERE rentable_id=${listing.id}`;
+  const { sentBack, contentVersion } = await applyEdit(listing, {}, key(stored) === key(rows) ? [] : ['amenities'], {
     expected: expectedVersion(formData),
     children: async (tx) => {
       await tx.delete(rentableAmenity).where(eq(rentableAmenity.rentableId, listing.id));
@@ -320,6 +286,7 @@ export async function saveAmenities(_prev, formData) {
 
 export async function saveRules(_prev, formData) {
   const { listing } = await load(String(formData.get('id')));
+  if (formData.get('wizardRules')==='1') { const [booking]=await sql`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`;if(!['draft','rejected'].includes(listing.status)||booking)throw conflict('EXPLICIT_SAVE_REQUIRED','Use the policy preview for this property'); const terms=termsSchema.safeParse(Object.fromEntries(formData)); if (!terms.success) return {errors:fieldErrors(terms.error)}; if(formData.get('cancellationConfirmed')!=='on') return {errors:{cancellationConfirmed:'Confirm your cancellation policy'}}; }
   if (listing.rentalUnit === 'hour') return saveVenueRules(listing, formData);
   const parsed = rulesSchema.safeParse({
     checkInFrom: formData.get('checkInFrom'),
@@ -346,13 +313,15 @@ export async function saveRules(_prev, formData) {
     stagGroups: d.stagAllowed,
     musicCutoff: d.musicCutoff || null,
     notes: d.extraRules || null,
+    cancellationConfirmed: formData.get('wizardRules')==='1' ? true : listing.houseRules?.cancellationConfirmed,
   };
 
   const { sentBack, contentVersion } = await applyEdit(listing, {
     checkInFrom: d.checkInFrom,
     checkOutBy: d.checkOutBy,
     houseRules,
-  }, ['houseRules'], { expected: expectedVersion(formData) });
+    ...(formData.get('wizardRules')==='1'?{depositMinor:termsSchema.parse(Object.fromEntries(formData)).depositAmount*100,cancellationTier:termsSchema.parse(Object.fromEntries(formData)).cancellationTier,bookingConfigVersion:raw`${rentable.bookingConfigVersion}+1`}:{}),
+  }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -376,8 +345,9 @@ async function saveVenueRules(listing, formData) {
     smokingAllowed: d.smokingAllowed === 'yes',
     alcoholAllowed: d.alcoholAllowed === 'yes',
     notes: d.extraRules || null,
+    cancellationConfirmed: formData.get('wizardRules')==='1' ? true : listing.houseRules?.cancellationConfirmed,
   };
-  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules }, ['houseRules'], { expected: expectedVersion(formData) });
+  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules, ...(formData.get('wizardRules')==='1'?{depositMinor:termsSchema.parse(Object.fromEntries(formData)).depositAmount*100,cancellationTier:termsSchema.parse(Object.fromEntries(formData)).cancellationTier,bookingConfigVersion:raw`${rentable.bookingConfigVersion}+1`}:{}) }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
   return { ok: true, contentVersion, sentBack };
 }
 
@@ -391,7 +361,7 @@ function jsonField(formData, key) {
 }
 
 async function policyAction(formData, command) {
-  const user = await requireActiveClient();
+  const user = await requireClient();
   const data = await getListingForEdit(String(formData.get('id')),user.id);
   if(!data) throw notFound();
   const {listing}=data;
@@ -400,15 +370,15 @@ async function policyAction(formData, command) {
     // Time-booked venue: hourly bands per activity instead of slot prices.
     const result = await changeHourlyRates(sql, user.id, listing.id, {
       rates: jsonField(formData, 'rates'), expectedVersion: Number(formData.get('contentVersion')),
-      preview: formData.get('mode') === 'preview', previewToken: formData.get('previewToken'),
+      direct: formData.get('direct')==='true', autosave:formData.get('autosave')==='1',preview: formData.get('mode') === 'preview', previewToken: formData.get('previewToken'),
     });
     if (result.ok) revalidateListing(listing);
     return result;
   }
-  const keys = command === 'pricing' ? ['day_weekday','day_weekend','night_weekday','night_weekend','full_day_weekday','full_day_weekend','extraGuestCharge','extraHourCharge'] : ['depositAmount','cancellationTier'];
+  const keys = command === 'pricing' ? ['day_weekday','day_weekend','night_weekday','night_weekend','full_day_weekday','full_day_weekend','extraGuestCharge','extraHourCharge','includedGuests'] : ['depositAmount','cancellationTier'];
   const result = await changePropertyPolicy(sql,user.id,listing.id,command,{
-    values:Object.fromEntries(keys.map(key=>[key,formData.get(key)||0])),
-    expectedVersion:Number(formData.get('contentVersion')),preview:formData.get('mode')==='preview',previewToken:formData.get('previewToken'),
+    values:Object.fromEntries(keys.filter(key=>key!=='includedGuests'||formData.has(key)).map(key=>[key,formData.get(key)||0])),
+    expectedVersion:Number(formData.get('contentVersion')),direct:formData.get('direct')==='true',autosave:formData.get('autosave')==='1',preview:formData.get('mode')==='preview',previewToken:formData.get('previewToken'),
   });
   if(result.ok) revalidateListing(listing);
   return result;
@@ -417,7 +387,7 @@ export async function savePricing(_prev, formData) { return policyAction(formDat
 
 /** Courts, lanes and stations of a time-booked venue (wizard step `venue`). */
 export async function saveVenue(_prev, formData) {
-  const user = await requireActiveClient();
+  const user = await requireClient();
   const data = await getListingForEdit(String(formData.get('id')), user.id);
   if (!data) throw notFound();
   const result = await saveVenueResources(sql, user.id, {
@@ -445,8 +415,8 @@ export async function uploadListingPhotos(_prev, formData) {
 
   const staged = [];
   for (const file of files) {
-    if (file.size > UPLOAD_LIMITS.maxBytes) {
-      return { errors: { photos: `${file.name} is over 2MB` } };
+    if (file.size > 8*1024*1024) {
+      return { errors: { photos: `${file.name} is over 8MB` } };
     }
     const buffer = Buffer.from(await file.arrayBuffer());
     const mime = detectMime(buffer);
@@ -472,7 +442,7 @@ export async function uploadListingPhotos(_prev, formData) {
   }
 
   const { sentBack, contentVersion } = await applyEdit(
-    listing, { photos: [...photos, ...added] }, ['photos'], { expected: expectedVersion(formData) },
+    listing, { photos: [...photos, ...added] }, ['photos'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) },
   );
 
   await audit({
@@ -495,16 +465,17 @@ export async function removeListingPhoto(_prev, formData) {
   if (next.length === photos.length) return { errors: { _: 'That photo is already gone.' } };
 
   const { sentBack, contentVersion } = await applyEdit(
-    listing, { photos: renumberPhotos(next, listing.title) }, ['photos'],
-    { expected: expectedVersion(formData) },
+    listing, { photos: renumberPhotos(next, listing.title) }, [],
+    {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) ?? listing.contentVersion },
   );
+  if(key.startsWith(`rentra/listings/${listing.id}/`)) await destroyListingPhoto(key).catch(()=>null);
   return { ok: true, contentVersion, sentBack, remaining: next.length };
 }
 
 /**
  * Reorder, and promote a photo to the cover.
  *
- * Deliberately NOT routed through `applyEdit`. `photos` is a trust field
+ * Uses `applyEdit`'s version check without marking a trust-field change. `photos` is a trust field
  * because swapping in pictures of a nicer farm after approval defeats the
  * entire verification — but a reorder is the same approved set in a different
  * order. Nothing new enters the listing, so there is nothing to re-verify, and
@@ -524,13 +495,7 @@ export async function reorderListingPhotos(_prev, formData) {
   if (!result.changed) return { ok: true, cover: photoId(photos[0]) };
 
   const next = result.photos;
-
-  await db.update(rentable)
-    .set({ photos: renumberPhotos(next, listing.title), updatedAt: new Date() })
-    .where(eq(rentable.id, listing.id));
-
-  revalidateListing(listing);
-
+  const {contentVersion}=await applyEdit(listing,{photos:renumberPhotos(next,listing.title)},[],{expected:expectedVersion(formData) ?? listing.contentVersion});
   await audit({
     actorType: 'client', actorId: user.id, entity: 'rentable',
     entityId: listing.id, action: 'listing_photos_reordered',
@@ -539,7 +504,7 @@ export async function reorderListingPhotos(_prev, formData) {
     ip: await clientIp(),
   });
 
-  return { ok: true, cover: photoId(next[0]) };
+  return { ok: true, contentVersion, cover: photoId(next[0]) };
 }
 
 /* --------------------------- ownership proof --------------------------- */
@@ -551,6 +516,19 @@ export async function reorderListingPhotos(_prev, formData) {
  */
 export async function uploadOwnershipDocument(_prev, formData) {
   const { user, listing } = await load(String(formData.get('id')));
+
+  // The setup walkthrough's Continue submits this form; with no new file and a
+  // document already on record, there is nothing to upload.
+  // Only when the form still describes that same document, so an edited type or
+  // name is never reported as saved without the file it refers to.
+  const chosen = formData.get('file');
+  if (!chosen || chosen.size === 0) {
+    const [kept] = await sql`SELECT 1 FROM document WHERE owner_type='rentable' AND owner_id=${listing.id}
+      AND status IN ('uploaded','accepted') AND deleted_at IS NULL
+      AND doc_type=${String(formData.get('docType') ?? '')}
+      AND coalesce(name_on_document,'')=${String(formData.get('nameOnDocument') ?? '').trim()} LIMIT 1`;
+    if (kept) return { ok: true, unchanged: true };
+  }
 
   if (!isCloudinaryConfigured()) {
     return { errors: { _: 'Document upload is not configured on this server yet.' } };
@@ -566,6 +544,9 @@ export async function uploadOwnershipDocument(_prev, formData) {
   if (!ownershipDocTypesFor(listing.rentalUnit).some((type) => type.id === parsed.data.docType))
     return { errors: { docType: 'Choose one of the listed documents' } };
 
+  if (parsed.data.docType==='electricity_bill') {
+    if (!billIsFresh(parsed.data.issuedAt)) return {errors:{issuedAt:'Use an electricity bill issued within the last 3 months'}};
+  }
   const file = formData.get('file');
   if (!file || file.size === 0) return { errors: { file: 'Choose the document' } };
   if (file.size > UPLOAD_LIMITS.maxBytes) return { errors: { file: 'Keep it under 2MB' } };
@@ -630,7 +611,7 @@ export async function submitListing(_prev, formData) {
   const user = await requireActiveClient();
   const listing = await submitProperty(sql, { id: String(formData.get('id')), clientId: user.id, ip: await clientIp() });
   revalidateListing(listing, { statusChanged: true });
-  redirect(`/partner/listings/${listing.id}?submitted=1`);
+  redirect(`/partner/listings/${listing.id}/submitted`);
 }
 
 /** Owner-side pause. Leaves search; calendar and bookings are preserved. */
@@ -639,11 +620,18 @@ export async function toggleListingPause(_prev, formData) {
 
   const target = ownerPauseTarget(listing.status);
   if (target.error) return { errors: { _: target.error } };
+  // PROP-05: an optional IST end date; the worker resumes on that day.
+  const until = target.next === 'paused' ? String(formData.get('until') || '') : '';
+  if (until) {
+    const today = propertyToday();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(until) || until <= today || until > addLocalDays(today, 365))
+      return { errors: { until: 'Choose a date from tomorrow up to a year ahead' } };
+  }
 
   // Conditional on the status the owner saw: a restriction, review or publish
   // committed since then wins, and the owner is told to reload.
   const [moved] = await db.update(rentable).set({
-    status: target.next, priorStatus: listing.status, updatedAt: new Date(),
+    status: target.next, priorStatus: listing.status, pausedUntil: until || null, updatedAt: new Date(),
   }).where(and(eq(rentable.id, listing.id), eq(rentable.status, listing.status)))
     .returning({ id: rentable.id });
   if (!moved) {
@@ -655,12 +643,57 @@ export async function toggleListingPause(_prev, formData) {
   await audit({
     actorType: 'client', actorId: user.id, entity: 'rentable',
     entityId: listing.id, action: target.next === 'paused' ? 'listing_paused' : 'listing_resumed',
-    before: { status: listing.status }, after: { status: target.next }, ip: await clientIp(),
+    before: { status: listing.status }, after: { status: target.next, pausedUntil: until || null }, ip: await clientIp(),
   });
 
   // Pausing removes the listing from every surface that lists it, so this is
   // the one case where `/` and the sitemap have to go too.
   revalidateListing(listing, { statusChanged: true });
 
-  return { ok: true, status: target.next };
+  return { ok: true, status: target.next, pausedUntil: until || null };
+}
+
+/** PROP-05 worker job: owner pauses whose end date has arrived take bookings again. */
+export async function resumeEndedPauses(database) {
+  const resumed = await database`UPDATE rentable SET status='live', prior_status='paused', updated_at=now()
+    WHERE status='paused' AND paused_until <= (now() AT TIME ZONE 'Asia/Kolkata')::date
+    RETURNING id, slug, public_code`;
+  for (const row of resumed) {
+    await database`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after")
+      VALUES ('system',NULL,'rentable',${row.id},'listing_resumed','{"status":"paused"}'::jsonb,'{"status":"live","reason":"pause_ended"}'::jsonb)`;
+    revalidateListing({ id: row.id, slug: row.slug, publicCode: row.public_code }, { statusChanged: true });
+  }
+  return { resumed: resumed.length };
+}
+
+export async function saveType(_prev, form) {
+ const {listing}=await load(String(form.get('id')));
+ const [choice]=await sql`SELECT c.id FROM category c WHERE c.id=${String(form.get('categoryId'))} AND c.is_active AND c.vertical_code=(SELECT oc.vertical_code FROM rentable r JOIN category oc ON oc.id=r.category_id WHERE r.id=${listing.id}) AND c.default_rental_unit=${listing.rentalUnit}`;
+ if(!choice) return {errors:{categoryId:'Choose an available category for this property'}};
+ return {ok:true,...await applyEdit(listing,{categoryId:choice.id},['categoryId'],{expected:expectedVersion(form)})};
+}
+export async function deleteDraft(_prev, form) {
+ const {user,listing}=await load(String(form.get('id')));
+ await sql.begin(async tx=> {
+  const [current]=await tx`SELECT status FROM rentable WHERE id=${listing.id} AND client_id=${user.id} FOR UPDATE`;
+  const [history]=await tx`SELECT 1 FROM listing_review WHERE rentable_id=${listing.id} UNION ALL SELECT 1 FROM listing_submission WHERE rentable_id=${listing.id} UNION ALL SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`;
+  if(current.status!=='draft'||history) throw conflict('DRAFT_ONLY','Only a draft that has never been submitted or booked can be deleted');
+  await tx`DELETE FROM rentable WHERE id=${listing.id}`;
+ });
+ redirect('/partner/listings');
+}
+
+export async function signPhoto(_previous,form){const {listing}=await load(String(form.get('id'))); return signListingPhoto(listing.id,randomUUID());}
+export async function attachPhoto(_previous,form){
+ const {listing}=await load(String(form.get('id'))),key=String(form.get('publicId'));
+ if(!key.startsWith(`rentra/listings/${listing.id}/`)||!/^rentra\/listings\/[a-f0-9-]+\/[a-f0-9-]+$/.test(key)) throw notFound();
+ const asset=await listingPhotoAsset(key);
+ if(!['jpg','jpeg','png','webp'].includes(asset.format)||asset.bytes>8*1024*1024||asset.type!=='upload')return {errors:{photos:'Choose a JPG, PNG or WEBP under 8MB'}};
+ const current=await getListingForEdit(listing.id,listing.clientId);
+ if(current.photos.some(p=>p.key===key))return {ok:true,contentVersion:current.listing.contentVersion};
+ if(current.photos.length>=MAX_PHOTOS)return {errors:{photos:'15 of 15 — remove one to add another'}};
+ const hash=String(form.get('hash')||'');
+ if(current.photos.some(p=>hash&&p.hash===hash)){await destroyListingPhoto(key);return {ok:true,duplicate:true,contentVersion:current.listing.contentVersion};}
+ const photo={key,alt:listing.title,width:asset.width,height:asset.height,tag:String(form.get('tag')||'Other').slice(0,40),hash:hash.slice(0,64)};
+ return {ok:true,...await applyEdit(listing,{photos:[...current.photos,photo]},['photos'],{expected:expectedVersion(form) ?? current.listing.contentVersion})};
 }

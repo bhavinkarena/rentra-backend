@@ -2,12 +2,8 @@
 
 import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
-import { eq } from 'drizzle-orm';
-import { z } from 'zod';
-import { db } from '@/services/db';
-import { users } from '@/services/db/schema/index.js';
-import { audit } from '@/services/audit';
-import { fieldErrors } from '@/services/schemas/zod';
+import { sql } from '@/services/db';
+import { saveOwnerAccount } from './owner-account.js';
 import { requireClient } from './dal';
 
 /**
@@ -25,37 +21,14 @@ async function clientIp() {
   return h.get('x-forwarded-for')?.split(',')[0]?.trim() ?? h.get('x-real-ip') ?? null;
 }
 
-const accountSchema = z.object({
-  name: z.string().trim().min(3, 'Enter your full name').max(160),
-  preferredLocale: z.enum(['en', 'hi', 'gu']),
-});
-
 export async function saveAccountSettings(_prev, formData) {
   const user = await requireClient();
-  const parsed = accountSchema.safeParse({
+  const saved = await saveOwnerAccount(sql, user.id, {
     name: formData.get('name'),
     preferredLocale: formData.get('preferredLocale'),
-  });
-  if (!parsed.success) return { errors: fieldErrors(parsed.error) };
-
-  const d = parsed.data;
-
-  await db.update(users).set({
-    name: d.name,
-    preferredLocale: d.preferredLocale,
-    updatedAt: new Date(),
-  }).where(eq(users.id, user.id));
-
-  await audit({
-    actorType: 'client', actorId: user.id, entity: 'user', entityId: user.id,
-    action: 'account_settings_saved',
-    before: { name: user.name, preferredLocale: user.preferredLocale },
-    after: { name: d.name, preferredLocale: d.preferredLocale },
-    ip: await clientIp(),
-  });
-
+  }, await clientIp());
+  if (!saved.ok) return saved;
   revalidatePath('/partner/settings');
   revalidatePath('/partner');
-
-  return { ok: true };
+  return saved;
 }

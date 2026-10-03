@@ -393,6 +393,62 @@
       "when": 1790591500000,
       "tag": "0055_measurement_vertical",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1790591500001,
+      "tag": "0056_owner_navigation_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1790591500002,
+      "tag": "0057_owner_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1790591500003,
+      "tag": "0058_owner_property_drafts",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1790591500004,
+      "tag": "0059_owner_pause_until",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1790591500005,
+      "tag": "0060_owner_calendar_bookings",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1790591500006,
+      "tag": "0061_owner_earnings",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1790591500007,
+      "tag": "0062_owner_communications",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1790591500008,
+      "tag": "0063_owner_bookings_finish",
+      "breakpoints": true
     }
   ]
 }

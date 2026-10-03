@@ -87,6 +87,7 @@ export async function uploadPrivateDocument({ buffer, folder, publicId }) {
         // Strip camera metadata — an ID photo carries GPS and device details
         // that we have no reason to keep.
         image_metadata: false,
+      transformation: [{flags:'strip_profile'}],
         tags: ['kyc', 'sensitive'],
       },
       (error, result) => {
@@ -121,6 +122,7 @@ export async function uploadPrivateEvidence({ buffer, folder, publicId }) {
       resource_type: 'image',
       eager: [],
       image_metadata: false,
+      transformation: [{flags:'strip_profile'}],
       tags: ['visit-evidence', 'sensitive'],
     }, (error, result) => {
       if (error) return reject(new Error(error.message ?? 'Cloudinary upload failed'));
@@ -142,6 +144,7 @@ export async function uploadPublicListingPhoto({ buffer, folder, publicId }) {
       overwrite: false,
       resource_type: 'image',
       image_metadata: false,
+      transformation: [{flags:'strip_profile'}],
       tags: ['listing-photo', 'public'],
     }, (error, result) => {
       if (error) return reject(new Error(error.message ?? 'Cloudinary upload failed'));
@@ -205,7 +208,8 @@ export async function uploadProfilePhoto({ buffer, publicId }) {
       folder: 'profile-photos', public_id: publicId, type: 'upload',
       resource_type: 'image', overwrite: false, format: 'webp',
       transformation: [{ width: 400, height: 400, crop: 'fill', gravity: 'auto', quality: 85 }],
-      image_metadata: false, tags: ['profile-photo'],
+      image_metadata: false,
+      tags: ['profile-photo'],
     }, (error, result) => {
       if (error) return reject(new Error('Profile photo upload failed.'));
       resolve({ publicId: result.public_id });
@@ -217,4 +221,26 @@ export async function destroyProfilePhoto(publicId) {
   if (!publicId?.startsWith('profile-photos/')) return false;
   const result = await client().uploader.destroy(publicId, { type: 'upload', resource_type: 'image', invalidate: true });
   return result?.result === 'ok' || result?.result === 'not found';
+}
+
+export function signListingPhoto(listingId, nonce) {
+ const api=client(),env=getEnv(),timestamp=Math.floor(Date.now()/1000);
+ const params={timestamp,public_id:`rentra/listings/${listingId}/${nonce}`,overwrite:false,transformation:'fl_strip_profile',image_metadata:false};
+ return {...params,signature:api.utils.api_sign_request(params,env.CLOUDINARY_API_SECRET),api_key:env.CLOUDINARY_API_KEY,cloudName:env.CLOUDINARY_CLOUD_NAME};
+}
+export async function listingPhotoAsset(key){return client().api.resource(key,{resource_type:'image',type:'upload',image_metadata:false});}
+export async function destroyListingPhoto(key){if(key?.startsWith('rentra/listings/'))return client().uploader.destroy(key,{resource_type:'image',type:'upload',invalidate:true});}
+export async function cleanListingPhotoOrphans(database) {
+ if(!isCloudinaryConfigured())return {removed:0};
+ let cursor,removed=0;
+ do {
+  const page=await client().api.resources({type:'upload',resource_type:'image',prefix:'rentra/listings/',max_results:100,next_cursor:cursor});
+  for(const asset of page.resources) {
+   if(Date.now()-new Date(asset.created_at).getTime()<86400000)continue;
+   const [used]=await database`SELECT 1 FROM rentable WHERE photos @> ${JSON.stringify([{key:asset.public_id}])}::text::jsonb LIMIT 1`;
+   if(!used){await destroyListingPhoto(asset.public_id);removed++;}
+  }
+  cursor=page.next_cursor;
+ }while(cursor);
+ return {removed};
 }

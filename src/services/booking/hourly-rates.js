@@ -28,7 +28,7 @@ export async function changeHourlyRates(database, ownerId, id, input) {
   const shape = rows.map((row, index) => row.endMinute <= row.startMinute || row.endMinute > 1800 ? index : null).filter((index) => index != null);
   if (shape.length) throw unprocessable({ rates: [`Each price needs an end after its start, by 06:00 next day (rows ${shape.map((i) => i + 1).join(', ')}).`] });
   return withListingInventory(database, id, async (tx, listing) => {
-    const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`;
+    const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND (account_status='active' OR (account_status='pending_application' AND ${listing.status}='draft')) FOR SHARE`;
     if (!owner || listing.client_id !== ownerId) throw notFound();
     if (bookingModel(listing) !== 'hourly') throw conflict('UNSUPPORTED_INVENTORY', 'Hourly prices apply to time-booked venues only.');
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion !== listing.content_version) {
@@ -64,10 +64,13 @@ export async function changeHourlyRates(database, ownerId, id, input) {
       FROM rentable_rate rr JOIN category c ON c.id=rr.category_id WHERE rr.rentable_id=${id} ORDER BY 1,2,3`;
     const after = rows.map(({ activity, dayKind, from, to, toNextDay, hourlyRate }) => ({ activity, dayKind, from, to, toNextDay, hourlyRate }));
     const token = signature([ownerId, id, 'hourly-rates', listing.content_version, listing.booking_config_version, before, after]);
-    if (input.preview) {
+    const [booked] = await tx`SELECT 1 FROM booking WHERE rentable_id=${id} LIMIT 1`;
+    const direct = input.direct === true && ['draft','rejected'].includes(listing.status) && !booked;
+    if(input.autosave && !direct)throw conflict('EXPLICIT_SAVE_REQUIRED','Use Save for properties with bookings');
+    if (input.preview && !direct) {
       return { preview: { token, before, after, effective: 'Immediately after confirmation, for new quotes only. Accepted bookings keep their original price.' } };
     }
-    if (input.previewToken !== token) throw conflict('PREVIEW_REQUIRED', 'Preview these exact prices before saving.');
+    if (!direct && input.previewToken !== token) throw conflict('PREVIEW_REQUIRED', 'Preview these exact prices before saving.');
     await tx`DELETE FROM rentable_rate WHERE rentable_id=${id}`;
     for (const row of rows) {
       await tx`INSERT INTO rentable_rate(rentable_id,category_id,day_kind,start_minute,end_minute,hourly_rate_minor)
@@ -75,7 +78,7 @@ export async function changeHourlyRates(database, ownerId, id, input) {
     }
     const [saved] = await tx`UPDATE rentable SET booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}
       RETURNING content_version,booking_config_version`;
-    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after")
+    if(!input.autosave) await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after")
       VALUES ('client',${ownerId},'rentable',${id},'property_hourly_rates_changed',${JSON.stringify(before)}::text::jsonb,
         ${JSON.stringify({ values: after, contentVersion: saved.content_version, effectiveVersion: saved.booking_config_version, effective: 'immediate' })}::text::jsonb)`;
     return { ok: true, contentVersion: saved.content_version, effectiveVersion: saved.booking_config_version };

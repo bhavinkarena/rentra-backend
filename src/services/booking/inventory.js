@@ -198,7 +198,7 @@ export function inventoryStateQuery(tx, listing, window = null) {
         o.state AS order_state, o.hold_expires_at AS order_hold_expires_at
       FROM booking b LEFT JOIN booking_order o ON o.id = b.order_id
       WHERE b.rentable_id = ${listing.id} AND (b.state IN ${tx(ACTIVE_BOOKINGS)}
-        OR (b.state='completed' AND EXISTS(SELECT 1 FROM inventory_reservation r
+        OR (b.state IN ('completed','no_show') AND EXISTS(SELECT 1 FROM inventory_reservation r
           WHERE r.booking_id=b.id AND r.source='booking' AND r.state IN ('held','committed'))))
         ${bookingWindow}
     ) b), '[]'::json) AS bookings,

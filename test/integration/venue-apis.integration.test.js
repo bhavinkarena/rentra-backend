@@ -180,7 +180,11 @@ test(
       const verticalRoute = resolveDiscoveryRoute(registry, ['surat', 'entertainment']);
       assert.equal(await countDiscoveryRoute(activityRoute, sql), 1);
       assert.equal(await countDiscoveryRoute(verticalRoute, sql), 1);
-      assert.deepEqual(await getLandingRoutes(sql), [], 'one venue is a thin page, not a sitemap route');
+      assert.deepEqual(
+        await getLandingRoutes(sql),
+        [],
+        'one venue is a thin page, not a sitemap route',
+      );
       assert.equal(
         resolveDiscoveryRoute(registry, ['surat', 'box-cricket', 'intent', 'with-pool']),
         null,

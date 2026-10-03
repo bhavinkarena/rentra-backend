@@ -19,7 +19,7 @@ export async function saveVenueResources(database, ownerId, { rentableId, expect
   if (!parsed.success) throw unprocessable(parsed.error.flatten().fieldErrors);
   const input = parsed.data.resources;
   return withListingInventory(database, rentableId, async (tx, listing) => {
-    const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`;
+    const [owner] = await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND (account_status='active' OR (account_status='pending_application' AND ${listing.status}='draft')) FOR SHARE`;
     if (!owner || listing.client_id !== ownerId) throw notFound();
     if (bookingModel(listing) !== 'hourly') throw conflict('UNSUPPORTED_INVENTORY', 'Courts apply to time-booked venues only.');
     if (!Number.isInteger(expectedVersion) || expectedVersion !== listing.content_version) {

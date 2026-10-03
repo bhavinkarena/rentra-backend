@@ -8,7 +8,7 @@ import {
 } from './schema/index.js';
 import { listingPath } from '@/services/domain/listing-url';
 import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
-import { amenityStates, normalizePublicPhotos, publicSlotSchedules } from '@/services/domain/listing-content';
+import { amenityStates, normalizePublicPhotos, publicHouseRules, publicSlotSchedules } from '@/services/domain/listing-content';
 import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
 import { minuteToHhmm } from '@/services/domain/hourly';
 
@@ -194,7 +194,7 @@ export async function getListingsNearby({ lng, lat, km = 25, limit = 24, vertica
  * phone numbers out of both the SELECT and the returned object. Only the shared
  * locality centre is public; private arrival details require booking authorization.
  */
-export async function getListingByCode(publicCode) {
+export async function getListingByCode(publicCode, previewOwnerId=null) {
   const [row] = await db
     .select({
       ...cardColumns,
@@ -229,7 +229,7 @@ export async function getListingByCode(publicCode) {
     .innerJoin(category, eq(category.id, rentable.categoryId))
     .leftJoin(rentablePrice, nightPrice)
     // Resolved by CODE, not slug — retitling must never 404.
-    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
+    .where(and(eq(rentable.publicCode, publicCode), previewOwnerId?eq(rentable.clientId,previewOwnerId):publiclyListed))
     .limit(1);
 
   if (!row) return null;
@@ -302,7 +302,7 @@ export async function getListingByCode(publicCode) {
     description: row.description,
     photos: normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME }),
     amenities,
-    houseRules: row.houseRules ?? [],
+    houseRules: publicHouseRules(row.houseRules),
     depositAmount: row.depositAmount,
     cancellationTier: row.cancellationTier,
     areaSlug: row.areaSlug,

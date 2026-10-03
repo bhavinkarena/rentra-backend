@@ -41,6 +41,8 @@ export async function seedReviewFixture(sql) {
   await sql`INSERT INTO rentable_price(rentable_id,slot,weekday_minor,weekend_minor) VALUES (${listing.id},'day',100000,150000)`;
   const [document] =
     await sql`INSERT INTO document(owner_type,owner_id,doc_type,storage_key,status) VALUES ('rentable',${listing.id},'extract_7_12','fixture/private-evidence','uploaded') RETURNING id`;
+  await sql`UPDATE rentable SET booking_config=${JSON.stringify({ timeZone: 'Asia/Kolkata', leadTimeMinutes: 0, bookingHorizonDays: 90, inventoryReady: true, slots: { day: { enabled: true, startTime: '09:00', endTime: '18:00', endDayOffset: 0, bufferBeforeMinutes: 0, bufferAfterMinutes: 0, capacity: 12, includedGuests: 12, extraGuestChargeMinor: 0 }, night: { enabled: false }, full_day: { enabled: false } } })}::text::jsonb,house_rules='{"cancellationConfirmed":true}'::jsonb WHERE id=${listing.id}`;
+  await sql`UPDATE rentable SET house_rules=coalesce(house_rules,'{}'::jsonb)||'{"cancellationConfirmed":true}'::jsonb WHERE id=${listing.id}`;
   return {
     owner: owner.id,
     other: other.id,
@@ -70,4 +72,19 @@ export async function seedConfirmedBooking(sql, listingId) {
     VALUES ('V-CP08',${listingId},${customer.id},'day','confirmed',
       now()+interval '5 days', now()+interval '5 days 8 hours',${order.id},1,(now()+interval '5 days')::date,'INR','Asia/Kolkata',2,1,100000,8000,0,now())`;
   return { customer: customer.id, order: order.id };
+}
+
+/** More bookings on the seed visit's day; each slot order has its own immutable identity. */
+export async function seedBusyOwnerVisits(sql, orderId, from = 2, to = 40) {
+  await sql`WITH orders AS (
+    INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,
+      amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,confirmed_at)
+    SELECT 'TODAY-ORDER-'||n,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,
+      amount_rent_minor,amount_fee_minor,amount_deposit_minor,gen_random_uuid(),request_hash,state,confirmed_at
+    FROM booking_order CROSS JOIN generate_series(${from}::int,${to}::int) n WHERE id=${orderId} RETURNING id,reference)
+    INSERT INTO booking(reference,rentable_id,customer_id,slot,state,starts_at,ends_at,blocked_start_at,blocked_end_at,order_id,item_position,local_day,
+      currency,time_zone,guests,units_booked,amount_rent_minor,amount_fee_minor,amount_deposit_minor,hours_known)
+    SELECT 'V-'||o.reference,b.rentable_id,b.customer_id,b.slot,b.state,b.starts_at,b.ends_at,b.blocked_start_at,b.blocked_end_at,o.id,1,b.local_day,
+      b.currency,b.time_zone,b.guests,b.units_booked,b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.hours_known
+    FROM orders o CROSS JOIN booking b WHERE b.order_id=${orderId} AND b.item_position=1`;
 }

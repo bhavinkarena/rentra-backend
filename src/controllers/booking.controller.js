@@ -1,3 +1,13 @@
+import {
+  readArrivalGuide,
+  saveArrivalGuide as storeArrivalGuide,
+} from '../services/booking/arrival-guide.js';
+import {
+  addOfflineBooking,
+  regenerateCalendarFeed,
+  saveOwnerBookingNote,
+} from '../services/booking/owner-experience.js';
+import { changeCalendarCells, undoCalendarCells } from '../services/booking/calendar-bulk.js';
 import { sql } from '@/config/database.js';
 import { requestBookingQuote } from '@/services/booking/actions.js';
 import {
@@ -9,6 +19,7 @@ import {
 } from '@/services/booking/calendar-actions.js';
 import { ownerPortfolioCalendar } from '@/services/booking/owner-calendar.js';
 import { ownerCalendarPage } from '@/services/booking/calendar-page.js';
+import { setAutoOpen } from '@/services/booking/owner-settings.js';
 import { runAction } from '@/utils/runAction.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -43,7 +54,9 @@ export const unblock = calendarAction(unblockDates);
  * configuration and its current owner blocks.
  */
 export const calendarPage = asyncHandler(async (req, res) => {
-  const page = await ownerCalendarPage(sql, req.user.id, req.params.id);
+  const page = await ownerCalendarPage(sql, req.user.id, req.params.id, {
+    blocksPage: req.query.blocksPage,
+  });
   if (!page) throw notFound('LISTING_NOT_FOUND', 'That listing does not exist.');
   return ok(res, page);
 });
@@ -70,3 +83,89 @@ async function readCalendar(ownerId, query) {
     throw error;
   }
 }
+
+export const calendarDay = asyncHandler(async (req, res) => {
+  const page = await readCalendar(req.user.id, {
+    from: req.query.date,
+    days: 1,
+    property: req.params.id,
+  });
+  if (!page.items.length) throw notFound();
+  return ok(res, page.items[0]);
+});
+export const calendarBulk = asyncHandler(async (req, res) => {
+  let change;
+  try {
+    change = JSON.parse(req.body.change);
+  } catch {
+    throw badRequest('INVALID_CALENDAR_CHANGE', 'Choose dates, slots and one change');
+  }
+  return ok(
+    res,
+    await changeCalendarCells(sql, req.user.id, {
+      rentableId: req.params.id,
+      change,
+      expectedCalendarVersion: req.body.expectedCalendarVersion,
+      preview: req.body.mode === 'preview',
+      previewToken: req.body.previewToken,
+    }),
+  );
+});
+
+export const offlineBooking = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await addOfflineBooking(sql, req.user.id, {
+      ...req.body,
+      rentableId: req.params.id,
+      guests: Number(req.body.guests),
+      collectedMinor: req.body.collectedMinor ? Number(req.body.collectedMinor) : undefined,
+    }),
+  ),
+);
+export const calendarFeed = asyncHandler(async (req, res) =>
+  ok(res, await regenerateCalendarFeed(sql, req.user.id, req.params.id)),
+);
+export const ownerNote = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await saveOwnerBookingNote(sql, req.user.id, { orderId: req.params.id, body: req.body.body }),
+  ),
+);
+
+export const autoOpen = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await setAutoOpen(sql, req.user.id, {
+      rentableId: req.params.id,
+      enabled: req.body.enabled === true,
+    }),
+  ),
+);
+
+export const calendarUndo = asyncHandler(async (req, res) =>
+  ok(res, await undoCalendarCells(sql, req.user.id, req.body.token)),
+);
+
+/** BOOK-08: the owner's arrival guide for one property. */
+export const arrivalGuide = asyncHandler(async (req, res) => {
+  const guide = await readArrivalGuide(sql, req.user.id, req.params.id);
+  if (!guide) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
+  ok(res, guide);
+});
+
+export const saveArrivalGuide = asyncHandler(async (req, res) => {
+  let guide;
+  try {
+    guide = await storeArrivalGuide(sql, req.user.id, req.params.id, req.body);
+  } catch (error) {
+    if (error.name === 'ZodError' || error.code === 'INVALID_ARRIVAL_GUIDE')
+      throw badRequest(
+        'INVALID_ARRIVAL_GUIDE',
+        'Keep each field under 300 characters and pick one of this property’s photos.',
+      );
+    throw error;
+  }
+  if (!guide) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
+  ok(res, { ok: true, guide });
+});

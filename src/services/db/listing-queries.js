@@ -1,4 +1,9 @@
 import 'server-only';
+import { listingCompletion } from '../domain/listing-completion.js';
+import {getEnv} from '../schemas/joi/env.js';
+import {firstIncompleteStepId, stepIndex} from '../domain/listing-steps.js';
+import { propertyStrength } from '../domain/listing-strength.js';
+import { strengthFacts } from '../auth/property-overview.js';
 
 import {
   and, asc, count, desc, eq, ilike, inArray, isNull, ne, or, sql as raw,
@@ -8,6 +13,21 @@ import {
   rentable, rentablePrice, rentableAmenity, amenity, documents,
   city, area, category, listingReview,
 } from './schema/index.js';
+
+/** Live is not bookable until hours are confirmed and a future date is open (CP09); venues open by weekly hours. */
+const bookableNow = () => raw`(coalesce(${rentable.bookingConfig}->>'inventoryReady','')='true'
+  AND (EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=${rentable.id}
+    AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0)
+    OR (${rentable.rentalUnit}::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource rs WHERE rs.rentable_id=${rentable.id} AND rs.is_active)
+      AND EXISTS (SELECT 1 FROM rentable_rate rr WHERE rr.rentable_id=${rentable.id}))))`;
+
+/** Edited while waiting for review: no submission matches the current content (CP06). */
+const needsResubmit = () => raw`NOT EXISTS (SELECT 1 FROM listing_submission s
+  WHERE s.rentable_id=${rentable.id} AND s.pass_number=${rentable.reviewPass}
+    AND s.content_version=${rentable.contentVersion})`;
+
+const latestOutcome = () => raw`(SELECT lr.outcome FROM listing_review lr WHERE lr.rentable_id=${rentable.id}
+  ORDER BY lr.pass_number DESC LIMIT 1)`;
 
 const CLIENT_LISTING_COLUMNS = {
   id: rentable.id,
@@ -27,6 +47,13 @@ const CLIENT_LISTING_COLUMNS = {
   resourceCount: raw`(select count(*)::int from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.mapWith(Number).as('resource_count'),
   maxPlayers: raw`(select max(rs.capacity) from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.mapWith(Number).as('max_players'),
   mainActivityIcon: raw`(select c.icon_key from category c where c.id=${rentable.categoryId})`.as('main_activity_icon'),
+  // PROP-04 cards: cover, next visit, bookability and why Rentra sent it back.
+  cover: raw`(CASE WHEN jsonb_typeof(${rentable.photos})='array' THEN ${rentable.photos}->0 END)`.as('cover'),
+  nextVisit: raw`(SELECT json_build_object('day',b.local_day,'slot',b.slot,'startsAt',CASE WHEN b.hours_known THEN b.starts_at END)
+    FROM booking b WHERE b.rentable_id=${rentable.id} AND b.state IN ('confirmed','handed_over') AND b.ends_at > now()
+    ORDER BY b.starts_at LIMIT 1)`.as('next_visit'),
+  bookable: raw`${bookableNow()}`.mapWith(Boolean).as('bookable'),
+  reviewOutcome: raw`${latestOutcome()}`.as('review_outcome'),
 };
 
 const FILTERABLE_STATUSES = new Set([
@@ -45,18 +72,21 @@ function listingFilters(clientId, { query = '', status = 'all', vertical = '' } 
   } else if (status === 'attention') {
     filters.push(inArray(rentable.status, ['draft', 'rejected']));
   } else if (status === 'resubmit') {
-    // Edited while waiting for review: no submission matches the current content (CP06).
-    filters.push(eq(rentable.status, 'pending_review'), raw`NOT EXISTS (SELECT 1 FROM listing_submission s
-      WHERE s.rentable_id=${rentable.id} AND s.pass_number=${rentable.reviewPass}
-        AND s.content_version=${rentable.contentVersion})`);
+    filters.push(eq(rentable.status, 'pending_review'), needsResubmit());
+  } else if (status === 'needs_you') {
+    // PROP-04: everything waiting on the owner, not on Rentra.
+    filters.push(or(
+      eq(rentable.status, 'rejected'),
+      and(eq(rentable.status, 'draft'), raw`${latestOutcome()}='changes_requested'`),
+      and(eq(rentable.status, 'live'), raw`NOT ${bookableNow()}`),
+      and(eq(rentable.status, 'pending_review'), needsResubmit()),
+    ));
+  } else if (status === 'drafts') {
+    filters.push(eq(rentable.status, 'draft'));
   } else if (status === 'unbookable') {
     // Live is not bookable until hours are confirmed and a future date is open (CP09).
     // Venues (time-booked) instead need an active court and hourly prices; they open by weekly hours.
-    filters.push(eq(rentable.status, 'live'), raw`NOT (coalesce(${rentable.bookingConfig}->>'inventoryReady','')='true'
-      AND (EXISTS (SELECT 1 FROM availability a WHERE a.rentable_id=${rentable.id}
-        AND a.day >= (now() AT TIME ZONE 'Asia/Kolkata')::date AND a.units_available > 0)
-        OR (${rentable.rentalUnit}::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource rs WHERE rs.rentable_id=${rentable.id} AND rs.is_active)
-          AND EXISTS (SELECT 1 FROM rentable_rate rr WHERE rr.rentable_id=${rentable.id}))))`);
+    filters.push(eq(rentable.status, 'live'), raw`NOT ${bookableNow()}`);
   } else if (FILTERABLE_STATUSES.has(status)) {
     filters.push(eq(rentable.status, status));
   }
@@ -105,8 +135,11 @@ export async function getClientListingSummary(clientId) {
   const counts = Object.fromEntries(grouped.map((row) => [row.status, Number(row.value)]));
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
 
+  const [{ value: needsYou }] = await db.select({ value: count() }).from(rentable)
+    .where(listingFilters(clientId, { status: 'needs_you' }));
   return {
     total,
+    needsYou: Number(needsYou),
     live: counts.live ?? 0,
     bookable,
     inReview: (counts.pending_review ?? 0) + (counts.pending_verification ?? 0),
@@ -118,6 +151,14 @@ export async function getClientListingSummary(clientId) {
       WHERE r.client_id=${clientId} ORDER BY 1`).map((row) => row.code),
   };
 }
+
+/** Owner thumbnails: stored URL, or the stripped Cloudinary delivery URL for an uploaded key. */
+const withPhotoUrl = (p) => ({
+  ...p,
+  url: p.url || (p.key && getEnv().CLOUDINARY_CLOUD_NAME
+    ? `https://res.cloudinary.com/${getEnv().CLOUDINARY_CLOUD_NAME}/image/upload/fl_strip_profile/${p.key}`
+    : undefined),
+});
 
 /** A filtered, URL-pageable slice for the owner property index. */
 export async function getClientListingsPage(
@@ -152,7 +193,18 @@ export async function getClientListingsPage(
     .offset((currentPage - 1) * safePageSize);
 
   return {
-    items,
+    // ponytail: one completion or strength read per card on a 10-row page; batch it if pages grow.
+    items: await Promise.all(items.map(async (raw) => {
+      const item = { ...raw, cover: raw.cover ? withPhotoUrl(raw.cover) : null };
+      if (['live', 'paused'].includes(item.status)) {
+        const facts = await strengthFacts(sql, item.id);
+        return { ...item, strength: propertyStrength(facts, { venue: item.rentalUnit === 'hour' }).percent };
+      }
+      if (!['draft', 'rejected'].includes(item.status)) return item;
+      const data = await getListingForEdit(item.id, clientId);
+      const resumeStep = firstIncompleteStepId(data.listing.completion);
+      return { ...item, resumeStep, resumeNumber: stepIndex(resumeStep) + 1, stepTotal: data.listing.completion.total + 1 };
+    })),
     total,
     page: currentPage,
     pageSize: safePageSize,
@@ -218,13 +270,14 @@ export async function getListingForEdit(id, clientId = null) {
 
   const [{ vertical, categorySlug }] = await sql`SELECT slug AS "categorySlug", vertical_code AS vertical FROM category WHERE id=${row.categoryId}`;
   const venue = row.rentalUnit === 'hour' ? await venueForEdit(id) : { resources: [], hourlyRates: [] };
+  const [bookings]=await sql`SELECT count(*)::int AS n FROM booking WHERE rentable_id=${id}`;
   return {
     // Money is stored in paise; the editor keeps its whole-rupee fields.
-    listing: { ...row, vertical, categorySlug, depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
+    listing: { ...row, hasBookings:bookings.n>0,hasReviewHistory:reviews.length>0, vertical, categorySlug, completion: listingCompletion({...row,categorySlug,depositAmount:row.depositMinor/100},{prices,amenities:tags,photos:row.photos,documents:docs,...venue}), depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
     prices,
     ...venue,
     amenities: tags,
-    photos: Array.isArray(row.photos) ? row.photos : [],
+    photos: Array.isArray(row.photos) ? row.photos.map(withPhotoUrl) : [],
     documents: docs,
     reviews,
   };
@@ -297,6 +350,7 @@ export async function getCitiesWithAreas() {
       cityName: city.name,
       areaId: area.id,
       areaName: area.name,
+      centre:area.centre,
     })
     .from(city)
     .innerJoin(area, eq(area.cityId, city.id))
@@ -308,7 +362,7 @@ export async function getCitiesWithAreas() {
     if (!map.has(r.cityId)) {
       map.set(r.cityId, { id: r.cityId, slug: r.citySlug, name: r.cityName, areas: [] });
     }
-    map.get(r.cityId).areas.push({ id: r.areaId, name: r.areaName });
+    map.get(r.cityId).areas.push({ id: r.areaId, name: r.areaName,centre:r.centre });
   }
   return [...map.values()];
 }

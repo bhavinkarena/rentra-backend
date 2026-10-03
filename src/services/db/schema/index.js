@@ -148,7 +148,7 @@ export const visitOutcome = pgEnum('visit_outcome', ['passed', 'failed', 'no_sho
 /** Same 7 states describe a guest checking in AND a camera leaving a shop. */
 export const bookingState = pgEnum('booking_state', [
   'requested', 'confirmed', 'handed_over', 'returned',
-  'completed', 'cancelled', 'disputed',
+  'completed', 'cancelled', 'disputed','no_show',
 ]);
 
 export const cancellationTier = pgEnum('cancellation_tier', [
@@ -182,6 +182,7 @@ export const reservationState = pgEnum('reservation_state', ['held', 'committed'
  * One account = one role, fixed at signup. Admins and caretakers are separate principals.
  */
 export const role = pgTable('role', {
+  ownerNote:text('owner_note').notNull().default(''),
   code: varchar('code', { length: 16 }).primaryKey(),
   label: varchar('label', { length: 60 }).notNull(),
   description: text('description'),
@@ -227,6 +228,8 @@ export const users = pgTable(
     /** Self-service edit token: customer profile/photo edits and client inbox preferences. */
     profileVersion: integer('profile_version').notNull().default(0),
     /** Client inbox: informational categories delivered already read (was client_update_preference). */
+    ownerGuide: jsonb('owner_guide').notNull().default({}),
+    notificationPrefs: jsonb('notification_prefs').notNull().default({}),
     mutedUpdateCategories: jsonb('muted_update_categories').notNull().default([]),
 
     clientType: clientType('client_type'),
@@ -252,8 +255,10 @@ export const users = pgTable(
     uniqueIndex('user_id_role_idx').on(t.id, t.role),
     check('user_client_fields_chk', sql`${t.role} = 'client' OR (${t.clientType} IS NULL AND ${t.kycStatus} = 'none'
       AND ${t.mutedUpdateCategories} = '[]'::jsonb AND ${t.respondsWithinMins} IS NULL AND ${t.responseRate} IS NULL)`),
-    check('user_customer_fields_chk', sql`${t.role} = 'customer' OR (${t.privacyErasurePending} = false AND ${t.privacyErasedAt} IS NULL)`),
+    check('user_customer_fields_chk', sql`${t.role} IN ('customer','client') OR (${t.privacyErasurePending} = false AND ${t.privacyErasedAt} IS NULL)`),
+    check('owner_notification_prefs_chk',sql`jsonb_typeof(${t.notificationPrefs})='object'`),
     check('user_muted_shape_chk', sql`jsonb_typeof(${t.mutedUpdateCategories}) = 'array'`),
+    check('user_owner_guide_object_chk', sql`jsonb_typeof(${t.ownerGuide}) = 'object'`),
     check('user_versions_chk', sql`${t.profileVersion} >= 0 AND ${t.lifecycleVersion} > 0`),
   ],
 );
@@ -267,7 +272,7 @@ export const otpChallenge = pgTable('otp_challenge', {
   id: uuid('id').primaryKey().defaultRandom(),
   principalKind: varchar('principal_kind', { length: 10 }).notNull(),
   channel: varchar('channel', { length: 8 }).notNull(),
-  purpose: varchar('purpose', { length: 16 }).notNull(),
+  purpose: varchar('purpose', { length: 32 }).notNull(),
   /** Normalised phone, lower-cased email, or `staff:<phone>`. */
   identifier: varchar('identifier', { length: 254 }).notNull(),
   codeHash: varchar('code_hash', { length: 64 }).notNull(),
@@ -287,9 +292,10 @@ export const otpChallenge = pgTable('otp_challenge', {
   index('otp_challenge_session_idx').on(t.sessionId).where(sql`${t.sessionId} IS NOT NULL`),
   index('otp_challenge_purge_idx').on(t.createdAt),
   check('otp_challenge_valid_chk', sql`${t.principalKind} IN ('customer','client','staff') AND ${t.channel} IN ('sms','email')
-    AND ${t.purpose} IN ('login','verify_phone','phone_change') AND ${t.attempts} >= 0
+    AND ${t.purpose} IN ('login','verify_phone','phone_change','payout_confirm','owner_email_change','owner_phone_change') AND ${t.attempts} >= 0
     AND ${t.codeHash} ~ '^[a-f0-9]{64}$' AND ${t.expiresAt} > ${t.createdAt}
     AND (${t.browserHash} IS NULL OR ${t.browserHash} ~ '^[a-f0-9]{64}$')
+    AND (${t.purpose} NOT IN ('payout_confirm','owner_email_change','owner_phone_change') OR (${t.principalKind} = 'client' AND ${t.userId} IS NOT NULL AND ${t.sessionId} IS NOT NULL))
     AND (${t.purpose} <> 'phone_change' OR (${t.principalKind} = 'customer' AND ${t.userId} IS NOT NULL AND ${t.sessionId} IS NOT NULL))`),
 ]);
 
@@ -614,12 +620,14 @@ export const staffProperty = pgTable('staff_property', {
 export const staffInvitation = pgTable('staff_invitation', {
   id: uuid('id').primaryKey().defaultRandom(),
   staffId: uuid('staff_id').notNull().references(() => clientStaff.id, { onDelete: 'restrict' }),
+  deliveryState: varchar('delivery_state',{length:16}).notNull().default('not_sent'),
+  providerId: text('provider_id'),
   tokenHash: varchar('token_hash', { length: 64 }).notNull().unique(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   usedAt: timestamp('used_at', { withTimezone: true }),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index('staff_invitation_staff_idx').on(t.staffId, t.createdAt)]);
+}, (t) => [index('staff_invitation_staff_idx').on(t.staffId, t.createdAt),check('staff_invitation_delivery_state_check',sql`${t.deliveryState} IN ('not_sent','sending','accepted','delivered','failed','unknown')`)]);
 
 /* ==========================================================================
    GEOGRAPHY & TAXONOMY  —  these drive the SEO route tree, so they are real
@@ -644,6 +652,9 @@ export const authSession = pgTable('auth_session', {
   /** CP16: a caretaker session; revoked with the caretaker's access. */
   staffId: uuid('staff_id').references(() => clientStaff.id, { onDelete: 'cascade' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  deviceLabel: varchar('device_label',{length:120}).notNull().default('Browser session'),
+  lastSeenAt: timestamp('last_seen_at',{withTimezone:true}).notNull().defaultNow(),
+  reauthenticatedAt: timestamp('reauthenticated_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 }, t => [
@@ -734,8 +745,8 @@ export const rentable = pgTable(
     rentalUnit: rentalUnit('rental_unit').notNull().default('slot'),
 
     categoryId: uuid('category_id').notNull().references(() => category.id, { onDelete: 'restrict' }),
-    cityId: uuid('city_id').notNull().references(() => city.id, { onDelete: 'restrict' }),
-    areaId: uuid('area_id').notNull().references(() => area.id, { onDelete: 'restrict' }),
+    cityId: uuid('city_id').references(() => city.id, { onDelete: 'restrict' }),
+    areaId: uuid('area_id').references(() => area.id, { onDelete: 'restrict' }),
 
     /** 1 for a farmhouse. 800 for a tent-house's chairs. */
     totalUnits: integer('total_units').notNull().default(1),
@@ -763,6 +774,7 @@ export const rentable = pgTable(
     cancellationTier: cancellationTier('cancellation_tier').notNull().default('moderate'),
     /** Explicit owner schedules; null is unavailable until reviewed/configured. */
     bookingConfig: jsonb('booking_config'),
+    arrivalGuide:jsonb('arrival_guide').notNull().default({}),
     bookingConfigVersion: integer('booking_config_version').notNull().default(0),
     extraGuestChargeMinor: minor('extra_guest_charge_minor').notNull().default(0),
 
@@ -780,6 +792,8 @@ export const rentable = pgTable(
      * A listing the owner had deliberately paused must come back paused.
      */
     priorStatus: listingStatus('prior_status'),
+    /** PROP-05: the owner's pause ends on this IST date (worker resumes). */
+    pausedUntil: date('paused_until', { mode: 'string' }),
 
     // The approved revision is listing_submission via published_submission_id.
     rejectionReason: text('rejection_reason'),
@@ -1259,6 +1273,7 @@ export const booking = pgTable(
  * Expiry must be transitioned under the listing lock; a clock predicate is unsafe.
  */
 export const inventoryReservation = pgTable('inventory_reservation', {
+  kind:text('kind').notNull().default('block'), details:jsonb('details').notNull().default({}),
   id: uuid('id').primaryKey().defaultRandom(),
   bookingId: uuid('booking_id'), // Null for an owner block.
   rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
@@ -1743,7 +1758,7 @@ export const visitEvidence = pgTable('visit_evidence', {
 }, t => [uniqueIndex('visit_evidence_kind_idx').on(t.bookingId, t.kind),
   uniqueIndex('visit_evidence_request_idx').on(t.actorKind, t.actorId, t.requestKey),
   check('visit_evidence_valid_chk', sql`${t.kind} IN ('handover','return','complete') AND ${t.nature} IN ('actual','simulation')
-    AND ${t.actorKind} IN ('owner','admin','staff') AND length(trim(${t.note})) BETWEEN 20 AND 1000
+    AND ${t.actorKind} IN ('owner','admin','staff','system') AND length(trim(${t.note})) BETWEEN 0 AND 1000
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.occurredAt} <= ${t.recordedAt}`)]);
 
 /**
@@ -1774,7 +1789,7 @@ export const visitIncident = pgTable('visit_incident', {
   uniqueIndex('visit_incident_request_idx').on(t.actorKind, t.actorId, t.requestKey),
   index('visit_incident_booking_idx').on(t.bookingId, t.createdAt),
   check('visit_incident_valid_chk', sql`${t.category} IN ('damage','safety','access','conduct','amenity','other')
-    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin') AND ${t.state} IN ('open','closed')
+    AND ${t.nature} IN ('actual','simulation') AND ${t.actorKind} IN ('owner','admin','staff') AND ${t.state} IN ('open','closed')
     AND length(trim(${t.summary})) BETWEEN 5 AND 120 AND length(trim(${t.description})) BETWEEN 20 AND 2000
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.occurredAt} <= ${t.createdAt} AND ${t.version} >= 1
     AND ((${t.state}='open' AND ${t.closedAt} IS NULL AND ${t.closedBy} IS NULL AND ${t.resolutionNote} IS NULL)
@@ -1881,7 +1896,7 @@ export const bookingCase = pgTable('booking_case', {
     AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.version} >= 1 AND ${t.state} IN ('open','resolved')
     AND ((${t.state}='open' AND ${t.outcome} IS NULL AND ${t.outcomeNote} IS NULL AND ${t.refundBasis} IS NULL AND ${t.cancellationId} IS NULL
         AND ${t.resolvedAt} IS NULL AND ${t.resolvedBy} IS NULL AND ${t.resolveKey} IS NULL AND ${t.resolveHash} IS NULL)
-      OR (${t.state}='resolved' AND ${t.outcome} IN ('visits_cancelled','declined','no_change') AND length(trim(${t.outcomeNote})) BETWEEN 10 AND 1000
+      OR (${t.state}='resolved' AND ${t.outcome} IN ('visits_cancelled','declined','no_change','no_show','partial_refund') AND length(trim(${t.outcomeNote})) BETWEEN 10 AND 1000
         AND ${t.resolvedAt} IS NOT NULL AND ${t.resolvedBy} IS NOT NULL AND ${t.resolveKey} IS NOT NULL AND ${t.resolveHash} ~ '^[a-f0-9]{64}$'
         AND ((${t.outcome}='visits_cancelled') = (${t.cancellationId} IS NOT NULL))
         AND ((${t.outcome}='visits_cancelled') = (${t.refundBasis} IN ('policy','full')))))`)]);
@@ -1935,7 +1950,7 @@ export const notificationOutbox = pgTable('notification_outbox', {
 }, t => [uniqueIndex('notification_event_recipient_idx').on(t.eventKey, t.customerId, t.channel),
   index('notification_due_idx').on(t.state, t.nextAttemptAt), index('notification_customer_idx').on(t.customerId, t.scheduledAt),
   index('notification_order_idx').on(t.orderId), index('notification_booking_idx').on(t.bookingId).where(sql`${t.bookingId} IS NOT NULL`),
-  check('notification_valid_chk', sql`${t.template} IN ('confirmation','reminder','cancellation','refund','completion','review_invitation')
+  check('notification_valid_chk', sql`${t.template} IN ('confirmation','reminder','cancellation','refund','completion','review_invitation','arrival_guide')
     AND ${t.channel}='sms' AND ${t.attempts}>=0 AND ${t.state} IN ('pending','blocked','retry','sending','unknown','accepted','delivered','undelivered','suppressed','failed')`)]);
 
 /**
@@ -1961,7 +1976,7 @@ export const clientUpdate = pgTable('client_update', {
   index('client_update_client_idx').on(t.clientId, t.createdAt),
   index('client_update_rentable_idx').on(t.rentableId).where(sql`${t.rentableId} IS NOT NULL`),
   index('client_update_order_idx').on(t.orderId).where(sql`${t.orderId} IS NOT NULL`),
-  check('client_update_valid_chk', sql`${t.category} IN ('account','property','booking','case') AND ${t.kind} IN ('action','info')`)]);
+  check('client_update_valid_chk', sql`${t.category} IN ('account','property','booking','case','review','team') AND ${t.kind} IN ('action','info')`)]);
 
 export const reviewReport = pgTable('review_report', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -2005,10 +2020,11 @@ export const supportRequest = pgTable('support_request', {
   index('support_request_property_idx').on(t.propertyId).where(sql`${t.propertyId} IS NOT NULL`),
   index('support_request_assignee_idx').on(t.assignedTo, t.state).where(sql`${t.assignedTo} IS NOT NULL`),
   index('support_request_privacy_idx').on(t.privacyRequestId).where(sql`${t.privacyRequestId} IS NOT NULL`),
-  check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other')
+  check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other','verification','account','property','calendar','earnings')
     AND ${t.state} IN ('open','in_progress','waiting_customer','resolved') AND ${t.version}>=0
     AND length(trim(${t.subject})) BETWEEN 5 AND 120 AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
-    AND (${t.category} NOT IN ('booking','change','cancellation','payment') OR ${t.orderId} IS NOT NULL)
+    AND (${t.clientId} IS NOT NULL OR ${t.category} NOT IN ('booking','change','cancellation','payment') OR ${t.orderId} IS NOT NULL)
+    AND (${t.clientId} IS NOT NULL OR ${t.category} NOT IN ('verification','account','property','calendar','earnings'))
     AND (${t.privacyRequestId} IS NULL OR (${t.category}='privacy' AND ${t.orderId} IS NULL))`)]);
 
 export const supportMessage = pgTable('support_message', {
@@ -2046,6 +2062,7 @@ export const disputeCase = pgTable('dispute_case', {
   ownerId: uuid('owner_id').notNull().references(() => users.id, {onDelete:'restrict'}),
   customerId: uuid('customer_id').notNull().references(() => users.id, {onDelete:'restrict'}),
   kind: varchar('kind',{length:16}).notNull(),
+  claimSummary: text('claim_summary'),
   subject: varchar('subject',{length:160}).notNull(),
   claimedMinor: bigint('claimed_minor',{mode:'number'}).notNull().default(0),
   state: varchar('state',{length:16}).notNull().default('open'),
@@ -2064,6 +2081,7 @@ export const disputeCase = pgTable('dispute_case', {
   createdAt: timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
   updatedAt: timestamp('updated_at',{withTimezone:true}).notNull().defaultNow(),
 },t=>[uniqueIndex('dispute_case_request_idx').on(t.createdByKind,t.createdById,t.requestKey),index('dispute_case_queue_idx').on(t.state,t.createdAt),index('dispute_case_owner_idx').on(t.ownerId,t.createdAt),index('dispute_case_customer_idx').on(t.customerId,t.createdAt),index('dispute_case_order_idx').on(t.orderId),index('dispute_case_visit_idx').on(t.visitId),
+  check('dispute_case_claim_summary_check',sql`${t.claimSummary} IS NULL OR length(trim(${t.claimSummary})) BETWEEN 10 AND 2000`),
   check('dispute_case_valid_chk',sql`${t.kind} IN ('service','deposit','provider') AND length(trim(${t.subject})) BETWEEN 5 AND 160 AND ${t.claimedMinor} BETWEEN 0 AND 100000000
     AND ${t.state} IN ('open','resolved') AND ${t.version} >= 1 AND ${t.createdByKind} IN ('owner','customer','admin') AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
     AND ((${t.requestedParty} IS NULL AND ${t.responseDue} IS NULL) OR (${t.requestedParty} IN ('owner','customer') AND ${t.responseDue} IS NOT NULL))
@@ -2091,7 +2109,7 @@ export const contentDraft = pgTable('content_draft', {
   reviewedBy: uuid('reviewed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
   basedOnVersion: varchar('based_on_version', { length: 32 }),
-}, t => [check('content_draft_kind_chk', sql`${t.kind} IN ('terms','privacy','cancellation','help','contact')`),
+}, t => [check('content_draft_kind_chk', sql`${t.kind} IN ('terms','privacy','cancellation','help','contact','owner_help')`),
   check('content_draft_state_chk', sql`${t.state} IN ('draft','reviewed','published') AND ${t.version}>0`)]);
 
 export const contentPublication = pgTable('content_publication', {
@@ -2109,4 +2127,12 @@ export const contentPublication = pgTable('content_publication', {
 }, t => [uniqueIndex('content_publication_version_idx').on(t.kind,t.version),
   index('content_publication_current_idx').on(t.kind,t.effectiveAt),
   check('content_publication_review_chk', sql`(${t.isBaseline}=false AND ${t.reviewedBy} IS NOT NULL) OR (${t.isBaseline}=true AND ${t.kind}='contact' AND ${t.version}='2026-09-21')`),
-  check('content_publication_kind_chk', sql`${t.kind} IN ('terms','privacy','cancellation','help','contact')`)]);
+  check('content_publication_kind_chk', sql`${t.kind} IN ('terms','privacy','cancellation','help','contact','owner_help')`)]);
+
+export const calendarFeed=pgTable('calendar_feed',{rentableId:uuid('rentable_id').primaryKey().references(()=>rentable.id,{onDelete:'cascade'}),tokenHash:text('token_hash').notNull().unique(),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),revokedAt:timestamp('revoked_at',{withTimezone:true})});
+
+export const ownerNotification=pgTable('owner_notification',{
+ id:uuid('id').primaryKey().defaultRandom(),userId:uuid('user_id').notNull().references(()=>users.id,{onDelete:'restrict'}),updateId:uuid('update_id').notNull().references(()=>clientUpdate.id,{onDelete:'restrict'}),
+ eventKey:text('event_key').notNull(),event:varchar('event',{length:64}).notNull(),category:varchar('category',{length:16}).notNull(),channel:varchar('channel',{length:16}).notNull(),payload:jsonb('payload').notNull().default({}),
+ state:varchar('state',{length:16}).notNull().default('pending'),attempts:integer('attempts').notNull().default(0),nextAttemptAt:timestamp('next_attempt_at',{withTimezone:true}).notNull().defaultNow(),sentAt:timestamp('sent_at',{withTimezone:true}),deliveredAt:timestamp('delivered_at',{withTimezone:true}),failureCode:varchar('failure_code',{length:64}),providerId:text('provider_id'),providerAccount:text('provider_account'),recipient:text('recipient'),sender:text('sender'),bodyHash:varchar('body_hash',{length:64}),leaseToken:uuid('lease_token'),leaseUntil:timestamp('lease_until',{withTimezone:true}),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+},t=>[uniqueIndex('owner_notification_event_idx').on(t.userId,t.eventKey,t.channel),index('owner_notification_due_idx').on(t.nextAttemptAt).where(sql`${t.state} IN ('pending','retry','blocked','accepted','sending')`),check('owner_notification_valid_chk',sql`${t.channel} IN ('mobile','email','whatsapp','sms') AND ${t.state} IN ('pending','sending','accepted','delivered','retry','blocked','failed','unknown','suppressed') AND ${t.attempts}>=0 AND jsonb_typeof(${t.payload})='object'`)]);

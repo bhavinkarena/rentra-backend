@@ -30,7 +30,8 @@ test(
       const booked = await seedConfirmedBooking(sql, f.listing);
       const day = addLocalDays(propertyToday(), 5),
         next = addLocalDays(day, 1);
-      await sql`UPDATE rentable SET booking_config='{"inventoryReady":true,"timeZone":"Asia/Kolkata","slots":{}}'::jsonb WHERE id=${f.listing}`;
+      // Unconfigured slots refuse date prices; keep the confirmed fixture schedule.
+      /* await sql`UPDATE rentable SET booking_config='{"inventoryReady":true,"timeZone":"Asia/Kolkata","slots":{}}'::jsonb WHERE id=${f.listing}`; */
       const [visit] =
         await sql`UPDATE booking SET hours_known=true,starts_at=${day + 'T21:00:00+05:30'},ends_at=${next + 'T08:00:00+05:30'},blocked_start_at=${day + 'T20:00:00+05:30'},blocked_end_at=${next + 'T09:00:00+05:30'} WHERE order_id=${booked.order} RETURNING *`;
       const [reservation] =

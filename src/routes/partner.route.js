@@ -1,3 +1,9 @@
+import { ownerSearch, ownerSearchQuery } from '@/services/auth/owner-search.js';
+import { z } from 'zod';
+import { ownerToday, todaySection } from '@/services/auth/owner-today.js';
+import { saveListingHours } from '@/services/booking/calendar-actions.js';
+import { runAction } from '@/utils/runAction.js';
+import { sql } from '@/services/db';
 import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
 import * as support from '@/controllers/support.controller.js';
@@ -42,13 +48,44 @@ import {
  * screens that fix their own rejection reason would be a dead end.
  * `requireActiveClient` is Gate 1, and guards publishing and the calendar.
  */
+import { readGuide, saveGuide, setupGuide } from '@/services/auth/owner-guide.js';
+import { asyncHandler } from '@/utils/asyncHandler.js';
+import { ok } from '@/utils/respond.js';
 const router = Router();
 const client = requireRole('client');
 router.use(requirePortalCapability('client'));
+router.get(
+  '/search',
+  client,
+  validate({ query: ownerSearchQuery }),
+  asyncHandler(async (req, res) => ok(res, await ownerSearch(sql, req.user.id, req.query))),
+);
 
 /* ---------------------------------------------------------------- *
  * Onboarding application
  * ---------------------------------------------------------------- */
+router.get(
+  '/today',
+  requireActiveClient,
+  validate({ query: z.object({ section: todaySection.optional() }) }),
+  asyncHandler(async (req, res) => ok(res, await ownerToday(sql, req.user.id, req.query.section))),
+);
+router.get(
+  '/guide-state',
+  client,
+  asyncHandler(async (req, res) => ok(res, await readGuide(sql, req.user.id))),
+);
+router.post(
+  '/guide-state',
+  client,
+  asyncHandler(async (req, res) => ok(res, await saveGuide(sql, req.user.id, req.body))),
+);
+router.get(
+  '/setup-guide',
+  requireActiveClient,
+  asyncHandler(async (req, res) => ok(res, await setupGuide(sql, req.user.id))),
+);
+
 router.get('/application', client, application.read);
 router.post('/application/details', client, formFields(), application.details);
 router.post('/application/payout', client, formFields(), application.payout);
@@ -77,8 +114,24 @@ router.delete('/documents', client, formFields(), documents.remove);
  * Account settings — reachable before approval, deliberately
  * ---------------------------------------------------------------- */
 router.post('/settings/account', client, formFields(), settings.account);
+router.get('/settings/notifications', client, settings.notifications);
+router.post('/settings/notifications', client, settings.saveNotifications);
 router.get('/settings/payout', client, settings.payoutPage);
 router.post('/settings/payout', client, formFields(), settings.payout);
+router.post(
+  '/settings/payout/identity/code',
+  client,
+  requireActiveClient,
+  formFields(),
+  settings.payoutStepUp,
+);
+router.post(
+  '/settings/payout/identity/confirm',
+  client,
+  requireActiveClient,
+  formFields(),
+  settings.confirmPayoutIdentity,
+);
 router.post('/settings/payout/draft', client, formFields(), settings.payoutDraft);
 
 /* ---------------------------------------------------------------- *
@@ -106,6 +159,8 @@ router.get(
 /** One route per wizard step: each step saves independently. */
 for (const [step, handler] of [
   ['basics', listings.basics],
+  ['type', listings.type],
+  ['availability', listings.availability],
   ['location', listings.location],
   ['capacity', listings.capacity],
   ['venue', listings.venue],
@@ -123,6 +178,57 @@ for (const [step, handler] of [
   );
 }
 
+router.get(
+  '/listings/:id/hours',
+  client,
+  validate({ params: listingIdParam }),
+  booking.calendarPage,
+);
+router.post(
+  '/listings/:id/hours',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  (req, res, next) => {
+    req.body.rentableId = req.params.id;
+    next();
+  },
+  runAction(saveListingHours),
+);
+router.get(
+  '/listings/:id/preview-data',
+  client,
+  validate({ params: listingIdParam }),
+  listings.previewData,
+);
+router.post(
+  '/listings/:id/price-preview',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.pricePreview,
+);
+router.delete(
+  '/listings/:id',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.removeDraft,
+);
+router.post(
+  '/listings/:id/photos/sign',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.photoSign,
+);
+router.post(
+  '/listings/:id/photos/attach',
+  client,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.photoAttach,
+);
 router.post('/listings/:id/photos', client, uploadLimiter, manyFiles('photos'), listings.addPhotos);
 router.delete('/listings/:id/photos', client, formFields(), listings.removePhoto);
 router.patch('/listings/:id/photos/order', client, formFields(), listings.reorderPhotos);
@@ -145,6 +251,26 @@ router.post('/listings/:id/pause', requireActiveClient, formFields(), listings.t
 /* ---------------------------------------------------------------- *
  * Booking calendar — Gate 1
  * ---------------------------------------------------------------- */
+router.get('/listings/:id/calendar/day', requireActiveClient, booking.calendarDay);
+router.post(
+  '/listings/:id/calendar/slots',
+  requireActiveClient,
+  formFields(),
+  booking.calendarBulk,
+);
+router.post(
+  '/listings/:id/calendar/price-overrides',
+  requireActiveClient,
+  formFields(),
+  booking.calendarBulk,
+);
+router.post('/listings/:id/calendar/offline', requireActiveClient, booking.offlineBooking);
+router.post('/listings/:id/calendar/feed', requireActiveClient, booking.calendarFeed);
+router.post('/records/:id/note', requireActiveClient, booking.ownerNote);
+router.get('/listings/:id/arrival-guide', requireActiveClient, booking.arrivalGuide);
+router.post('/listings/:id/arrival-guide', requireActiveClient, booking.saveArrivalGuide);
+router.post('/listings/:id/calendar/undo', requireActiveClient, booking.calendarUndo);
+router.post('/listings/:id/calendar/auto-open', requireActiveClient, booking.autoOpen);
 router.get('/calendar', requireActiveClient, booking.portfolioCalendar);
 router.get(
   '/listings/:id/calendar',
@@ -180,8 +306,10 @@ router.post('/listings/:id/calendar/unblock', requireActiveClient, formFields(),
  * ---------------------------------------------------------------- */
 router.get('/updates', client, updates.list);
 router.get('/updates/unread', client, updates.unread);
+router.get('/nav-counts', client, updates.unread);
 router.post('/updates/read', client, formFields(), updates.read);
 router.get('/updates/preferences', client, updates.preferences);
+router.get('/updates/:id', client, updates.detail);
 router.post('/updates/preferences', client, formFields(), updates.savePreferences);
 router.get('/tasks', requireActiveClient, updates.tasks);
 
@@ -259,13 +387,12 @@ router.get('/reviews', requireActiveClient, reviews.queue);
 router.post('/reviews/reply', requireActiveClient, formFields(), reviews.reply);
 router.post('/reviews/report', requireActiveClient, formFields(), reviews.reportByOwner);
 
-router.get('/support', requireActiveClient, validate({ query: supportListQuery }), support.list);
-router.post('/support', requireActiveClient, formFields(), support.openAsOwner);
-router.get('/support/:id', requireActiveClient, support.detail);
-router.get('/support/:id/thread', requireActiveClient, support.thread);
+router.get('/support', validate({ query: supportListQuery }), support.list);
+router.post('/support', uploadLimiter, evidencePhotos(), support.openAsOwner);
+router.get('/support/:id', support.detail);
+router.get('/support/:id/thread', support.thread);
 router.post(
   '/support/:id/reply',
-  requireActiveClient,
   uploadLimiter,
   evidencePhotos(),
   (req, res, next) => {
@@ -274,7 +401,7 @@ router.post(
   },
   support.replyAsOwner,
 );
-router.get('/support/:id/attachments/:attachmentId', requireActiveClient, support.attachment);
+router.get('/support/:id/attachments/:attachmentId', support.attachment);
 router.use('/finance', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   res.set('X-Robots-Tag', 'noindex, nofollow');
@@ -285,6 +412,8 @@ router.get('/finance/allocations/:id', requireActiveClient, finance.allocation);
 router.get('/finance/payouts/:id', requireActiveClient, finance.payout);
 router.get('/finance/payouts', requireActiveClient, finance.payouts);
 router.get('/finance', requireActiveClient, finance.statement);
+router.get('/earnings', requireActiveClient, finance.earnings);
+router.get('/earnings/print', requireActiveClient, finance.earningsPrint);
 router.use('/disputes', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   next();
@@ -293,7 +422,7 @@ router.get('/disputes/context/:orderId', requireActiveClient, disputes.context);
 router.get('/disputes/:id/attachments/:fileId', requireActiveClient, disputes.attachment);
 router.get('/disputes/:id', requireActiveClient, disputes.detail);
 router.get('/disputes', requireActiveClient, disputes.list);
-router.post('/disputes', requireActiveClient, formFields(), disputes.create);
+router.post('/disputes', requireActiveClient, uploadLimiter, evidencePhotos(), disputes.create);
 router.post(
   '/disputes/:id/reply',
   requireActiveClient,
@@ -302,3 +431,12 @@ router.post(
   disputes.reply,
 );
 export default router;
+
+router.get('/settings/security', client, settings.security);
+router.post('/settings/security/sign-out-others', client, settings.signOutOthers);
+router.post('/settings/security/contact/request', client, settings.requestContactChange);
+router.post('/settings/security/contact/confirm', client, settings.confirmContactChange);
+
+router.get('/settings/privacy', client, settings.privacy);
+router.post('/settings/privacy', client, settings.requestPrivacy);
+router.get('/settings/privacy/:id/:artifact(export|receipt)', client, settings.privacyArtifact);

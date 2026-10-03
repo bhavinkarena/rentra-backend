@@ -70,13 +70,13 @@ export function sumVisitTotals(visits) {
  * No collection, tax, payment state or inventory availability is inferred here.
  * Full-day overrides must be explicit; day/night overrides are never added.
  */
-export function priceVisitsMinor({ dates, slot, guests, rate, overridesByDate = {} }) {
+export function priceVisitsMinor({ dates, slot, guests, rate, overridesByDate = {}, weekendDays }) {
   if (!BOOKING_SLOTS.includes(slot) || !rate) throw new RangeError('Slot pricing is not configured');
   integer(rate.weekdayMinor);
   integer(rate.weekendMinor);
   const visits = normalizeVisitDates(dates).map((date) => {
     const override = Object.hasOwn(overridesByDate, date) ? overridesByDate[date]?.[slot] : null;
-    const weekend = isWeekendLocalDate(date);
+    const weekend = isWeekendLocalDate(date,weekendDays);
     const baseRentMinor = override ?? (weekend ? rate.weekendMinor : rate.weekdayMinor);
     return {
       date, slot, guests,

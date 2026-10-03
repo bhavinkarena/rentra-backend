@@ -34,6 +34,9 @@ test(
         new URL('../../drizzle/0022_portal_access.sql', import.meta.url),
         'utf8',
       );
+      await database.unsafe(
+        await readFile(new URL('../../drizzle/0057_owner_onboarding.sql', import.meta.url), 'utf8'),
+      );
       await database.begin(async (tx) => {
         for (const statement of migration.split('--> statement-breakpoint'))
           await tx.unsafe(statement);
@@ -49,6 +52,7 @@ test(
             .find((s) => s.includes('FUNCTION revoke_changed_portal_access')),
         );
       });
+      await database`ALTER TABLE auth_session ADD COLUMN device_label varchar(120) NOT NULL DEFAULT 'Browser session', ADD COLUMN last_seen_at timestamptz NOT NULL DEFAULT now()`;
       const owner = randomUUID(),
         other = randomUUID(),
         adminId = randomUUID();

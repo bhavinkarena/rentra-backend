@@ -38,25 +38,28 @@ export const kycSchema = z.object({
 export const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 export const UPI_RE = /^[\w.-]{2,64}@[a-zA-Z]{2,32}$/;
 
-export const payoutSchema = z.object({
-  method: z.enum(['upi', 'bank']),
-  upiId: z.string().trim().toLowerCase().optional().or(z.literal('')),
-  accountNumber: z.string().trim().optional().or(z.literal('')),
-  ifsc: z.string().trim().toUpperCase().optional().or(z.literal('')),
-  holderName: z.string().trim().min(3, 'Enter the account holder name').max(160),
-})
-  .refine(
-    (d) => d.method !== 'upi' || UPI_RE.test(d.upiId ?? ''),
-    { message: 'UPI ID looks like yourname@bank', path: ['upiId'] },
-  )
-  .refine(
-    (d) => d.method !== 'bank' || /^\d{9,18}$/.test(d.accountNumber ?? ''),
-    { message: 'Enter a valid account number', path: ['accountNumber'] },
-  )
-  .refine(
-    (d) => d.method !== 'bank' || IFSC_RE.test(d.ifsc ?? ''),
-    { message: 'IFSC looks like SBIN0001234', path: ['ifsc'] },
-  );
+const payoutFields = z.object({
+  method: z.string().default(''),
+  upiId: z.string().trim().toLowerCase().default(''),
+  accountNumber: z.string().transform(v => v.replace(/[\s-]/g, '')).default(''),
+  confirmAccountNumber: z.string().transform(v => v.replace(/[\s-]/g, '')).default(''),
+  ifsc: z.string().transform(v => v.replace(/[\s-]/g, '').toUpperCase()).default(''),
+  holderName: z.string().trim().default(''),
+});
+function checkPayout(d, ctx, confirmation) {
+  const issue = (path, message) => ctx.addIssue({ code: 'custom', path: [path], message });
+  if (!['upi','bank'].includes(d.method)) issue('method', 'Choose UPI or a bank account');
+  if (d.holderName.length < 3 || d.holderName.length > 160) issue('holderName', 'Enter the account holder name (3–160 characters)');
+  if (d.method === 'upi' && !UPI_RE.test(d.upiId)) issue('upiId', 'UPI ID looks like yourname@bank');
+  if (d.method === 'bank') {
+    if (!/^\d{9,18}$/.test(d.accountNumber)) issue('accountNumber', 'Enter a valid account number');
+    if (!IFSC_RE.test(d.ifsc)) issue('ifsc', 'IFSC looks like SBIN0001234');
+    if (confirmation && (!d.confirmAccountNumber || d.accountNumber !== d.confirmAccountNumber)) issue('confirmAccountNumber', 'Account numbers do not match');
+  }
+}
+export const payoutSchema = payoutFields.superRefine((d,ctx) => checkPayout(d,ctx,false));
+export const onboardingPayoutSchema = payoutFields.superRefine((d,ctx) => checkPayout(d,ctx,true));
+export const destinationPayoutSchema = onboardingPayoutSchema;
 
 export const consentSchema = z.object({
   acceptTerms: z.literal('on', { message: 'You need to accept the terms to continue' }),

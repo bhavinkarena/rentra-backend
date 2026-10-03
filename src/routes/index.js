@@ -1,3 +1,6 @@
+import { readCalendarFeed } from '../services/booking/owner-experience.js';
+import { sql } from '../config/database.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
 import { Router } from 'express';
 import healthRoutes from './health.route.js';
 import authRoutes from './auth.route.js';
@@ -21,6 +24,16 @@ import staffRoutes from './staff.route.js';
  */
 const router = Router();
 
+router.get(
+  '/ical/:token.ics',
+  asyncHandler(async (req, res) => {
+    const data = await readCalendarFeed(sql, req.params.token);
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Referrer-Policy', 'no-referrer');
+    if (!data) return res.status(404).end();
+    return res.type('text/calendar').send(data);
+  }),
+);
 router.use('/health', healthRoutes);
 
 router.use('/auth', authRoutes);

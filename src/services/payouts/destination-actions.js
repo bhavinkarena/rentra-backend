@@ -29,7 +29,7 @@ function failure(error) {
 }
 
 function refresh() {
-  for (const path of ['/partner/settings', '/partner/settings/payout', '/partner']) revalidatePath(path);
+  for (const path of ['/partner/settings', '/partner/settings/payout', '/partner/earnings', '/partner']) revalidatePath(path);
 }
 
 export async function payoutDestinationPage() {
@@ -42,6 +42,7 @@ export async function changePayoutDestination(_previous, form) {
       method: form.get('method'),
       upiId: form.get('upiId') ?? '',
       accountNumber: form.get('accountNumber') ?? '',
+      confirmAccountNumber: form.get('confirmAccountNumber') ?? '',
       ifsc: form.get('ifsc') ?? '',
       holderName: form.get('holderName') ?? '',
       expectedLatest: Number(form.get('expectedLatest')),
@@ -54,7 +55,7 @@ export async function changePayoutDestination(_previous, form) {
       ...result,
       message:
         result.state === 'draft'
-          ? 'Saved as a draft. Sign in again to confirm it — payout changes need a recent sign-in.'
+          ? 'Saved as a draft. Confirm your identity to submit it — payout changes need a recent sign-in.'
           : `Version ${result.version} submitted. Payouts stay disabled until a provider can verify it.`,
     };
   } catch (error) {

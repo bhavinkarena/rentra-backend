@@ -4,7 +4,8 @@ import { sql } from '@/services/db';
 import { revokeCustomerSession } from './customer-identity';
 import { issuePortalSession, revokePortalSession } from './portal-sessions.js';
 import { forbidden } from '@/utils/apiError.js';
-import { cookies } from 'next/headers';
+import {deviceLabel} from './owner-security.js';
+import { headers, cookies } from 'next/headers';
 import { getEnv } from '@/services/schemas/joi/env';
 import {
   encryptSession,
@@ -19,9 +20,9 @@ import {
  * Call only from a Server Action or Route Handler.
  * `cookies()` is readable during render but writable only in those two places.
  */
-export async function createSession({ userId, role, accountStatus, sessionId, development = false, verifiedEmail }) {
+export async function createSession({ userId, role, accountStatus, sessionId, development = false, verifiedEmail, verifiedPhone }) {
   if (role === 'client') {
-    sessionId = await issuePortalSession(sql, 'client', userId, SESSION_TTL_SECONDS, { email: verifiedEmail });
+    sessionId = await issuePortalSession(sql, 'client', userId, SESSION_TTL_SECONDS, { email: verifiedEmail, phone: verifiedPhone, deviceLabel: deviceLabel((await headers()).get('user-agent') || '') });
     if (!sessionId) throw forbidden('ACCOUNT_RESTRICTED', 'This account is restricted. Contact Rentra for help with existing bookings.');
   }
   const token = await encryptSession({ userId, role, accountStatus, ...(sessionId ? { sessionId, development } : {}) });

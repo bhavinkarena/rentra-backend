@@ -26,99 +26,48 @@
  *                is pure navigation. Forcing a redundant submit on the photo
  *                step would be a lie about what is happening.
  */
-export const LISTING_CHAPTERS = [
+const chapters = (venue = false) => [
   {
     id: 'place',
-    label: 'The place',
+    label: 'Your place',
     steps: [
-      { id: 'basics', label: 'What it is', advance: 'submit' },
-      { id: 'location', label: 'Where it is', advance: 'submit' },
+      { id: 'type', label: 'Type', advance: 'submit' },
+      { id: 'location', label: 'Location', advance: 'submit' },
+      { id: 'space', label: venue ? 'Courts' : 'Space', advance: 'submit' },
+      { id: 'amenities', label: 'Amenities', advance: 'submit' },
     ],
   },
   {
-    id: 'space',
-    label: 'The space',
+    id: 'shine',
+    label: 'Make it shine',
     steps: [
-      { id: 'capacity', label: 'Size and capacity', advance: 'submit' },
-      { id: 'amenities', label: 'What it has', advance: 'submit' },
+      { id: 'photos', label: 'Photos', advance: 'navigate' },
+      { id: 'story', label: 'Title and description', advance: 'submit' },
     ],
-  },
-  {
-    id: 'terms',
-    label: 'Rules and price',
-    steps: [
-      { id: 'rules', label: 'House rules', advance: 'submit' },
-      { id: 'pricing', label: 'Slots and pricing', advance: 'submit' },
-      { id: 'terms', label: 'Deposit and cancellation', advance: 'submit' },
-    ],
-  },
-  {
-    id: 'photos',
-    label: 'Photos',
-    steps: [{ id: 'photos', label: 'Photos', advance: 'navigate' }],
   },
   {
     id: 'publish',
-    label: 'Proof and publish',
+    label: 'Price, rules and submit',
     steps: [
-      { id: 'ownership', label: 'Proof it is yours', advance: 'navigate' },
-      /**
-       * A real ending. Dropping someone back onto the dashboard the instant
-       * the last field saves leaves them unsure whether anything happened —
-       * the review step is where they see the whole thing and choose to send
-       * it. It takes no input, so it never blocks the walkthrough.
-       */
-      { id: 'review', label: 'Check and send', advance: 'none' },
+      { id: 'pricing', label: venue ? 'Hourly prices' : 'Pricing', advance: 'submit' },
+      { id: 'availability', label: 'Availability', advance: 'submit' },
+      { id: 'rules', label: 'Rules and cancellation', advance: 'submit' },
+      { id: 'ownership', label: 'Ownership proof', advance: 'navigate' },
+      { id: 'preview', label: 'Preview and submit', advance: 'none' },
     ],
   },
 ];
-
-/**
- * Time-booked venues (entertainment plan, Phase 5). Same chapters and step ids
- * wherever the meaning is shared; `venue` (courts) and `hours` replace size and
- * capacity, and the labels speak about a venue, not a farmhouse.
- */
-export const VENUE_CHAPTERS = [
-  {
-    id: 'place',
-    label: 'The venue',
-    steps: [
-      { id: 'basics', label: 'What it is', advance: 'submit' },
-      { id: 'location', label: 'Where it is', advance: 'submit' },
-    ],
-  },
-  {
-    id: 'space',
-    label: 'Courts and facilities',
-    steps: [
-      { id: 'venue', label: 'Courts', advance: 'submit' },
-      { id: 'amenities', label: 'What it has', advance: 'submit' },
-    ],
-  },
-  {
-    id: 'terms',
-    label: 'Hours, rules and price',
-    steps: [
-      { id: 'hours', label: 'Opening hours', advance: 'submit' },
-      { id: 'rules', label: 'Venue rules', advance: 'submit' },
-      { id: 'pricing', label: 'Hourly prices', advance: 'submit' },
-      { id: 'terms', label: 'Deposit and cancellation', advance: 'submit' },
-    ],
-  },
-  {
-    id: 'photos',
-    label: 'Photos',
-    steps: [{ id: 'photos', label: 'Photos', advance: 'navigate' }],
-  },
-  {
-    id: 'publish',
-    label: 'Proof and publish',
-    steps: [
-      { id: 'ownership', label: 'Proof you can list it', advance: 'navigate' },
-      { id: 'review', label: 'Check and send', advance: 'none' },
-    ],
-  },
-];
+export const LISTING_CHAPTERS = chapters();
+export const VENUE_CHAPTERS = chapters(true);
+export const legacyStep = (id) =>
+  ({
+    basics: 'story',
+    capacity: 'space',
+    venue: 'space',
+    hours: 'availability',
+    terms: 'rules',
+    review: 'preview',
+  })[id] || id;
 
 /** The booking model of a listing: 'hour' (venue) or 'slot' (farmhouse, the default). */
 export const listingModel = (listing) => (listing?.rentalUnit === 'hour' ? 'hour' : 'slot');
@@ -209,7 +158,7 @@ export function firstIncompleteStepId(completion, model = 'slot') {
   const failed = inputs.find((id) => bySection.get(id)?.failed);
   if (failed) return failed;
   const todo = inputs.find((id) => !bySection.get(id)?.done);
-  return todo ?? 'review';
+  return todo ?? 'preview';
 }
 
 /**

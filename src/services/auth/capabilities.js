@@ -1,8 +1,8 @@
 /** Business permissions; record ownership remains a separate service-layer check. */
 const adminDomains = ['audit', 'security', 'content', 'catalogues', 'applications', 'properties', 'clients', 'customers', 'documents', 'payments', 'records', 'reviews', 'support', 'notifications', 'privacy', 'operations'];
 export const ADMIN_CAPABILITIES = Object.freeze(adminDomains.flatMap(domain => [`admin.${domain}.read`, `admin.${domain}.write`]));
-export const CLIENT_BASE_CAPABILITIES = Object.freeze(['client.application.read', 'client.application.write', 'client.documents.read', 'client.documents.write', 'client.settings.read', 'client.settings.write', 'client.catalogue.read', 'client.listings.read', 'client.updates.read', 'client.updates.write']);
-export const CLIENT_ACTIVE_CAPABILITIES = Object.freeze([...CLIENT_BASE_CAPABILITIES, 'client.disputes.read', 'client.disputes.write', 'client.finance.read', 'client.listings.write', 'client.calendar.read', 'client.calendar.write', 'client.records.read', 'client.records.write', 'client.reviews.read', 'client.reviews.write', 'client.tasks.read', 'client.team.read', 'client.team.write', 'client.support.read', 'client.support.write']);
+export const CLIENT_BASE_CAPABILITIES = Object.freeze(['client.search.read', 'client.application.read', 'client.application.write', 'client.documents.read', 'client.documents.write', 'client.settings.read', 'client.settings.write', 'client.catalogue.read', 'client.listings.read', 'client.listings.write', 'client.guide-state.read', 'client.guide-state.write', 'client.setup-guide.read', 'client.updates.read', 'client.updates.write', 'client.support.read', 'client.support.write']);
+export const CLIENT_ACTIVE_CAPABILITIES = Object.freeze([...CLIENT_BASE_CAPABILITIES, 'client.disputes.read', 'client.disputes.write', 'client.finance.read', 'client.listings.write', 'client.calendar.read', 'client.calendar.write', 'client.records.read', 'client.records.write', 'client.reviews.read', 'client.reviews.write', 'client.tasks.read', 'client.today.read', 'client.team.read', 'client.team.write']);
 // Contract only: staff authentication and property assignments ship in CP16.
 export const CARETAKER_CAPABILITIES = Object.freeze(['staff.assigned-visits.read', 'staff.assigned-visits.evidence']);
 
@@ -27,6 +27,7 @@ export function routeCapability(kind, method, path) {
   const segments = path.split('/').filter(Boolean);
   let domain = segments[0];
   if (kind === 'admin' && domain === 'users' && segments[2] === 'documents') domain = 'documents';
+  if (kind === 'client' && domain === 'earnings') domain = 'finance';
   if (kind === 'client' && domain === 'listings' && segments[2] === 'calendar') domain = 'calendar';
   const capability = `${kind}.${domain}.${['GET', 'HEAD'].includes(method) ? 'read' : 'write'}`;
   const known = kind === 'admin' ? ADMIN_CAPABILITIES : CLIENT_ACTIVE_CAPABILITIES;

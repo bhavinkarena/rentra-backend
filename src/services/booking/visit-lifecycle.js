@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { withListingInventory } from './inventory.js';
 import { quoteDigest } from './quotes.js';
 import { lifecycle, CheckoutError } from './checkout.js';
-import { insertAttachments, photoDigest, preparePhotos, storePhotos } from './visit-evidence.js';
+import { insertAttachments, photoDigest, preparePhotos, storePhotos,cleanupFailedPhotos } from './visit-evidence.js';
 import { evidenceStore } from '../uploads/evidence-store.js';
 
 const inputSchema = z.object({ visitId: z.string().uuid(), phase: z.enum(['handover','return','complete']),
-  occurredAt: z.string().datetime({ offset: true }), note: z.string().trim().min(20).max(1000),
+  occurredAt: z.string().datetime({ offset: true }), note: z.string().trim().max(1000).default(''),
   attested: z.literal(true), expectedVersion: z.number().int().nonnegative(), requestKey: z.string().uuid() }).strict();
 
 /**
@@ -32,7 +32,12 @@ export async function recordVisitTransition(database, actor, input, { files = []
     const [earlier] = await database`SELECT id FROM visit_evidence WHERE actor_kind=${actor.kind} AND actor_id=${actor.id} AND request_key=${value.requestKey}`;
     // Refuse a stale form before uploading; the locked check below stays authoritative.
     if (!earlier && scope.lifecycle_version !== value.expectedVersion) throw new CheckoutError('VISIT_CHANGED');
-    if (!earlier) await storePhotos(database, value.visitId, photos, store);
+    if(!earlier){
+      const [owner]=actor.kind==='owner'?await database`SELECT 1 FROM rentable r JOIN "user" u ON u.id=r.client_id WHERE r.id=${scope.rentable_id} AND u.id=${actor.id} AND u.account_status='active'`:actor.kind==='admin'?await database`SELECT 1 FROM admin_user WHERE id=${actor.id} AND is_active`: [{ok:true}];
+      if(!owner)throw new CheckoutError('OPERATOR_REQUIRED');
+      await storePhotos(database,value.visitId,photos,store);
+    }
+
   }
   return withListingInventory(database, scope.rentable_id, async (tx, listing) => {
     const [active] = actor.kind === 'owner'
@@ -55,12 +60,14 @@ export async function recordVisitTransition(database, actor, input, { files = []
     if (!visit.order_id || !visit.hours_known || visit.lifecycle_version !== value.expectedVersion || visit.state !== states[value.phase][0]) throw new CheckoutError('VISIT_CHANGED');
     const [{ now }] = await tx`SELECT clock_timestamp() now`;
     const at = new Date(value.occurredAt);
-    if (at > new Date(now) || at < new Date(visit.starts_at)) throw new CheckoutError('INVALID_EVIDENCE_TIME');
+    const early=value.phase==='handover'?(listing.booking_config?.earlyArrivalMinutes??120):0;
+    if (at > new Date(now) || at < new Date(new Date(visit.starts_at).getTime()-early*60000)) throw new CheckoutError('INVALID_EVIDENCE_TIME');
     if (value.phase !== 'handover') {
       const previous = value.phase === 'return' ? 'handover' : 'return';
       const [proof] = await tx`SELECT occurred_at FROM visit_evidence WHERE booking_id=${visit.id} AND kind=${previous}`;
       if (!proof || at < new Date(proof.occurred_at)) throw new CheckoutError('PRIOR_EVIDENCE_REQUIRED');
     }
+
     const id = randomUUID(), nature = visit.visit_provenance === 'real' ? 'actual' : 'simulation';
     await tx`INSERT INTO visit_evidence(id,booking_id,kind,nature,actor_kind,actor_id,note,occurred_at,recorded_at,request_key,request_hash,visit_version)
       VALUES(${id},${visit.id},${value.phase},${nature},${actor.kind},${actor.id},${value.note},${value.occurredAt},${now},${value.requestKey},${hash},${visit.lifecycle_version})`;
@@ -69,5 +76,20 @@ export async function recordVisitTransition(database, actor, input, { files = []
     // Do not shorten paid inventory or relabel financial/visit provenance on completion.
     await lifecycle(tx, visit.order_id, 'visit_' + id.replaceAll('-',''), { visitId: visit.id, evidenceId: id, phase: value.phase, nature });
     return { id, phase: value.phase, visitId: visit.id, orderId: visit.order_id };
-  });
+  }).then(async result=>{await cleanupFailedPhotos(database,photos,store);return result;}).catch(async error=>{await cleanupFailedPhotos(database,photos,store);throw error;});
+}
+
+export async function completeReturnedVisits(database){
+ const rows=await database`SELECT b.id,b.rentable_id FROM booking b JOIN visit_evidence e ON e.booking_id=b.id AND e.kind='return' WHERE b.state='returned' AND e.recorded_at<=now()-interval '24 hours' LIMIT 100`;
+ let completed=0;
+ for(const row of rows)await withListingInventory(database,row.rentable_id,async(tx,listing)=>{
+ const [visit]=await tx`SELECT * FROM booking WHERE id=${row.id} AND state='returned' FOR UPDATE`;
+ if(!visit)return;
+ if((await tx`SELECT 1 FROM visit_incident WHERE booking_id=${visit.id} AND state='open' UNION ALL SELECT 1 FROM booking_case_visit v JOIN booking_case c ON c.id=v.case_id WHERE v.booking_id=${visit.id} AND c.state='open' LIMIT 1`).length)return;
+ const id=randomUUID(),nature=visit.visit_provenance==='real'?'actual':'simulation';
+ await tx`INSERT INTO visit_evidence(id,booking_id,kind,nature,actor_kind,actor_id,note,occurred_at,recorded_at,request_key,request_hash,visit_version) VALUES(${id},${visit.id},'complete',${nature},'system',${listing.client_id},'Automatically completed 24 hours after recorded check-out with no open incident.',now(),now(),${id},${quoteDigest({visitId:visit.id,automatic:true})},${visit.lifecycle_version})`;
+ await tx`UPDATE booking SET state='completed',lifecycle_version=lifecycle_version+1,updated_at=now() WHERE id=${visit.id}`;
+ await lifecycle(tx,visit.order_id,'visit_'+id.replaceAll('-',''),{visitId:visit.id,evidenceId:id,phase:'complete',nature,automatic:true});completed++;
+ });
+ return {completed};
 }

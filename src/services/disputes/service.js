@@ -97,7 +97,7 @@ export async function disputeContext(database, actor, orderId) {
     };
   });
 }
-export async function createDispute(database, actor, input) {
+export async function createDispute(database, actor, input, files = [], store = evidenceStore()) {
   const v = parse(
     z
       .object({
@@ -125,19 +125,21 @@ export async function createDispute(database, actor, input) {
       throw notFound();
     if (!(await tx`SELECT id FROM booking WHERE id=${v.visitId} AND order_id=${o.id}`).length)
       throw notFound();
-    const hash = digest(v);
+    const photos = await preparePhotos(files);
+    const hash = digest(photos.length ? {...v, photos: photos.map(p=>p.sha256)} : v);
     const [old] =
       await tx`SELECT id,request_hash FROM dispute_case WHERE created_by_kind=${actor.kind} AND created_by_id=${id} AND request_key=${v.requestKey}`;
     if (old) {
       replay(old, hash);
       return { id: old.id, replayed: true };
     }
+    if(photos.length && !store.configured()) throw unavailable('EVIDENCE_UNAVAILABLE','Photo storage is unavailable. Your case has not been saved.');
     const [{ n }] =
       await tx`SELECT count(*)::int n FROM dispute_case WHERE created_by_id=${id} AND created_at>now()-interval '1 hour'`;
     if (n >= 10) throw badRequest('CASE_LIMIT', 'Too many new cases. Please try again later.');
     const [c] =
       await tx`INSERT INTO dispute_case(order_id,visit_id,owner_id,customer_id,kind,subject,claimed_minor,created_by_kind,created_by_id,request_key,request_hash) VALUES (${o.id},${v.visitId},${o.client_id},${o.customer_id},${v.kind},${v.subject},${v.claimedMinor},${actor.kind},${id},${v.requestKey},${hash}) RETURNING id`;
-    await message(
+    const messageId = await message(
       tx,
       actor,
       id,
@@ -148,7 +150,11 @@ export async function createDispute(database, actor, input) {
       v.requestKey,
       hash,
     );
-    await audit(tx, actor, id, c.id, 'dispute_created', {
+    for(const photo of photos){
+      const saved = await store.put({folder:`rentra/disputes/${c.id}/${v.requestKey}`,name:photo.sha256,buffer:photo.buffer,mime:photo.mime});
+      await tx`INSERT INTO dispute_attachment(message_id,storage_key,mime_type,bytes,sha256) VALUES(${messageId},${saved.key},${photo.mime},${photo.bytes},${photo.sha256})`;
+    }
+    await audit(tx, actor, id, c.id, 'dispute_created' , {
       orderId: o.id,
       visitId: v.visitId,
       kind: v.kind,
@@ -197,6 +203,7 @@ export async function readDispute(database, actor, caseId) {
       state: c.state,
       claimedMinor: String(c.claimed_minor),
       version: c.version,
+      claimSummary: c.claim_summary,
       requestedParty: c.requested_party,
       responseDue: instant(c.response_due),
       assigneeId: admin ? c.assignee_id : null,
@@ -296,6 +303,7 @@ const commandSchema = z
     preview: z.boolean().default(false),
     previewToken: z.string().optional(),
     requestKey: uuid,
+    claimSummary: body.optional(),
   })
   .strict();
 function token(actor, id, version, value) {
@@ -314,6 +322,7 @@ export async function manageDispute(database, actor, input) {
     const id = await actorId(tx, actor, true),
       c = await owned(tx, actor, id, v.id, true);
     const value = {
+        claimSummary: v.claimSummary ?? null,
         command: v.command,
         body: v.body,
         assigneeId: v.assigneeId ?? null,
@@ -352,7 +361,7 @@ export async function manageDispute(database, actor, input) {
           'INVALID_DEADLINE',
           'Choose a participant and a deadline within the next 90 days.',
         );
-      await tx`UPDATE dispute_case SET requested_party=${v.party},response_due=${due.toISOString()},version=version+1,updated_at=now() WHERE id=${c.id}`;
+      await tx`UPDATE dispute_case SET requested_party=${v.party},response_due=${due.toISOString()},claim_summary=coalesce(${v.claimSummary || null},claim_summary),version=version+1,updated_at=now() WHERE id=${c.id}`;
       await message(tx, actor, id, c.id, 'requested', v.party, v.body, v.requestKey, hash);
     } else {
       if (!v.outcome) throw badRequest('INVALID_OUTCOME', 'Choose a supported resolution.');

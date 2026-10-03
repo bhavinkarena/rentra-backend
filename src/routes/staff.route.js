@@ -20,6 +20,13 @@ router.post('/login/code', authLimiter, formFields(), staff.loginCode);
 router.post('/login', authLimiter, formFields(), staff.login);
 router.post('/logout', staff.logout);
 
+router.post(
+  '/incident',
+  uploadLimiter,
+  staff.requireStaff('staff.assigned-visits.evidence'),
+  evidencePhotos(),
+  staff.incident,
+);
 router.get('/me', staff.requireStaff(), staff.me);
 router.get('/visits', staff.requireStaff(), staff.visits);
 router.get('/visits/:id', staff.requireStaff(), validate({ params: recordIdParam }), staff.visit);

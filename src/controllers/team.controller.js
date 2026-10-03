@@ -1,3 +1,4 @@
+import { deliverCaretakerInvite } from '@/services/notifications/caretaker-invite.js';
 import { sql } from '@/config/database.js';
 import {
   inviteStaff,
@@ -12,10 +13,20 @@ import { ok } from '@/utils/respond.js';
 /** The owner's own caretakers only; every service call is scoped by `req.user.id`. */
 export const list = asyncHandler(async (req, res) => ok(res, await listTeam(sql, req.user.id)));
 export const invite = asyncHandler(async (req, res) =>
-  ok(res, await inviteStaff(sql, req.user.id, req.body)),
+  ok(
+    res,
+    await deliverCaretakerInvite(sql, req.user.id, await inviteStaff(sql, req.user.id, req.body)),
+  ),
 );
 export const link = asyncHandler(async (req, res) =>
-  ok(res, await reissueStaffLink(sql, req.user.id, req.params.id)),
+  ok(
+    res,
+    await deliverCaretakerInvite(
+      sql,
+      req.user.id,
+      await reissueStaffLink(sql, req.user.id, req.params.id),
+    ),
+  ),
 );
 export const access = asyncHandler(async (req, res) =>
   ok(res, await updateStaffAccess(sql, req.user.id, req.params.id, req.body)),

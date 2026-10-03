@@ -15,14 +15,14 @@ export class SupportError extends AppError {
 }
 const uuid = z.string().uuid(),
   body = z.string().trim().min(2).max(5000);
-const categories = ['booking', 'change', 'cancellation', 'payment', 'privacy', 'other'];
+const categories = ['booking', 'change', 'cancellation', 'payment', 'privacy', 'other', 'verification', 'account', 'property', 'calendar', 'earnings'];
 const states = ['open', 'in_progress', 'waiting_customer', 'resolved'];
 const missing = () => new SupportError('NOT_FOUND', 'Support request not found.', 404);
 async function authorize(tx, actor, env, write = false) {
   if (actor?.kind === 'customer') return (await lockCustomerAccount(tx, actor.session, env)).id;
   if (actor?.kind === 'owner' && uuid.safeParse(actor.id).success) {
     const [client] =
-      await tx`SELECT id FROM "user" WHERE id=${actor.id} AND role='client' AND account_status='active' FOR SHARE`;
+      await tx`SELECT id FROM "user" WHERE id=${actor.id} AND role='client' AND account_status IN ('active','pending_application') FOR SHARE`;
     if (client) return client.id;
   }
   if (actor?.kind === 'admin' && uuid.safeParse(actor.id).success) {
@@ -82,11 +82,12 @@ const dto = (r, admin = false) => ({
     : {}),
   createdAt: new Date(r.created_at).toISOString(),
   updatedAt: new Date(r.updated_at).toISOString(),
+  unread: Boolean(r.unread),
 });
 async function audit(tx, actor, id, action, after) {
   await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES (${actor.kind === 'owner' ? 'client' : actor.kind},${actor.id || actor.session.userId},'support_request',${id},${action},${JSON.stringify(after)}::text::jsonb)`;
 }
-export async function createSupportRequest(database, actor, input, env = process.env) {
+export async function createSupportRequest(database, actor, input, env = process.env, files = [], store = evidenceStore()) {
   const value = z
     .object({
       category: z.enum(categories),
@@ -95,25 +96,39 @@ export async function createSupportRequest(database, actor, input, env = process
       orderId: uuid.nullable(),
       privacyRequestId: uuid.nullable(),
       propertyId: uuid.nullable().default(null),
+      visitId: uuid.nullable().default(null),
       requestKey: uuid,
     })
     .strict()
     .parse(input);
-  const hash = quoteDigest(value);
+  await database.begin(async tx => authorize(tx, actor, env, true));
+  let photos;
+  try { photos = await preparePhotos(files); }
+  catch (error) { if (error.code === 'INVALID_ATTACHMENT') throw new SupportError(error.code,error.message,422); throw error; }
+  const hashValue = {...value};if(!hashValue.visitId)delete hashValue.visitId;
+  const hash = quoteDigest(photos.length ? { ...hashValue, photos: photos.map(p => p.sha256) } : hashValue);
+  if (actor?.kind !== 'owner' && ['verification', 'account', 'property', 'calendar', 'earnings'].includes(value.category)) throw new SupportError('INVALID_TOPIC', 'Choose a supported topic.', 422);
   if (!['customer', 'owner'].includes(actor?.kind)) throw missing();
   if (
-    (['booking', 'change', 'cancellation', 'payment'].includes(value.category) && !value.orderId) ||
+    (actor.kind === 'customer' && ['booking', 'change', 'cancellation', 'payment'].includes(value.category) && !value.orderId) ||
     (value.privacyRequestId &&
       (actor.kind !== 'customer' || value.category !== 'privacy' || value.orderId)) ||
-    (value.propertyId && actor.kind !== 'owner')
+    (value.propertyId && actor.kind !== 'owner') || (value.visitId && !value.orderId)
   )
     throw new SupportError('CONTEXT_REQUIRED', 'Choose a supported record for this topic.', 422);
   return database.begin(async (tx) => {
     const actorId = await authorize(tx, actor, env, true);
+    if (actor.kind === 'owner') {
+      const [owner] = await tx`SELECT account_status FROM "user" WHERE id=${actorId}`;
+      if (owner.account_status === 'pending_application' && (!['verification', 'account', 'other'].includes(value.category) || value.orderId || value.propertyId || value.privacyRequestId)) {
+        throw new SupportError('INVALID_TOPIC', 'Choose Verification, Account or Other while your verification is in progress.', 422);
+      }
+    }
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${actor.kind + actorId},0))`;
     const [existing] =
       await tx`SELECT id,request_hash FROM support_request WHERE ${scope(tx, actor, actorId)} AND request_key=${value.requestKey}`;
     if (existing) return { id: replay(existing, hash).id };
+    if (photos.length && !store.configured()) throw new SupportError('UPLOADS_UNAVAILABLE','Photo storage is unavailable. Your request has not been saved.',503);
     const context = {};
     if (value.orderId) {
       const [order] =
@@ -126,6 +141,10 @@ export async function createSupportRequest(database, actor, input, env = process
         bookingPolicyVersion: order.policy_version,
         cancellationTier: order.policy_snapshot?.cancellationTier || null,
       });
+    }
+    if (value.visitId) {
+      const [visit]=await tx`SELECT reference,local_day::text visit_date,slot FROM booking WHERE id=${value.visitId} AND order_id=${value.orderId}`;
+      if(!visit)throw missing();Object.assign(context,{visitReference:visit.reference,visitDate:visit.visit_date,slot:visit.slot});
     }
     if (value.propertyId) {
       const [property] =
@@ -147,7 +166,11 @@ export async function createSupportRequest(database, actor, input, env = process
       reference = 'SUP-' + id.replaceAll('-', '').slice(0, 16).toUpperCase();
     await tx`INSERT INTO support_request(id,reference,customer_id,client_id,property_id,order_id,privacy_request_id,category,subject,context,policy_version,request_key,request_hash)
       VALUES(${id},${reference},${actor.kind === 'customer' ? actorId : null},${actor.kind === 'owner' ? actorId : null},${value.propertyId},${value.orderId},${value.privacyRequestId},${value.category},${value.subject},${JSON.stringify(context)}::text::jsonb,${termsVersion},${value.requestKey},${hash})`;
-    await tx`INSERT INTO support_message(request_id,actor_kind,actor_id,body,state_after,request_key,request_hash) VALUES(${id},${actor.kind},${actorId},${value.body},'open',${value.requestKey},${hash})`;
+    const [message] = await tx`INSERT INTO support_message(request_id,actor_kind,actor_id,body,state_after,request_key,request_hash) VALUES(${id},${actor.kind},${actorId},${value.body},'open',${value.requestKey},${hash}) RETURNING id`;
+    for (const photo of photos) {
+      const saved = await store.put({folder: `rentra/support/${id}/${value.requestKey}`,name:photo.sha256,buffer:photo.buffer,mime:photo.mime});
+      await tx`INSERT INTO support_attachment(message_id,storage_key,mime_type,bytes,sha256) VALUES(${message.id},${saved.key},${photo.mime},${photo.bytes},${photo.sha256})`;
+    }
     return { id };
   });
 }
@@ -289,6 +312,7 @@ export async function readSupportRequest(database, actor, id, env = process.env)
     const actorId = await authorize(tx, actor, env),
       row = await owned(tx, actor, actorId, id),
       admin = actor.kind === 'admin';
+    if (actor.kind === 'owner') await tx`UPDATE client_update SET read_at=coalesce(read_at,now()) WHERE client_id=${actorId} AND detail->>'supportId'=${row.id}::text AND read_at IS NULL`;
     const messages =
       await tx`SELECT id,actor_kind,body,state_after,created_at,internal FROM support_message WHERE request_id=${row.id} AND ${admin ? tx`true` : tx`NOT internal`} ORDER BY created_at,id`;
     const attachments =
@@ -315,7 +339,7 @@ export async function readSupportRequest(database, actor, id, env = process.env)
           m.actor_kind === 'admin'
             ? 'Rentra support'
             : m.actor_kind === 'owner'
-              ? 'Client'
+              ? 'Owner'
               : 'Customer',
         body: m.body,
         state: m.state_after,
@@ -344,7 +368,7 @@ export async function listSupportRequests(database, actor, input = {}, env = pro
     const [{ count }] =
       await tx`SELECT count(*)::int count FROM support_request WHERE ${condition}`;
     const rows =
-      await tx`SELECT * FROM support_request WHERE ${condition} ORDER BY updated_at DESC,id DESC LIMIT 20 OFFSET ${(page - 1) * 20}`;
+      await tx`SELECT support_request.*, ${actor.kind === 'owner' ? tx`EXISTS(SELECT 1 FROM client_update u WHERE u.client_id=${actorId} AND u.read_at IS NULL AND u.detail->>'supportId'=support_request.id::text)` : tx`false`} unread FROM support_request WHERE ${condition} ORDER BY updated_at DESC,id DESC LIMIT 20 OFFSET ${(page - 1) * 20}`;
     return {
       items: rows.map((r) => dto(r, actor.kind === 'admin')),
       total: count,

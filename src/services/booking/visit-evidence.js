@@ -34,7 +34,7 @@ const operatorStates = ['confirmed', 'handed_over', 'returned', 'completed', 'di
 const natureOf = (visit) => (visit.visit_provenance === 'real' ? 'actual' : 'simulation');
 const instant = (value) => (value ? new Date(value).toISOString() : null);
 
-function requireOperator(actor, kinds = ['owner', 'admin']) {
+function requireOperator(actor, kinds = ['owner', 'admin','staff']) {
   if (!kinds.includes(actor?.kind) || !uuid.safeParse(actor.id).success) {
     throw new EvidenceError('OPERATOR_REQUIRED', 'Operator required', { status: 403 });
   }
@@ -43,7 +43,7 @@ function requireOperator(actor, kinds = ['owner', 'admin']) {
 /** Inside the listing lock: the owner of this property or an active admin. Same answer for foreign and missing. */
 async function lockOperator(tx, actor, listing) {
   const [active] =
-    actor.kind === 'owner'
+    actor.kind==='staff'?await tx`SELECT s.id,s.name FROM client_staff s JOIN staff_property sp ON sp.staff_id=s.id AND sp.rentable_id=${listing.id} JOIN "user" u ON u.id=s.client_id WHERE s.id=${actor.id} AND s.client_id=${listing.client_id} AND s.is_active AND s.accepted_at IS NOT NULL AND s.revoked_at IS NULL AND s.permissions->>'evidence'='true' AND u.account_status='active' FOR SHARE OF s` : actor.kind === 'owner'
       ? await tx`SELECT id,name FROM "user" WHERE id=${actor.id} AND id=${listing.client_id} AND role='client' AND account_status='active' FOR SHARE`
       : await tx`SELECT id,name FROM admin_user WHERE id=${actor.id} AND is_active=true FOR SHARE`;
   if (!active) throw new EvidenceError('VISIT_NOT_FOUND', 'Visit not found', { status: 404 });
@@ -70,7 +70,7 @@ export async function preparePhotos(files = []) {
   return photos;
 }
 
-/** Upload outside the transaction; content-addressed keys make a retry land on the same object. */
+/** Upload outside the transaction; unique attempt keys let failed uploads be cleaned without deleting a concurrent retry. */
 export async function storePhotos(database, visitId, photos, store = evidenceStore()) {
   if (!photos.length) return photos;
   if (!store.configured()) {
@@ -86,11 +86,12 @@ export async function storePhotos(database, visitId, photos, store = evidenceSto
       field: 'photos',
     });
   }
-  for (const photo of photos) {
+  try { for (const photo of photos) {
     photo.storageKey = (
-      await store.put({ folder: `rentra/visit-evidence/${visitId}`, name: photo.sha256, buffer: photo.buffer, mime: photo.mime })
+      await store.put({ folder: `rentra/visit-evidence/${visitId}`, name: `${randomUUID()}_${photo.sha256}`, buffer: photo.buffer, mime: photo.mime })
     ).key;
   }
+  } catch(error) { await cleanupFailedPhotos(database,photos,store);throw error; }
   return photos;
 }
 
@@ -128,8 +129,9 @@ export async function reportVisitIncident(database, actor, input, { files = [], 
   const [earlier] = await database`SELECT id FROM visit_incident WHERE actor_kind=${actor.kind} AND actor_id=${actor.id} AND request_key=${value.requestKey}`;
   if (!earlier) {
     if (!operatorStates.includes(visit.state)) throw new EvidenceError('VISIT_CHANGED', 'Visit changed', { status: 409 });
-    await storePhotos(database, visit.id, photos, store);
+
   }
+  if(!earlier && photos.length){await database.begin(async tx=>{const [listing]=await tx`SELECT * FROM rentable WHERE id=${visit.rentable_id}`;await lockOperator(tx,actor,listing);});await storePhotos(database,visit.id,photos,store);}
   return withListingInventory(database, visit.rentable_id, async (tx, listing) => {
     await lockOperator(tx, actor, listing);
     const [replay] = await tx`SELECT id,reference,booking_id,request_hash FROM visit_incident WHERE actor_kind=${actor.kind} AND actor_id=${actor.id} AND request_key=${value.requestKey}`;
@@ -158,10 +160,10 @@ export async function reportVisitIncident(database, actor, input, { files = [], 
       ${actor.kind},${actor.id},${now},${now},${value.requestKey},${hash})`;
     await insertAttachments(tx, { visitId: current.id, incidentId: id, nature, actor }, photos);
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after")
-      VALUES(${actor.kind === 'owner' ? 'client' : 'admin'},${actor.id},'visit_incident',${id},'visit_incident_reported',
+      VALUES(${actor.kind === 'admin' ? 'admin' : 'client'},${actor.kind==='staff'?listing.client_id:actor.id},'visit_incident',${id},'visit_incident_reported',
       ${JSON.stringify({ visitId: current.id, orderId: current.order_id, category: value.category, nature, photos: photos.length })}::text::jsonb)`;
     return { id, reference, visitId: current.id, orderId: current.order_id, replayed: false };
-  });
+  }).then(async result=>{await cleanupFailedPhotos(database,photos,store);return result;}).catch(async error=>{await cleanupFailedPhotos(database,photos,store);throw error;});
 }
 
 const closeSchema = z
@@ -290,7 +292,7 @@ export async function readVisitAttachment(database, actor, orderId, attachmentId
   requireOperator(actor, ['owner', 'admin', 'staff']);
   if (!uuid.safeParse(orderId).success || !uuid.safeParse(attachmentId).success) return { status: 404 };
   const allowed =
-    actor.kind === 'owner'
+    actor.kind==='staff'?await tx`SELECT s.id,s.name FROM client_staff s JOIN staff_property sp ON sp.staff_id=s.id AND sp.rentable_id=${listing.id} JOIN "user" u ON u.id=s.client_id WHERE s.id=${actor.id} AND s.client_id=${listing.client_id} AND s.is_active AND s.accepted_at IS NOT NULL AND s.revoked_at IS NULL AND s.permissions->>'evidence'='true' AND u.account_status='active' FOR SHARE OF s` : actor.kind === 'owner'
       ? database`EXISTS(SELECT 1 FROM "user" u WHERE u.id=${actor.id} AND u.id=r.client_id AND u.role='client' AND u.account_status='active')`
       : actor.kind === 'staff'
         ? database`EXISTS(SELECT 1 FROM client_staff s JOIN staff_property sp ON sp.staff_id=s.id AND sp.rentable_id=r.id
@@ -394,4 +396,8 @@ export async function visitEvidenceRecords(tx, orderId, viewer) {
     ]);
   }
   return { evidence: byVisit, incidents: incidentsByVisit };
+}
+
+export async function cleanupFailedPhotos(database,photos,store){
+ for(const photo of photos){if(!photo.storageKey)continue;try{const [used]=await database`SELECT 1 FROM visit_attachment WHERE storage_key=${photo.storageKey} LIMIT 1`;if(!used&&store.remove)await store.remove(photo.storageKey).catch(()=>null);}catch{/* Keep the original domain error; orphan retention handles transient cleanup failures. */}}
 }

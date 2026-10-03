@@ -8,7 +8,7 @@ import { users, clientApplication } from '@/services/db/schema/index.js';
 import { audit } from '@/services/audit';
 import { fieldErrors } from '@/services/schemas/zod';
 import {
-  detailsSchema, payoutSchema, consentSchema,
+  detailsSchema, onboardingPayoutSchema, consentSchema,
 } from '@/services/schemas/zod/application';
 import { getCurrentUser } from './dal';
 import { profileCompletion } from './profile';
@@ -71,14 +71,28 @@ export async function getOrCreateApplication(userId) {
  */
 async function assertEditable(app) {
   if (app.status === 'submitted') redirect('/partner?locked=in_review');
-  if (app.status === 'approved') redirect('/partner');
+  if (app.status === 'approved') redirect('/partner/settings?notice=verified');
 }
 
 async function loadContext() {
   const user = await getCurrentUser();
   if (!user || user.role !== 'client') redirect('/partner/login');
+  if (user.accountStatus === 'active') redirect('/partner/settings?notice=verified');
+  if (user.accountStatus !== 'pending_application') redirect('/partner/login?blocked=1');
   const app = await getOrCreateApplication(user.id);
   return { user, app };
+}
+
+/** Resolve the next step from fresh data after every save. */
+export async function onboardingNext(userId, savedStep) {
+  if (savedStep) await database`UPDATE client_application SET flagged_fields=(
+    SELECT coalesce(jsonb_agg(value), '[]'::jsonb) FROM jsonb_array_elements(coalesce(flagged_fields,'[]'::jsonb))
+    WHERE value <> ${JSON.stringify(savedStep)}::jsonb) WHERE user_id=${userId}`;
+  const [user] = await db.select().from(users).where(eq(users.id, userId));
+  const app = await getOrCreateApplication(userId);
+  const docs = await listDocuments({ ownerType: 'client_application', ownerId: app.id });
+  const completion = profileCompletion(user, app, docs);
+  return { ok: true, next: completion.remaining[0]?.href ?? '/partner/onboarding/review' };
 }
 
 /* ------------------------------- details ------------------------------- */
@@ -124,7 +138,7 @@ export async function saveDetails(_prev, formData) {
     entityId: app.id, action: 'details_saved', ip: await clientIp(),
   });
 
-  redirect('/partner');
+  return user.phoneVerifiedAt ? onboardingNext(user.id, 'details') : { ok: true, next: '/partner/onboarding/details?mobile=1' };
 }
 
 /* --------------------------------- KYC ---------------------------------
@@ -139,10 +153,11 @@ export async function savePayout(_prev, formData) {
   const { user, app } = await loadContext();
   await assertEditable(app);
 
-  const parsed = payoutSchema.safeParse({
+  const parsed = onboardingPayoutSchema.safeParse({
     method: formData.get('method'),
     upiId: formData.get('upiId') ?? '',
     accountNumber: formData.get('accountNumber') ?? '',
+    confirmAccountNumber: formData.get('confirmAccountNumber') ?? '',
     ifsc: formData.get('ifsc') ?? '',
     holderName: formData.get('holderName'),
   });
@@ -165,7 +180,7 @@ export async function savePayout(_prev, formData) {
     after: { method: d.method, nameMatch }, ip: await clientIp(),
   });
 
-  redirect('/partner');
+  return onboardingNext(user.id, 'payout');
 }
 
 /* ---------------------------- consent + submit ---------------------------- */
@@ -194,7 +209,7 @@ export async function saveConsent(_prev, formData) {
     entityId: app.id, action: 'consent_given', ip,
   });
 
-  redirect('/partner');
+  return onboardingNext(user.id, 'consent');
 }
 
 /**
@@ -218,7 +233,7 @@ export async function submitApplication() {
   });
   const completion = profileCompletion(user, app, documents);
 
-  if (completion.remaining.length) {
+  if (!completion.canSubmit) {
     const labels = completion.remaining.map((s) => s.label.toLowerCase()).join(', ');
     return { errors: { _: `Still to do: ${labels}` } };
   }

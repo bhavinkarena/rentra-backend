@@ -1,3 +1,4 @@
+import {offlineBookings} from './owner-experience.js';
 import 'server-only';
 import { propertyToday } from '../domain/booking-dates.js';
 import { visitLabel } from '../domain/booking-record.js';
@@ -42,6 +43,13 @@ const visitDTO = (row) => ({
   label: visitLabel(row),
 });
 
+/** BOOK-06: first name, guests and phone, only on the visit day and only when the owner allows it. */
+const guestFor = (staff, contact, visits) =>
+  staff.permissions?.guestContact !== false &&
+  visits.some((v) => [v.startsAt, v.endsAt].some((at) => at && propertyToday(at) === propertyToday()) && ['confirmed', 'handed_over', 'returned', 'disputed'].includes(v.state))
+    ? { name: contact?.name?.trim().split(/\s+/)[0] || null, phone: contact?.phone || null, guests: Math.max(...visits.map((v) => v.guests || 0)) }
+    : null;
+
 export async function listStaffVisits(database, staff, input = {}) {
   const tab = TABS.includes(input?.tab) ? input.tab : 'today';
   const now = database`clock_timestamp()`;
@@ -61,17 +69,17 @@ export async function listStaffVisits(database, staff, input = {}) {
       count(*) FILTER (WHERE ${conditions.action_needed})::int AS action_needed,
       count(*) FILTER (WHERE ${conditions.past})::int AS past
     FROM booking b WHERE ${scope}`;
-  const rows = await database`SELECT b.*, r.title FROM booking b JOIN rentable r ON r.id=b.rentable_id
+  const rows = await database`SELECT b.*, r.title, o.listing_snapshot->'contact' AS contact FROM booking b JOIN rentable r ON r.id=b.rentable_id JOIN booking_order o ON o.id=b.order_id
     WHERE ${scope} AND ${conditions[tab]}
     ORDER BY ${tab === 'past' ? database`b.starts_at DESC` : database`b.starts_at ASC`}, b.id LIMIT 50`;
-  return { tab, date, counts, items: rows.map(visitDTO) };
+  return { tab, date, counts, offline:tab==='today'?await offlineBookings(database,staff.ownerId,{staffId:staff.id,contact:staff.permissions?.guestContact!==false && date===propertyToday()}):[],items: rows.map((row) => ({ ...visitDTO(row), guest: guestFor(staff, row.contact, [visitDTO(row)]) })) };
 }
 
 /** One booking's visits for an assigned property; a foreign or guessed id reads as missing. */
 export async function readStaffVisitRecord(database, staff, orderId) {
   if (!uuid.safeParse(orderId).success) return null;
   return database.begin(async (tx) => {
-    const rows = await tx`SELECT b.*, r.title, o.reference AS order_reference, o.time_zone, o.policy_snapshot
+    const rows = await tx`SELECT b.*, r.title, o.reference AS order_reference, o.time_zone, o.policy_snapshot,o.listing_snapshot,o.owner_note
       FROM booking b JOIN booking_order o ON o.id=b.order_id JOIN rentable r ON r.id=b.rentable_id
       WHERE b.order_id=${orderId} AND ${assigned(tx, staff)} ORDER BY b.item_position NULLS LAST, b.local_day, b.id`;
     if (!rows.length) return null;
@@ -88,6 +96,8 @@ export async function readStaffVisitRecord(database, staff, orderId) {
     const rules = rows[0].policy_snapshot?.houseRules;
     return {
       orderId,
+      ownerNote:rows[0].owner_note,
+      guest: guestFor(staff, rows[0].listing_snapshot?.contact, visits),
       reference: rows[0].order_reference,
       propertyTitle: rows[0].title,
       timeZone: rows[0].time_zone || 'Asia/Kolkata',

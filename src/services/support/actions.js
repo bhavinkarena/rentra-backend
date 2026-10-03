@@ -1,7 +1,7 @@
 'use server';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
-import { bookingActor } from '../booking/record-page.js';
+import { supportActor } from './actor.js';
 import { sql } from '../db/index.js';
 import {
   createSupportRequest,
@@ -11,7 +11,7 @@ import {
 } from './service.js';
 
 async function open(kind, form) {
-  const actor = await bookingActor(kind);
+  const actor = await supportActor(kind);
   let result;
   try {
     result = await createSupportRequest(sql, actor, {
@@ -21,8 +21,9 @@ async function open(kind, form) {
       orderId: form.get('orderId') || null,
       privacyRequestId: form.get('privacyRequestId') || null,
       propertyId: form.get('propertyId') || null,
+      visitId: form.get('visitId') || null,
       requestKey: form.get('requestKey'),
-    });
+    }, process.env, form.getAll('photos'));
   } catch (error) {
     if (error instanceof SupportError) throw error;
     if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };
@@ -33,7 +34,7 @@ async function open(kind, form) {
   redirect((kind === 'owner' ? '/partner/support/' : '/support/') + result.id);
 }
 async function reply(kind, form) {
-  const actor = await bookingActor(kind);
+  const actor = await supportActor(kind);
   try {
     const result = await replySupportRequest(
       sql,
@@ -78,7 +79,7 @@ export async function replyOwnerSupport(previous, form) {
 }
 export async function manageSupport(previous, form) {
   try {
-    const result = await manageSupportRequest(sql, await bookingActor('admin'), {
+    const result = await manageSupportRequest(sql, await supportActor('admin'), {
       id: form.get('id'),
       version: Number(form.get('version')),
       assignedTo: form.get('assignedTo') || null,

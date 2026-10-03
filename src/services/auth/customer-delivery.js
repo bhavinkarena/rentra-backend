@@ -13,14 +13,14 @@ export function customerDeliveryConfig(env = process.env) {
 }
 
 /** Twilio Messages API. Acceptance is not a claim that the handset received it. */
-export async function deliverCustomerCode(phone, code, env = process.env, fetcher = fetch) {
+export async function deliverCustomerCode(phone, code, env = process.env, fetcher = fetch, message = `Your Rentra verification code is ${code}. It expires in 5 minutes. Do not share this code.`) {
   const { mode } = customerDeliveryConfig(env);
   if (mode === 'development') return;
   if (mode !== 'twilio') throw new Error('Customer SMS delivery is not configured.');
   const response = await fetcher(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
     headers: { Authorization: `Basic ${Buffer.from(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`).toString('base64')}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ To: `+91${phone}`, From: env.TWILIO_FROM_NUMBER, Body: `Your Rentra verification code is ${code}. It expires in 5 minutes. Do not share this code.` }),
+    body: new URLSearchParams({ To: `+91${phone}`, From: env.TWILIO_FROM_NUMBER, Body: message }),
   });
   // Never log provider bodies: they can include the phone number and SMS body.
   if (!response.ok) throw new Error('SMS delivery failed.');

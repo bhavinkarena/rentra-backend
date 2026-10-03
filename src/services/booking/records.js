@@ -1,3 +1,5 @@
+import { ledger } from '../finance/statements.js';
+import { ownerDayVisits, ownerVisitDay } from './owner-visits.js';
 import 'server-only';
 import { houseRuleLines } from '../domain/venue-rules.js';
 import { visitLabel } from '../domain/booking-record.js';
@@ -5,6 +7,7 @@ import { savedListingHref } from '../domain/saved-places.js';
 import { listingPath } from '../domain/listing-url.js';
 import { addLocalDays, propertyToday } from '../domain/booking-dates.js';
 import { visitOperation } from '../domain/booking-operations.js';
+import {isLocalDate} from '../domain/booking-dates.js';
 import { z } from 'zod';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
@@ -20,12 +23,13 @@ const amount = value => value == null ? null : Number(value);
 const activeStates = ['confirmed', 'handed_over', 'returned', 'completed', 'disputed'];
 
 export function historyFilters(input = {}, operational = false) {
-  const tab = ['all', 'upcoming', 'past', 'cancelled', ...(operational ? ['today','action_needed'] : [])].includes(input.tab) ? input.tab : 'all';
+  const tab = ['all', 'upcoming', 'past', 'cancelled', ...(operational ? ['today','action_needed','with_rentra'] : [])].includes(input.tab) ? input.tab : 'all';
   const page = /^\d{1,6}$/.test(String(input.page ?? '')) ? Math.max(1, Number(input.page)) : 1;
   return { tab, page, ...(operational ? {property: uuid.safeParse(input.property).success ? input.property : '',
       // Entertainment plan, Phase 11: one court of a venue (only with a property).
       resource: uuid.safeParse(input.resource).success ? input.resource : ''} : {}),
     vertical: ['farmhouse', 'entertainment'].includes(input.vertical) ? input.vertical : '',
+    from:isLocalDate(input.from)?input.from:'',to:isLocalDate(input.to)?input.to:'',event:['arriving','leaving'].includes(input.event)?input.event:'all',
     q: typeof input.q === 'string' ? input.q.trim().slice(0, 100) : '' };
 }
 
@@ -54,37 +58,77 @@ function orderDTO(row) {
     rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor) };
 }
 
+// BOOK-01: guest, visits with their next action, and contact inside the same window as the detail.
+function ownerCard(row) {
+  const visits = (row.visit_rows || []).map(v => ({ id: v.id, reference: v.reference, state: v.state, guests: v.guests,
+    date: String(v.local_day).slice(0, 10), startsAt: v.hours_known ? instant(v.starts_at) : null, label: visitLabel(v),
+    operation: visitOperation(v, row.as_of, row.booking_config?.earlyArrivalMinutes ?? 120) }));
+  const open = visits.some(v => ['confirmed','handed_over','returned','disputed'].includes(v.state)) || row.recently_completed;
+  const contact = row.listing_snapshot?.contact;
+  return { visits, guests: Math.max(0, ...visits.map(v => v.guests || 0)),
+    contact: { name: contact?.name?.trim().split(/\s+/)[0] || null, phone: open ? contact?.phone || null : null } };
+}
+
 export async function listBookingRecords(database, actor, input = {}, env = process.env) {
   const operational = actor.kind !== 'customer';
   const filters = historyFilters(input, operational), size = 20;
   return database.begin(async tx => {
-    const { condition: allowed } = await scope(tx, actor, env);
+    const { condition: scoped } = await scope(tx, actor, env);
+    // An unpaid or abandoned checkout is not a booking the owner has to handle.
+    const allowed = actor.kind === 'owner' ? tx`${scoped} AND o.state NOT IN ('held','expired')` : scoped;
     const upcoming = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','disputed') AND v.ends_at>clock_timestamp())`;
-    const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed') AND v.ends_at<=clock_timestamp())`;
+    const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed','no_show') AND v.ends_at<=clock_timestamp())`;
     const cancelled = tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))`;
-    const today = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','disputed') AND v.starts_at < (date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Kolkata') + interval '1 day') AT TIME ZONE 'Asia/Kolkata' AND v.ends_at > date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata')`;
+    const today = tx`EXISTS(SELECT 1 FROM booking b WHERE b.order_id=o.id AND ${ownerVisitDay(tx, propertyToday())})`;
     // CP13: an open incident needs Rentra follow-up, so it is admin work, not owner work.
     const openIncident = actor.kind === 'admin' ? tx`OR EXISTS(SELECT 1 FROM visit_incident i WHERE i.booking_id=v.id AND i.state='open')` : tx``;
-    const actionNeeded = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (v.state IN ('returned','disputed') OR (v.state='confirmed' AND v.starts_at<=clock_timestamp()) OR (v.state='handed_over' AND v.ends_at<=clock_timestamp()) OR (v.state IN ('confirmed','handed_over') AND NOT v.hours_known) ${openIncident}))`;
-    const property = tx`${operational && filters.property ? tx`o.rentable_id=${filters.property}` : tx`true`}
+    const actionNeeded = actor.kind === 'owner'
+      ? tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.hours_known AND (v.state='returned' OR (v.state='confirmed' AND v.starts_at<=clock_timestamp()) OR (v.state='handed_over' AND v.ends_at<=clock_timestamp())))`
+      : tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (v.state IN ('returned','disputed') OR (v.state='confirmed' AND v.starts_at<=clock_timestamp()) OR (v.state='handed_over' AND v.ends_at<=clock_timestamp()) OR (v.state IN ('confirmed','handed_over') AND NOT v.hours_known) ${openIncident}))`;
+    const withRentra = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (v.state='disputed' OR (v.state IN ('confirmed','handed_over','returned') AND NOT v.hours_known)))`;
+    const property = tx`((${filters.from}='' AND ${filters.to}='') OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND (${filters.from}='' OR v.local_day>=NULLIF(${filters.from},'')::date) AND (${filters.to}='' OR v.local_day<=NULLIF(${filters.to},'')::date))) AND ${operational && filters.property ? tx`o.rentable_id=${filters.property}` : tx`true`}
       AND ${operational && filters.property && filters.resource ? tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.resource_id=${filters.resource})` : tx`true`}
       AND ${filters.vertical ? tx`EXISTS(SELECT 1 FROM category c WHERE c.id=r.category_id AND c.vertical_code=${filters.vertical})` : tx`true`}`;
-    const tab = filters.tab === 'today' ? today : filters.tab === 'action_needed' ? actionNeeded : filters.tab === 'upcoming' ? upcoming
+    const tab = filters.tab === 'with_rentra' ? withRentra : filters.tab === 'today' ? today : filters.tab === 'action_needed' ? actionNeeded : filters.tab === 'upcoming' ? upcoming
       : filters.tab === 'past' ? past
       : filters.tab === 'cancelled' ? cancelled : tx`true`;
     // POSITION treats percent/underscore literally; customer search cannot widen its ownership scope.
     const match = tx`(${filters.q}='' OR position(lower(${filters.q}) in lower(o.reference))>0
       OR position(lower(${filters.q}) in lower(coalesce(o.listing_snapshot->>'title','')))>0
+      OR (${operational} AND (position(lower(${filters.q}) in lower(coalesce(o.listing_snapshot->'contact'->>'name','')))>0 OR position(${filters.q} in coalesce(o.listing_snapshot->'contact'->>'phone',''))>0))
       OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND position(lower(${filters.q}) in lower(v.reference))>0))`;
     const [summary] = await tx`SELECT count(*)::int total,
       count(*) FILTER (WHERE ${upcoming})::int upcoming,
       count(*) FILTER (WHERE ${past})::int past,
       count(*) FILTER (WHERE ${cancelled})::int cancelled,
-      count(*) FILTER (WHERE ${today})::int today, count(*) FILTER (WHERE ${actionNeeded})::int action_needed
+      count(*) FILTER (WHERE ${today})::int today, count(*) FILTER (WHERE ${actionNeeded})::int action_needed, count(*) FILTER (WHERE ${withRentra})::int with_rentra
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${match}`;
+    const properties=operational?await tx`SELECT r.id,r.title FROM rentable r WHERE ${actor.kind==='owner'?tx`r.client_id=${actor.id}`:tx`true`} ORDER BY r.title,r.id`:[];
+    // Filter choices: the verticals this actor has bookings in, and the chosen property's courts.
+    const verticals = (await tx`SELECT DISTINCT c.vertical_code AS code FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
+      JOIN category c ON c.id=r.category_id WHERE ${allowed} ORDER BY 1`).map(row => row.code);
+    const resources = operational && filters.property ? await tx`SELECT rs.id,rs.name FROM rentable_resource rs JOIN rentable r ON r.id=rs.rentable_id
+      WHERE rs.rentable_id=${filters.property} AND ${scoped} ORDER BY rs.sort_order,rs.name` : [];
+    if (actor.kind === 'owner') {
+      let visits = await ownerDayVisits(tx, actor.id, { filters, event:filters.event, limit: filters.tab === 'today' ? size : 0, offset: filters.tab === 'today' ? (filters.page-1)*size : 0 });
+      summary.today = visits.total;
+      if (filters.tab === 'today') {
+        const pages = Math.max(1,Math.ceil(visits.total/size)), page = Math.min(filters.page,pages);
+        if(page !== filters.page) visits = await ownerDayVisits(tx, actor.id, {filters,event:filters.event,limit:size,offset:(page-1)*size});
+        return { ...filters,page,pages,total:visits.total,summary,items:visits.items,verticals,resources,properties };
+      }
+    }
     const count = filters.tab === 'all' ? summary.total : summary[filters.tab];
+    // Work queues: the next active visit first. History: the most recent visit first.
+    // "All": what is still ahead (soonest first), then the past (newest first).
+    const nextStart = tx`(SELECT min(v.starts_at) FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','disputed'))`;
+    const lastStart = tx`(SELECT max(v.starts_at) FROM booking v WHERE v.order_id=o.id)`;
+    const order = !operational ? tx`o.created_at DESC,o.id DESC`
+      : ['today', 'upcoming', 'action_needed'].includes(filters.tab) ? tx`${nextStart} ASC NULLS LAST,o.created_at DESC,o.id DESC`
+      : filters.tab === 'all' ? tx`(${upcoming}) DESC,CASE WHEN ${upcoming} THEN ${nextStart} END ASC,${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`
+      : tx`${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`;
     const pages = Math.max(1, Math.ceil(count / size)), page = Math.min(filters.page, pages);
-    const rows = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
+    const rows = await tx`SELECT o.*,r.booking_config,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
       (SELECT min(v.local_day)::text FROM booking v WHERE v.order_id=o.id) first_visit,
       (SELECT count(*)::int FROM booking v WHERE v.order_id=o.id) visit_count,
       (SELECT row_to_json(f) FROM (SELECT v.slot,v.local_day,v.starts_at,v.ends_at,v.hours_known,v.time_zone,v.slot_snapshot,rs.name AS resource_name
@@ -92,20 +136,19 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
         ORDER BY v.item_position NULLS LAST,v.local_day,v.id LIMIT 1) f) first_row,
       (SELECT c.vertical_code FROM category c WHERE c.id=r.category_id) vertical,
       (SELECT jsonb_agg(DISTINCT v.state) FROM booking v WHERE v.order_id=o.id) visit_states,
+      (SELECT jsonb_agg(f ORDER BY f.item_position NULLS LAST,f.local_day,f.id) FROM (SELECT v.id,v.reference,v.state,v.slot,v.local_day,v.starts_at,v.ends_at,v.hours_known,v.time_zone,v.slot_snapshot,v.guests,v.item_position,rs.name AS resource_name
+        FROM booking v LEFT JOIN rentable_resource rs ON rs.id=v.resource_id WHERE v.order_id=o.id) f) visit_rows,
+      clock_timestamp() as_of,
+      EXISTS(SELECT 1 FROM visit_evidence e JOIN booking b ON b.id=e.booking_id WHERE b.order_id=o.id AND b.state='completed' AND e.kind='complete' AND e.occurred_at>now()-interval '7 days') recently_completed,
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${tab} AND ${match}
-      ORDER BY CASE WHEN ${operational} THEN (SELECT min(v.starts_at) FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','disputed')) END ASC NULLS LAST,o.created_at DESC,o.id DESC LIMIT ${size} OFFSET ${(page - 1) * size}`;
-    // Filter choices: the verticals this actor has bookings in, and the chosen property's courts.
-    const verticals = (await tx`SELECT DISTINCT c.vertical_code AS code FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
-      JOIN category c ON c.id=r.category_id WHERE ${allowed} ORDER BY 1`).map(row => row.code);
-    const resources = operational && filters.property ? await tx`SELECT rs.id,rs.name FROM rentable_resource rs JOIN rentable r ON r.id=rs.rentable_id
-      WHERE rs.rentable_id=${filters.property} AND ${allowed} ORDER BY rs.sort_order,rs.name` : [];
-    return { ...filters, verticals, resources, page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), ...(operational ? {propertyId:row.rentable_id} : {}), visitCount: row.visit_count,
+      ORDER BY ${order} LIMIT ${size} OFFSET ${(page - 1) * size}`;
+    return { ...filters, verticals, resources, properties,page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), ...(operational ? {propertyId:row.rentable_id} : {}), visitCount: row.visit_count,
       visitStates: row.visit_states || [], payments: row.payments || [], vertical: row.vertical,
       // The first visit's own words and start, so a list says when and which court.
       firstVisitLabel: row.first_row ? visitLabel(row.first_row) : null, firstVisitSlot: row.first_row?.slot ?? null,
       firstVisitStartsAt: row.first_row?.hours_known ? instant(row.first_row.starts_at) : null,
-      resourceName: row.first_row?.resource_name ?? null })) };
+      resourceName: row.first_row?.resource_name ?? null, ...(actor.kind === 'owner' ? ownerCard(row) : {}) })) };
   });
 }
 
@@ -132,20 +175,23 @@ export async function readBookingRecord(database, actor, orderId, env = process.
   if (!uuid.safeParse(orderId).success) throw new BookingRecordError();
   return database.begin(async tx => {
     const { condition: allowed } = await scope(tx, actor, env);
-    const [order] = await tx`SELECT o.*,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
+    const [order] = await tx`SELECT o.*,r.booking_config,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired FROM booking_order o JOIN rentable r ON r.id=o.rentable_id
       WHERE o.id=${orderId} AND ${allowed}`;
     if (!order) throw new BookingRecordError();
     const [{now}] = await tx`SELECT clock_timestamp() now`;
     const rows = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,
       b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.created_at,b.confirmed_at,b.cancelled_at,b.updated_at,b.lifecycle_version,b.visit_provenance,
-      b.resource_id,rs.name AS resource_name,b.slot_snapshot->'activity' AS activity
+      b.slot_snapshot,b.resource_id,rs.name AS resource_name,b.slot_snapshot->'activity' AS activity
       FROM booking b LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
       WHERE b.order_id=${order.id} ORDER BY b.item_position NULLS LAST,b.local_day,b.id`;
     const [{ vertical }] = await tx`SELECT c.vertical_code AS vertical FROM rentable r JOIN category c ON c.id=r.category_id WHERE r.id=${order.rentable_id}`;
-    const visits = rows.map(row => ({ ...(actor.kind === 'customer' ? {} : {operation:visitOperation(row,now)}), id: row.id, reference: row.reference, state: row.state,
+    const visits = rows.map(row => ({ ...(actor.kind === 'customer' ? {} : {operation:visitOperation(row,now,order.booking_config?.earlyArrivalMinutes??120)}), id: row.id, reference: row.reference, state: row.state,
       date: row.local_day instanceof Date ? row.local_day.toISOString().slice(0, 10) : String(row.local_day).slice(0, 10), slot: row.slot, guests: row.guests,
       startsAt: row.hours_known ? instant(row.starts_at) : null, endsAt: row.hours_known ? instant(row.ends_at) : null,
       rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor),
+      includedGuests:row.slot_snapshot?.includedGuests??null,
+      // BOOK-05/08: an arrival that started and was never checked in can be reported as a no-show.
+      ...(actor.kind === 'owner' ? { noShowEligible: row.state === 'confirmed' && row.hours_known && new Date(row.starts_at) <= new Date(now) } : {}),
       version: row.lifecycle_version, provenance: row.visit_provenance,
       label: visitLabel({ ...row, slot_snapshot: { activity: row.activity }, time_zone: order.time_zone }),
       // Time-booked visits (courts): which court and activity. Null for slot visits.
@@ -171,7 +217,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     const events = await tx`SELECT kind,created_at,payload->>'phase' phase FROM booking_lifecycle_event WHERE order_id=${order.id} ORDER BY created_at,id`;
     let arrival = null;
     const arrivalStates = actor.kind === 'customer' ? activeStates : ['confirmed','handed_over','returned','disputed'];
-    const operationalContact = visits.some(v=>arrivalStates.includes(v.state));
+    const operationalContact = visits.some(v=>arrivalStates.includes(v.state)) || (actor.kind==='owner' && (await tx`SELECT 1 FROM visit_evidence e JOIN booking b ON b.id=e.booking_id WHERE b.order_id=${order.id} AND b.state='completed' AND e.kind='complete' AND e.occurred_at>now()-interval '7 days' LIMIT 1`).length>0);
     // No private listing fields are even selected until ownership and confirmed visit status are established.
     if (visits.some(visit => arrivalStates.includes(visit.state))) {
       const [place] = await tx`SELECT r.exact_address,ST_X(r.location) longitude,ST_Y(r.location) latitude,u.name,u.phone
@@ -187,7 +233,8 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     }
     const cases = await casesForOrder(tx, order.id, actor.kind);
     const rebookHref = actor.kind === 'customer' ? await hourlyRebookHref(tx, order.id) : null;
-    return { ...orderDTO(order), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases,
+    const earningLines = actor.kind==='owner' ? await tx`SELECT l.id,l.booking_id FROM (${ledger(tx)}) l WHERE l.order_id=${order.id} AND l.owner_id=${actor.id} AND l.component='rent' ORDER BY l.created_at,l.id` : [];
+    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note,earningLines:earningLines.map(r=>({id:r.id,visitId:r.booking_id}))}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.rentMinor,0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.feeMinor,0)}:{}),
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
       policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,

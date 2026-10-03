@@ -14,12 +14,12 @@ import { listBookingRecords } from '../booking/records.js';
  * pages run, so a task's count always equals the list it opens.
  */
 
-export const MUTABLE_CATEGORIES = ['property', 'booking', 'case'];
+export const MUTABLE_CATEGORIES = ['property', 'case'];
 const PAGE_SIZE = 20;
 
 const listInput = z.object({
   filter: z.enum(['all', 'unread', 'action']).catch('all'),
-  category: z.enum(['all', 'account', 'property', 'booking', 'case']).catch('all'),
+  category: z.enum(['all', 'account', 'property', 'booking', 'case', 'review', 'team']).catch('all'),
   page: z.coerce.number().int().min(1).max(100000).catch(1),
 });
 
@@ -34,12 +34,14 @@ const dto = (row) => ({
   detail: row.detail ?? {},
   createdAt: row.created_at,
   read: Boolean(row.read_at),
+  needsAction: Boolean(row.needs_action),
 });
 
 /** Unread and unread-required counts, for the navigation badge. */
 export async function unreadCounts(database, clientId) {
   const [counts] = await database`SELECT count(*) FILTER (WHERE read_at IS NULL)::int AS unread,
-      count(*) FILTER (WHERE read_at IS NULL AND kind='action')::int AS action
+      count(*) FILTER (WHERE owner_update_needs_action(client_update))::int AS action,
+      count(*) FILTER (WHERE read_at IS NULL AND owner_update_needs_action(client_update))::int AS unread_action
     FROM client_update WHERE client_id=${clientId}`;
   return counts;
 }
@@ -51,22 +53,24 @@ export async function listClientUpdates(database, clientId, input = {}) {
       ? database`u.read_at IS NULL`
       : f.filter === 'action'
         ? // Required work not yet read: the same set the dashboard task counts.
-          database`u.kind='action' AND u.read_at IS NULL`
+          database`owner_update_needs_action(u)`
         : database`true`;
   const category = f.category === 'all' ? database`true` : database`u.category=${f.category}`;
   const where = database`u.client_id=${clientId} AND ${filter} AND ${category}`;
   const [{ total }] = await database`SELECT count(*)::int AS total FROM client_update u WHERE ${where}`;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const page = Math.min(f.page, pages);
-  const rows = await database`SELECT u.*, r.title AS property_title FROM client_update u
+  const rows = await database`SELECT u.*,owner_update_needs_action(u) needs_action, r.title AS property_title FROM client_update u
     LEFT JOIN rentable r ON r.id=u.rentable_id
-    WHERE ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}`;
+    WHERE ${where} ORDER BY owner_update_needs_action(u) DESC,u.created_at DESC, u.id DESC LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}`;
   return { ...f, page, pages, total, ...(await unreadCounts(database, clientId)), items: rows.map(dto) };
 }
 
 /** Marks one update (`id`) or every unread update (`all`) read; idempotent. */
 export async function markClientUpdatesRead(database, clientId, input = {}) {
   if (input?.all === '1' || input?.all === true || input?.all === 'true') {
+    const [required] = await database`SELECT count(*)::int n FROM client_update WHERE client_id=${clientId} AND read_at IS NULL AND owner_update_needs_action(client_update)`;
+    if (required.n && !['1',true,'true'].includes(input.confirm)) throw conflict('READ_CONFIRM_REQUIRED','Some updates still need you. Confirm marking them read; their tasks will stay pinned.');
     const rows = await database`UPDATE client_update SET read_at=now()
       WHERE client_id=${clientId} AND read_at IS NULL RETURNING id`;
     return { updated: rows.length, ...(await unreadCounts(database, clientId)) };
@@ -137,8 +141,28 @@ export async function clientTasks(database, clientId) {
     { key: 'updates_action', kind: 'action', count: counts.action, href: '/partner/updates?filter=action' },
     { key: 'properties_hidden', kind: 'info', count: hidden, href: '/partner/listings?status=hidden' },
     { key: 'properties_review', kind: 'info', count: review, href: '/partner/listings?status=review' },
+    { key: 'visits_with_rentra', kind: 'info', count: bookings.summary.with_rentra, href: '/partner/bookings?tab=with_rentra' },
     { key: 'visits_today', kind: 'info', count: bookings.summary.today, href: '/partner/bookings?tab=today' },
     { key: 'updates_unread', kind: 'info', count: counts.unread, href: '/partner/updates?filter=unread' },
   ];
   return { tasks, unread: counts.unread, actionUnread: counts.action };
+}
+
+/** Owner-scoped navigation counts; an applicant never queries active-only tools. */
+export async function navigationCounts(database, user) {
+  const counts = await unreadCounts(database, user.id);
+  const [support] = await database`SELECT count(*)::int AS count FROM support_request WHERE client_id=${user.id} AND state='waiting_customer'`;
+  if (user.accountStatus !== 'active') return { ...counts, supportAwaiting: support.count };
+  const [bookings, properties, reviews] = await Promise.all([
+    listBookingRecords(database, { kind: 'owner', id: user.id }, { tab: 'action_needed' }),
+    database`SELECT count(*)::int AS count FROM rentable WHERE client_id=${user.id} AND status IN ('draft','rejected')`,
+    database`SELECT count(*)::int AS count FROM public_customer_review r JOIN rentable l ON l.id=r.rentable_id WHERE l.client_id=${user.id} AND r.owner_reply IS NULL`,
+  ]);
+  return { ...counts, supportAwaiting: support.count, bookingsAction: bookings.summary.action_needed, propertiesNeedsChanges: properties[0].count, reviewsUnreplied: reviews[0].count };
+}
+
+export async function readClientUpdate(database,clientId,id){
+ if(!z.string().uuid().safeParse(id).success)throw notFound('UPDATE_NOT_FOUND','That update does not exist.');
+ const [row]=await database`SELECT u.*,owner_update_needs_action(u) needs_action,r.title property_title FROM client_update u LEFT JOIN rentable r ON r.id=u.rentable_id WHERE u.id=${id} AND u.client_id=${clientId}`;
+ if(!row)throw notFound('UPDATE_NOT_FOUND','That update does not exist.');return dto(row);
 }

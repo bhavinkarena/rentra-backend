@@ -20,11 +20,13 @@ test('capabilities fail closed for unknown, customer, suspended and blocked acto
   }
 });
 
-test('pending clients can onboard but cannot change listings or operate bookings', () => {
+test('pending clients can edit drafts but cannot operate calendars or bookings', () => {
   const actor = { role: 'client', accountStatus: 'pending_application' };
   assert.equal(canAccessRoute(actor, 'client', 'POST', '/application/details'), true);
-  assert.equal(canAccessRoute(actor, 'client', 'POST', '/listings/123/basics'), false);
+  assert.equal(canAccessRoute(actor, 'client', 'POST', '/listings/123/basics'), true);
   assert.equal(canAccessRoute(actor, 'client', 'GET', '/records'), false);
+  assert.equal(canAccessRoute(actor, 'client', 'POST', '/listings/123/calendar/block'), false);
+  assert.equal(canAccessRoute(actor, 'client', 'POST', '/guide-state'), true);
   actor.accountStatus = 'active';
   assert.equal(canAccessRoute(actor, 'client', 'POST', '/listings/123/calendar/block'), true);
   assert.equal(canAccessRoute(actor, 'client', 'HEAD', '/records/123/summary'), true);

@@ -1,3 +1,12 @@
+import { listingCompletion } from '../services/domain/listing-completion.js';
+import { legacyStep } from '../services/domain/listing-steps.js';
+import { TRUST_FIELDS } from '../services/domain/listing-lifecycle.js';
+import { saveType, deleteDraft, signPhoto, attachPhoto } from '../services/auth/listings.js';
+import { getListingByCode } from '../services/db/queries.js';
+import { saveBookingConfiguration } from '../services/booking/owner-settings.js';
+import { visitMoneyMinor } from '../services/domain/booking-money.js';
+import { z } from 'zod';
+import { unprocessable } from '../utils/apiError.js';
 import {
   createListingFromBasics,
   saveBasics,
@@ -54,6 +63,14 @@ export const detail = asyncHandler(async (req, res) => {
   listing.listing.reviewNeedsResubmission = review?.needsResubmission ?? false;
   listing.listing.reviewFlaggedFields = listing.reviews.at(-1)?.flaggedFields ?? [];
   listing.listing.reviewOutcome = listing.reviews.at(-1)?.outcome ?? null;
+  // PROP-01/02: each flag names the wizard step that fixes it.
+  listing.listing.reviewFlags = listing.listing.reviewFlaggedFields.map((section) => ({
+    section,
+    step: legacyStep(section),
+  }));
+  // Nothing saved since the last submission Rentra reviewed.
+  listing.listing.reviewUnchanged = review ? !review.stale : false;
+  listing.listing.trustFields = TRUST_FIELDS;
   listing.listing.reviewVerification = review?.verification ?? null;
   listing.listing.restriction = review?.restriction ?? null;
   listing.listing.adminCorrection = review?.correction ?? null;
@@ -61,6 +78,7 @@ export const detail = asyncHandler(async (req, res) => {
   delete listing.listing.restrictedBy;
   listing.listing.policyHistory = await propertyPolicyHistory(sql, req.user.id, req.params.id);
   listing.review = review;
+  listing.listing.completion = listingCompletion(listing.listing, listing);
   return ok(res, listing);
 });
 
@@ -112,3 +130,45 @@ export const submit = (req, res, next) => {
   return submitAction(req, res, next);
 };
 export const togglePause = runAction(toggleListingPause);
+
+export const type = runAction(saveType);
+export const removeDraft = runAction(deleteDraft);
+export const previewData = asyncHandler(async (req, res) => {
+  const data = await getListingForEdit(req.params.id, req.user.id);
+  if (!data) throw notFound();
+  const dto = await getListingByCode(data.listing.publicCode, req.user.id);
+  return ok(res, dto);
+});
+export const availability = asyncHandler(async (req, res) => {
+  const input = z
+    .object({
+      configuration: z.string().max(20000),
+      expectedVersion: z.coerce.number().int().nonnegative(),
+    })
+    .parse(req.body);
+  let configuration;
+  try {
+    configuration = JSON.parse(input.configuration);
+  } catch {
+    throw unprocessable({ configuration: ['Check the availability settings and try again'] });
+  }
+  const result = await saveBookingConfiguration(sql, req.user.id, {
+    rentableId: req.params.id,
+    expectedVersion: input.expectedVersion,
+    configuration,
+    draftOnly: true,
+  });
+  const data = await getListingForEdit(req.params.id, req.user.id);
+  return ok(res, { ok: true, contentVersion: data.listing.contentVersion, ...result });
+});
+export const pricePreview = asyncHandler(async (req, res) => {
+  const data = await getListingForEdit(req.params.id, req.user.id);
+  if (!data) throw notFound();
+  const input = z
+    .object({ rentMinor: z.coerce.number().int().min(0).max(50000000) })
+    .parse(req.body);
+  return ok(res, visitMoneyMinor({ baseRentMinor: input.rentMinor, depositMinor: 0 }));
+});
+
+export const photoSign = policyAction(signPhoto);
+export const photoAttach = policyAction(attachPhoto);

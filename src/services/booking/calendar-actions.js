@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { requireActiveClient } from '@/services/auth/dal';
+import { requireClient, requireActiveClient } from '@/services/auth/dal';
 import { sql } from '@/services/db';
 import { saveBookingConfiguration, saveBookingPriceOverride, openBookingDates } from '@/services/booking/owner-settings';
 import { createOwnerBlock, releaseOwnerBlock } from '@/services/booking/inventory';
@@ -16,8 +16,8 @@ function failure(error) {
   if (error.name === 'ZodError') return { error: 'Check the hours, dates, prices and capacities.' };
   return { error: error.code && !/^[0-9A-Z]{5}$/.test(error.code) ? error.message : 'The calendar could not be updated. Please try again.' };
 }
-async function perform(form, run, command) {
-  const owner = await requireActiveClient();
+async function perform(form, run, command, draft = false) {
+  const owner = await (draft ? requireClient() : requireActiveClient());
   const rentableId = String(form.get('rentableId'));
   let result;
   try {
@@ -26,7 +26,7 @@ async function perform(form, run, command) {
       if (['open','block'].includes(command)) {
         const start = new Date(String(form.get('from')));
         const end = new Date(String(form.get('to')));
-        if (!Number.isFinite(+start) || !Number.isFinite(+end) || end < start || end-start > 30*86400000) throw new RangeError('Choose at most 31 ordered dates.');
+        if (!Number.isFinite(+start) || !Number.isFinite(+end) || end < start || end-start > 365*86400000) throw new RangeError('Choose at most 366 ordered dates.');
       }
       result = await calendarCommand(sql, owner.id, {
         rentableId, command, values, expectedCalendarVersion: form.get('expectedCalendarVersion'),
@@ -39,10 +39,16 @@ async function perform(form, run, command) {
   revalidatePath(`/partner/listings/${rentableId}/calendar`);
   revalidatePath('/listing/[handle]', 'page');
   revalidatePath('/partner/calendar');
-  return { ok: true, result: result?.result ?? result };
+  return { ok: true, result: result?.result ?? result, ...(result?.undoToken && { undoToken: result.undoToken, undoUntil: result.undoUntil }) };
 }
 
 export async function saveSchedule(_state, form) {
+  return schedule(form, false);
+}
+export async function saveListingHours(_state, form) {
+  return schedule(form, true);
+}
+async function schedule(form, draft) {
   return perform(form, async (ownerId, rentableId, database) => {
     if (form.get('model') === 'hourly') {
       // Time-booked venue: weekly hours and the booking grid arrive as one JSON field.
@@ -60,9 +66,9 @@ export async function saveSchedule(_state, form) {
     }
     return saveBookingConfiguration(database, ownerId, {
       rentableId, expectedVersion: Number(form.get('expectedVersion')),
-      configuration: { timeZone: 'Asia/Kolkata', leadTimeMinutes: Number(form.get('leadTimeMinutes')), bookingHorizonDays: Number(form.get('bookingHorizonDays')), slots },
+      configuration: { timeZone: 'Asia/Kolkata', autoOpen:form.get('autoOpen')==='on', earlyArrivalMinutes:Number(form.get('earlyArrivalMinutes')??120),weekendDays:String(form.get('weekendDays')||'6,0').split(',').map(Number), leadTimeMinutes: Number(form.get('leadTimeMinutes')), bookingHorizonDays: Number(form.get('bookingHorizonDays')), slots },
     });
-  }, 'schedule');
+  }, 'schedule', draft);
 }
 export async function saveOverride(_state, form) {
   return perform(form, (ownerId, rentableId, database) => saveBookingPriceOverride(database, ownerId, {

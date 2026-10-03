@@ -16,10 +16,22 @@ export function ownerEditEffect({ status, priorStatus }, touchesTrust) {
   if (!touchesTrust) return { patch: {}, sentBack: false };
   if (status === 'live' || status === 'paused')
     return { patch: { status: 'pending_review', priorStatus: status }, sentBack: true };
+  // The verified revision is no longer the one on file: review it again (PROP-03).
+  if (status === 'pending_verification')
+    return { patch: { status: 'pending_review' }, sentBack: true };
   if (status === 'hidden' && ['live', 'paused'].includes(priorStatus))
     return { patch: { priorStatus: 'pending_review' }, sentBack: true };
   return { patch: {}, sentBack: false };
 }
+
+/**
+ * Fields that, once changed on a published or in-review property, need Rentra
+ * to review it again. The owner editor names exactly these (GET listing sends them).
+ */
+export const TRUST_FIELDS = [
+  'title', 'categoryId', 'location', 'exactAddress', 'capacity', 'bedrooms',
+  'amenities', 'houseRules', 'photos',
+];
 
 export const RESTRICTED_MESSAGE =
   'Rentra has restricted this property. Only Rentra can restore it; contact support.';
@@ -30,4 +42,21 @@ export function ownerPauseTarget(status) {
   if (status === 'paused') return { next: 'live' };
   if (status === 'hidden') return { error: RESTRICTED_MESSAGE };
   return { error: 'Only a live listing can be paused.' };
+}
+
+const sameValue = (a, b) => {
+  if (a && b && typeof a === 'object' && 'x' in a && 'y' in a)
+    return Math.abs(a.x - b?.x) < 1e-6 && Math.abs(a.y - b?.y) < 1e-6;
+  if (a && b && typeof a === 'object')
+    return JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+  return (typeof a === 'string' ? a.trim() : a ?? null) === (typeof b === 'string' ? b.trim() : b ?? null);
+};
+
+/**
+ * The trust fields an owner save actually changes. Fields the save writes are
+ * compared with the stored row; child collections (amenities, photos) are
+ * compared by their caller, so naming one here means it changed.
+ */
+export function trustChanges(current, fields, names) {
+  return names.filter((name) => !(name in fields) || !sameValue(current[name], fields[name]));
 }

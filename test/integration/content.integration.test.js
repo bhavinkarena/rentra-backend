@@ -45,7 +45,7 @@ test(
         second = { kind: 'admin', id: f.second };
       const legacy = await publicContent(sql, 'terms', '2026-09-20'),
         original = await publicContent(sql, 'terms');
-      assert.equal((await listContent(sql, admin)).items.length, 5);
+      assert.equal((await listContent(sql, admin)).items.length, 6);
       for (const actor of [
         { kind: 'owner', id: f.owner },
         { kind: 'admin', id: f.limited },

@@ -14,10 +14,11 @@ async function run(operation) {
     const result = await operation();
     if (result?.preview) return result;
     revalidatePath('/', 'layout');
-    return { message: 'Saved. The current status is shown below.' };
+    return { ...result, message: result?.alreadyReported ? `Already reported on ${new Date(result.reportedAt).toLocaleDateString('en-IN',{timeZone:'Asia/Kolkata'})}.` : 'Saved.' };
   } catch (error) {
     if (error.statusCode) throw error;
     if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };
+    if (!['ALREADY_REVIEWED','NOT_ELIGIBLE','CHANGED'].includes(error.code)) throw error;
     return {
       error:
         {
@@ -66,7 +67,7 @@ export async function ownerReviewReply(previous, form) {
     replyToReview(sql, actor.id, {
       id: form.get('id'),
       version: Number(form.get('version')),
-      body: form.get('body'),
+      body: form.get('mode') === 'delete' ? null : form.get('body'),
       preview: form.get('mode') === 'preview',
       previewToken: form.get('previewToken') || undefined,
     }),

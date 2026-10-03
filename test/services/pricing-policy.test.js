@@ -119,3 +119,52 @@ test('CP12 operational queues do not expand customer filters and action cues fol
     assert.equal(visitOperation({ ...v, state }).action, null);
   assert.equal(visitOperation({ ...v, hours_known: false }).action, null);
 });
+
+test('a visit whose stored price is zero is not offered rather than quoted at ₹0', () => {
+  const zeroWeekday = (dates, overrides = []) =>
+    prepareQuote(
+      { rentableId: '00000000-0000-4000-8000-000000000001', dates, slot: 'day', guests: 3 },
+      listing,
+      [{ slot: 'day', weekday_minor: 0, weekend_minor: 200000 }],
+      overrides,
+      payment,
+      new Date('2030-01-01T00:00:00Z'),
+    );
+  assert.throws(() => zeroWeekday(['2030-01-04']), { code: 'SLOT_UNAVAILABLE' });
+  assert.equal(zeroWeekday(['2030-01-05']).visits[0].baseRentMinor, 200000);
+  // An explicit date price still sells the weekday.
+  assert.equal(
+    zeroWeekday(['2030-01-04'], [{ day: '2030-01-04', slot: 'day', rent_minor: 90000 }]).visits[0]
+      .baseRentMinor,
+    90000,
+  );
+});
+
+test('owner edits that do not touch the chosen visit keep an accepted quote valid', () => {
+  const at = (l, rates, overrides = []) =>
+    prepareQuote(
+      {
+        rentableId: '00000000-0000-4000-8000-000000000001',
+        dates: ['2030-01-04'],
+        slot: 'day',
+        guests: 3,
+      },
+      l,
+      rates,
+      overrides,
+      payment,
+      new Date('2030-01-01T00:00:00Z'),
+    ).hash;
+  const day = { slot: 'day', weekday_minor: 100000, weekend_minor: 200000 };
+  const base = at(listing, [day]);
+  // A December price, a night-slot price or any other calendar save bumps the config version.
+  assert.equal(at({ ...listing, booking_config_version: 9 }, [day]), base);
+  assert.equal(
+    at(listing, [day, { slot: 'night', weekday_minor: 5000, weekend_minor: 6000 }]),
+    base,
+  );
+  assert.equal(at(listing, [day], [{ day: '2030-01-04', slot: 'night', rent_minor: 1 }]), base);
+  // A change to the chosen visit's price still invalidates it.
+  assert.notEqual(at(listing, [{ ...day, weekday_minor: 110000 }]), base);
+  assert.notEqual(at(listing, [day], [{ day: '2030-01-04', slot: 'day', rent_minor: 1 }]), base);
+});

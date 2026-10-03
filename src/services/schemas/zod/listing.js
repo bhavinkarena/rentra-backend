@@ -55,8 +55,10 @@ export const searchParamsSchema = z.object({
 
 export const basicsSchema = z.object({
   categoryId: z.string().uuid('Choose a category'),
-  title: z.string().trim().min(8, 'At least 8 characters').max(90),
-  description: z.string().trim().min(40, 'Tell guests a bit more — 40 characters minimum').max(4000),
+  title: z.string().trim().min(8, "Use at least 8 characters — e.g. 'Riverside farmhouse with pool'").max(90),
+  description: z.string().trim().min(40, {
+      error: (issue) => `Add a little more — ${40 - (issue.input?.length ?? 0)} more characters`,
+    }).max(4000),
   highlight: z.string().trim().max(60).optional().or(z.literal('')),
 });
 
@@ -67,23 +69,20 @@ export const basicsSchema = z.object({
  * both foreign keys are required by the database. Asking for them is honest;
  * silently borrowing seeded values would store a place the owner never chose.
  */
-export const listingStartSchema = basicsSchema.extend({
-  cityId: z.string().uuid('Choose a city'),
-  areaId: z.string().uuid('Choose an area'),
-});
+export const listingStartSchema = z.object({vertical:z.enum(['farmhouse','entertainment']), categoryId:z.string().uuid('Choose a category')});
 
 export const locationSchema = z.object({
   cityId: z.string().uuid('Choose a city'),
   areaId: z.string().uuid('Choose an area'),
-  lat: z.coerce.number().min(6).max(37, 'Pin must be inside India'),
-  lng: z.coerce.number().min(68).max(98, 'Pin must be inside India'),
+  lat: z.coerce.number().min(6, 'Drop the pin on your property in India').max(37, 'The pin must be in India'),
+  lng: z.coerce.number().min(68, 'Drop the pin on your property in India').max(98, 'The pin must be in India'),
   exactAddress: z.string().trim().min(10, 'Give the full address').max(500),
 });
 
 export const capacitySchema = z.object({
-  capacity: z.coerce.number().int().min(1, 'At least 1 guest').max(1000),
+  capacity: z.coerce.number('How many guests can visit at once?').int().min(1, 'How many guests can visit at once?').max(1000),
   bedrooms: z.coerce.number().int().min(0).max(50),
-  farmSize: z.coerce.number().positive('Enter the land size'),
+  farmSize: z.coerce.number().min(0).optional(),
   farmSizeUnit: z.enum(['vigha', 'var', 'acre', 'sqft']),
   poolSize: z.string().trim().max(24).optional().or(z.literal('')),
 });
@@ -113,19 +112,32 @@ export const venueRulesSchema = z.object({
   extraRules: z.string().trim().max(1000).optional().or(z.literal('')),
 }).refine((d) => d.footwear || d.extraRules, { message: 'Say what players should wear, or add a rule', path: ['footwear'] });
 
-const rupees = z.coerce.number().int().min(0).max(500000);
+const rupees = z.preprocess(v=>typeof v==='string'?v.replace(/[\u20b9,\s]/g,''):v,z.coerce.number('Enter a price in rupees, e.g. 4500').int().min(0).max(500000));
 
 export const pricingSchema = z.object({
   day_weekday: rupees, day_weekend: rupees,
   night_weekday: rupees, night_weekend: rupees,
   full_day_weekday: rupees, full_day_weekend: rupees,
   extraGuestCharge: rupees.optional(),
+  includedGuests:z.coerce.number().int().min(1).max(500).optional(),
   extraHourCharge: rupees.optional(),
 }).refine(
   (d) => [d.day_weekday, d.day_weekend, d.night_weekday,
     d.night_weekend, d.full_day_weekday, d.full_day_weekend].some((v) => v > 0),
   { message: 'Price at least one slot', path: ['day_weekday'] },
-);
+).superRefine((d, ctx) => {
+  // A zero side would be quoted to guests as ₹0, so an offered slot needs both.
+  for (const slot of ['day', 'night', 'full_day']) {
+    const [weekday, weekend] = [d[`${slot}_weekday`], d[`${slot}_weekend`]];
+    if ((weekday > 0 && weekday < 500) || (weekend > 0 && weekend < 500)) ctx.addIssue({code:'custom',path:[`${slot}_weekday`],message:'Offer this slot from 500 rupees, or turn it off'});
+    if ((weekday > 0) !== (weekend > 0))
+      ctx.addIssue({
+        code: 'custom',
+        path: [`${slot}_${weekday > 0 ? 'weekend' : 'weekday'}`],
+        message: 'Enter both weekday and weekend prices, or leave both at 0 if you do not offer this slot',
+      });
+  }
+});
 
 export const termsSchema = z.object({
   depositAmount: rupees,
