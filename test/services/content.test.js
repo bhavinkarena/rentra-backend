@@ -5,7 +5,7 @@ import {
   publicContent,
   contentCommand,
 } from '../../src/services/content/service.js';
-import { policyVersions, POLICY_VERSION } from '../../src/services/domain/help.js';
+import { policyVersions, CURRENT_POLICY_VERSION } from '../../src/services/domain/help.js';
 import { canAccessRoute } from '../../src/services/auth/capabilities.js';
 const emptyDatabase = async () => [];
 test('CP25 original published policies remain exact and unrecognized versions fail closed', async () => {
@@ -17,7 +17,7 @@ test('CP25 original published policies remain exact and unrecognized versions fa
       assert.match(p.contentHash, /^[a-f0-9]{64}$/);
       assert.deepEqual(validateContent(kind, body), body);
     }
-  assert.equal((await publicContent(emptyDatabase, 'terms')).version, POLICY_VERSION);
+  assert.equal((await publicContent(emptyDatabase, 'terms')).version, CURRENT_POLICY_VERSION);
   await assert.rejects(publicContent(emptyDatabase, 'constructor'), { statusCode: 404 });
   await assert.rejects(publicContent(emptyDatabase, 'terms', '2026-09-99'), { statusCode: 404 });
   await assert.rejects(publicContent(emptyDatabase, 'terms', '0'.repeat(32)), { statusCode: 404 });
@@ -127,4 +127,25 @@ test('CP25 invalid commands cannot reach the database and public outages do not 
     }, 'terms'),
     (error) => error === outage,
   );
+});
+
+test('policy refresh preserves the contact baseline and effective database publications', async () => {
+  assert.equal((await publicContent(emptyDatabase, 'contact', null, {})).version, '2026-09-21');
+  for (const kind of ['terms', 'privacy', 'cancellation']) {
+    const current = await publicContent(emptyDatabase, kind);
+    assert.equal(current.version, '2026-10-04');
+    assert.equal(current.effectiveAt, '2026-10-04T00:00:00.000Z');
+    const published = {
+      kind,
+      version: 'a'.repeat(32),
+      body: { title: 'Reviewed publication', sections: [['Scope', 'Published copy']] },
+      content_hash: 'b'.repeat(64),
+      effective_at: '2026-10-01T00:00:00.000Z',
+      is_baseline: false,
+    };
+    const publication = await publicContent(async () => [published], kind);
+    assert.deepEqual(publication.body, published.body);
+    assert.equal(publication.version, published.version);
+    assert.equal(publication.source, 'published');
+  }
 });

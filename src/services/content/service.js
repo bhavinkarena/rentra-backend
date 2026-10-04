@@ -3,7 +3,7 @@ import 'server-only';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { badRequest, conflict, forbidden, notFound, unavailable } from '@/utils/apiError.js';
-import { POLICY_VERSION, policyVersions, faqs, supportContact } from '../domain/help.js';
+import { POLICY_VERSION, CURRENT_POLICY_VERSION, policyVersions, faqs, supportContact } from '../domain/help.js';
 export const contentKinds = ['terms', 'privacy', 'cancellation', 'help', 'contact', 'owner_help'];
 const policyKinds = ['terms', 'privacy', 'cancellation'];
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -91,7 +91,7 @@ export function validateContent(kind, body) {
   validKind(kind);
   return parse(schemas[kind] || policySchema, body);
 }
-const versionSchema = z.string().regex(/^(?:2026-09-(?:20|21)|[a-f0-9]{32})$/);
+const versionSchema = z.union([z.enum(Object.keys(policyVersions)), z.string().regex(/^[a-f0-9]{32}$/)]);
 function builtin(kind, version = POLICY_VERSION, env = process.env) {
   let body;
   if (policyKinds.includes(kind)) body = policyVersions[version]?.[kind];
@@ -135,7 +135,7 @@ export async function publicContent(database, kind, version = null, env = proces
     ? await database`SELECT * FROM content_publication WHERE kind=${kind} AND version=${version}`
     : await database`SELECT * FROM content_publication WHERE kind=${kind} AND effective_at<=clock_timestamp() ORDER BY effective_at DESC,id DESC LIMIT 1`;
   if (row) return publication(row);
-  return builtin(kind, version || POLICY_VERSION, env);
+  return builtin(kind, version || (policyKinds.includes(kind) ? CURRENT_POLICY_VERSION : POLICY_VERSION), env);
 }
 /** Serialize new acceptance against publication; callers retain this shared lock until commit. */
 export async function currentPolicyReferences(tx) {
@@ -198,7 +198,7 @@ export async function readContent(database, actor, kind, query = {}) {
     const [{ total }] =
       await tx`SELECT count(*)::int total FROM content_publication WHERE kind=${kind}`;
     const publishedVersions =
-      await tx`SELECT version FROM content_publication WHERE kind=${kind} AND version IN ('2026-09-20','2026-09-21')`;
+      await tx`SELECT version FROM content_publication WHERE kind=${kind} AND version IN ('2026-09-20','2026-09-21','2026-10-04')`;
     const legacy = (policyKinds.includes(kind) ? Object.keys(policyVersions) : [POLICY_VERSION])
       .reverse()
       .map((version) => ({

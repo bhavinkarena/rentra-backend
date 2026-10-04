@@ -1,4 +1,7 @@
+import currentPolicies from './policies-2026-10-04.js';
+// Keep the non-policy content baseline stable for existing publication records.
 export const POLICY_VERSION = '2026-09-21';
+export const CURRENT_POLICY_VERSION = '2026-10-04';
 export const supportCategories = { booking: 'Booking or arrival', change: 'Change dates or guests', cancellation: 'Cancellation', payment: 'Test payment or refund', privacy: 'Privacy or account data', other: 'Something else' };
 export const supportStates = { open: 'Open', in_progress: 'In progress', waiting_customer: 'Awaiting customer reply', resolved: 'Resolved' };
 export const faqs = [
@@ -52,3 +55,5 @@ export function supportContact(env = process.env) {
   const phone = /^\+?[1-9]\d{9,14}$/.test(env.RENTRA_SUPPORT_PHONE || '') ? env.RENTRA_SUPPORT_PHONE : null;
   return { email, whatsapp, phone, hours: (env.RENTRA_SUPPORT_HOURS || '').trim().slice(0,200) || null };
 }
+
+policyVersions[CURRENT_POLICY_VERSION] = currentPolicies;
