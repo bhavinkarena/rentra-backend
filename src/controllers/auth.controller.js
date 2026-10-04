@@ -1,3 +1,6 @@
+import { switchToClient } from '@/services/auth/role-switch-actions.js';
+import { hasCustomerAccount } from '@/services/auth/role-switch.js';
+import { sql } from '@/services/db/index.js';
 import { portalCacheScope } from '@/services/auth/cache-scope.js';
 import {
   requestClientOtp,
@@ -37,6 +40,8 @@ export const me = asyncHandler(async (req, res) => {
 
   if (user.role !== 'client') return ok(res, { user, completion: null });
 
+  user.hasCustomerAccount = await hasCustomerAccount(sql, user);
+
   const application = await getOrCreateApplication(user.id);
   // The application was just resolved; do not query its ID a second time.
   const documents = await listDocuments({
@@ -65,3 +70,5 @@ export const identity = asyncHandler(async (req, res) => {
       : null,
   });
 });
+
+export const switchRole = runAction(switchToClient, { style: 'none' });

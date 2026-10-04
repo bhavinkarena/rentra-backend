@@ -5,6 +5,7 @@ import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { sql } from '../db/index.js';
 import { getCurrentUser } from './dal.js';
+import { switchAccountRole } from './role-switch-actions.js';
 import { getCurrentAdmin, destroyAdminSession } from './admin.js';
 import { createSession, destroySession } from './session.js';
 import { customerPhone, customerRequestIp, requestCustomerCode, verifyCustomerCode } from './customer-identity.js';
@@ -27,6 +28,9 @@ export async function beginCustomerLogin(input) {
   if (!listing) return { error: 'This listing is no longer available.' };
   const jar = await cookies();
   jar.set(SELECTION_COOKIE, await signCustomerSelection(parsed.data, listingPath(listing.slug, listing.public_code)), cookieOptions(SELECTION_TTL));
+  const user = await getCurrentUser();
+  if (user?.role === 'client') return switchAccountRole('customer');
+  if (user?.role === 'customer') redirect(listingPath(listing.slug, listing.public_code));
   redirect('/login');
 }
 
@@ -69,10 +73,13 @@ export async function verifyCustomerOtp(_previous, formData) {
 
 /** Explicit user action; keeps the saved listing selection while changing role. */
 export async function switchToCustomer() {
-  await destroySession();
-  await destroyAdminSession();
-  (await cookies()).delete(CHALLENGE_COOKIE);
-  redirect('/login');
+  if (await getCurrentAdmin()) {
+    await destroySession();
+    await destroyAdminSession();
+    (await cookies()).delete(CHALLENGE_COOKIE);
+    redirect('/login');
+  }
+  return switchAccountRole('customer');
 }
 
 /** Called after hydration so public listing pages remain cacheable and identity-free. */

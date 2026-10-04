@@ -31,6 +31,7 @@ router.post(
   auth.confirmPhoneOtp,
 );
 
+router.post('/switch', auth.switchRole);
 router.post('/logout', auth.signOut);
 
 /** Public: returns `{ user: null }` rather than 401 when signed out. */
