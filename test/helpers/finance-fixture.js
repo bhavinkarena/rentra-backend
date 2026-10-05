@@ -17,8 +17,8 @@ export async function seedFinanceFixture(sql, f) {
         ...(options.unattributed ? {} : { ownerId: f.owner }),
       };
       const [order] =
-        await tx`INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,payment_mode,visit_provenance)
-      VALUES (${key},${customer.id},${f.listing},'INR','Asia/Kolkata','v1','v1','{}',${JSON.stringify(snapshot)}::text::jsonb,100000,8000,0,${key},${'a'.repeat(64)},'completed',${mode},${environment === 'live' ? 'real' : 'test'}) RETURNING id`;
+        await tx`INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,payment_mode,visit_provenance,created_at)
+      VALUES (${key},${customer.id},${f.listing},'INR','Asia/Kolkata','v1','v1','{}',${JSON.stringify(snapshot)}::text::jsonb,100000,8000,0,${key},${'a'.repeat(64)},'completed',${mode},${environment === 'live' ? 'real' : 'test'},${options.orderCreatedAt ?? new Date().toISOString()}) RETURNING id`;
       const [visit] =
         await tx`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,visit_provenance,units_booked,guests)
       VALUES (${key.slice(0, 16)},${f.listing},${customer.id},${order.id},1,current_date-1,'day','completed',now()-interval '1 day',now()-interval '16 hours','INR','Asia/Kolkata',100000,8000,0,${mode},${environment === 'live' ? 'real' : 'test'},1,2) RETURNING id`;
@@ -30,7 +30,7 @@ export async function seedFinanceFixture(sql, f) {
       VALUES (${payment.id},${provider},${environment},${mode},'INR',1,108000,'succeeded',${key}) RETURNING id`;
       const [transaction] =
         await tx`INSERT INTO payment_transaction(attempt_id,reference,provider,environment,mode,currency,kind,outcome,expected_minor,simulated_minor,captured_minor,provider_payment_id,external_ledger_id,verified_at,evidence_hash)
-      VALUES (${attempt.id},${sim ? 'DUMMY_TXN_' + key : key},${provider},${environment},${mode},'INR',${sim ? 'simulated' : 'capture'},'succeeded',108000,${sim ? 108000 : 0},${sim ? 0 : 108000},${key},${key},now(),${'c'.repeat(64)}) RETURNING id`;
+      VALUES (${attempt.id},${sim ? 'DUMMY_TXN_' + key : key},${provider},${environment},${mode},'INR',${sim ? 'simulated' : 'capture'},'succeeded',108000,${sim ? 108000 : 0},${sim ? 0 : 108000},${key},${key},${options.verifiedAt ?? new Date().toISOString()},${'c'.repeat(64)}) RETURNING id`;
       const allocations = [];
       for (const [component, value] of [
         ['rent', 100000],

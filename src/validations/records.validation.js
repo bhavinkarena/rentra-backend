@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { uuid } from './common.validation.js';
+import { dashboardDate } from '@/services/admin/dashboard-scope.js';
 
 export const recordIdParam = z.object({ id: uuid });
 
@@ -23,6 +24,11 @@ export const historyQuery = z.object({
 });
 
 export const operationalHistoryQuery = historyQuery.extend({
+  createdFrom: dashboardDate.optional(),
+  createdTo: dashboardDate.optional(),
+  environment: z.enum(['live', 'test', 'simulated']).optional(),
+  rentOnly: z.enum(['1']).optional(),
+  unit: z.enum(['visits']).optional(),
   tab: z
     .enum(['all', 'upcoming', 'today', 'action_needed', 'with_rentra', 'past', 'cancelled'])
     .default('all'),

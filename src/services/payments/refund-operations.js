@@ -1,5 +1,6 @@
 import 'server-only';
 import { z } from 'zod';
+import { isLocalDate } from '../domain/booking-dates.js';
 import { withListingInventory } from '../booking/inventory.js';
 import { capturedAllocations, createRefundObligations, testSourcesOnly } from '../booking/cancellation.js';
 import { quoteDigest } from '../booking/quotes.js';
@@ -75,6 +76,9 @@ const statusSql = (tx) => tx`CASE WHEN l.mode='simulated' THEN 'simulated' WHEN 
 const STATUSES = ['queued', 'processing', 'uncertain', 'provider_failed', 'refunded', 'unsupported', 'simulated'];
 const listSchema = z.object({
   environment: z.enum(['test', 'simulated', 'live', 'all']).catch('test'),
+  dashboard: z.enum(['success','pending','exceptions']).optional(),
+  from: z.string().refine(isLocalDate).optional(),
+  to: z.string().refine(isLocalDate).optional(),
   status: z.enum(['all', 'attention', ...STATUSES]).catch('all'),
   source: z.enum(['all', 'customer_cancellation', 'booking_case', 'late_capture', 'operator', 'other']).catch('all'),
   q: z.string().trim().max(100).catch(''),
@@ -104,12 +108,14 @@ function item(l) {
 
 export async function listRefunds(database, actor, input = {}) {
   const f = listSchema.parse({ environment: 'test', status: 'all', source: 'all', q: '', page: 1, ...input });
+  if (f.dashboard==='success' && (!f.from || !f.to || f.from>f.to)) throw new RefundOperationError('INVALID_FILTER','Refund evidence needs a valid date range');
   const size = 25;
   return database.begin(async (tx) => {
     await requireAdmin(tx, actor);
     const env = tx`CASE WHEN l.mode='simulated' THEN 'simulated' ELSE l.environment END`;
     const attention = tx`${statusSql(tx)} IN ('uncertain','provider_failed','unsupported')`;
-    const where = tx`(${f.environment}='all' OR ${env}=${f.environment})
+    const dashboard = f.dashboard === 'success' ? tx`l.state='succeeded' AND l.verified_at>=${f.from}::date AT TIME ZONE 'Asia/Kolkata' AND l.verified_at<(${f.to}::date+1) AT TIME ZONE 'Asia/Kolkata'` : f.dashboard === 'pending' ? tx`l.state IN ('requested','processing','unknown')` : f.dashboard === 'exceptions' ? tx`l.state IN ('unknown','failed')` : tx`true`;
+    const where = tx`${dashboard} AND (${f.environment}='all' OR ${env}=${f.environment})
       AND (${f.status}='all' OR (${f.status}='attention' AND ${attention}) OR ${statusSql(tx)}=${f.status})
       AND (${f.source}='all' OR l.source=${f.source})
       AND (${f.q}='' OR position(lower(${f.q}) in lower(l.reference))>0 OR position(lower(${f.q}) in lower(l.booking_reference))>0

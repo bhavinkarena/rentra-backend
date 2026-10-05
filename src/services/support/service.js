@@ -353,7 +353,7 @@ export async function readSupportRequest(database, actor, id, env = process.env)
   });
 }
 export async function listSupportRequests(database, actor, input = {}, env = process.env) {
-  const state = states.includes(input.state) ? input.state : 'all',
+  const state = (states.includes(input.state) || (actor.kind==='admin' && input.state==='unresolved')) ? input.state : 'all',
     page = Math.min(
       100000,
       Math.max(1, Number.isSafeInteger(Number(input.page)) ? Number(input.page) : 1),
@@ -364,7 +364,7 @@ export async function listSupportRequests(database, actor, input = {}, env = pro
     assignment = ['mine', 'unassigned'].includes(input.assignment) ? input.assignment : 'all';
   return database.begin(async (tx) => {
     const actorId = await authorize(tx, actor, env);
-    const condition = tx`${scope(tx, actor, actorId)} AND ${state === 'all' ? tx`true` : tx`state=${state}`} AND ${actor.kind !== 'admin' || participant === 'all' ? tx`true` : participant === 'client' ? tx`client_id IS NOT NULL` : tx`customer_id IS NOT NULL`} AND ${actor.kind !== 'admin' || assignment === 'all' ? tx`true` : assignment === 'mine' ? tx`assigned_to=${actorId}` : tx`assigned_to IS NULL`}`;
+    const condition = tx`${scope(tx, actor, actorId)} AND ${state === 'all' ? tx`true` : state === 'unresolved' ? tx`state<>'resolved'` : tx`state=${state}`} AND ${actor.kind !== 'admin' || participant === 'all' ? tx`true` : participant === 'client' ? tx`client_id IS NOT NULL` : tx`customer_id IS NOT NULL`} AND ${actor.kind !== 'admin' || assignment === 'all' ? tx`true` : assignment === 'mine' ? tx`assigned_to=${actorId}` : tx`assigned_to IS NULL`}`;
     const [{ count }] =
       await tx`SELECT count(*)::int count FROM support_request WHERE ${condition}`;
     const rows =

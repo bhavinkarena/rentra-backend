@@ -71,9 +71,32 @@ const support = await createSupportRequest(
     requestKey: crypto.randomUUID(),
   },
 );
+// Opt-in Phase 4 dataset; the baseline fixture stays unchanged.
+const dashboardRoles = {};
+if (process.env.ADMIN_DASHBOARD_FIXTURE === '1') {
+  const { seedFinanceFixture } = await import('./finance-fixture.js');
+  const finance = await seedFinanceFixture(sql, f);
+  const { propertyToday } = await import('../../src/services/domain/booking-dates.js');
+  const today = propertyToday();
+  await sql`UPDATE booking SET hours_known=true,blocked_start_at=${`${today}T09:00:00+05:30`}::timestamptz,blocked_end_at=${`${today}T18:00:00+05:30`}::timestamptz,local_day=${today}::date,starts_at=${`${today}T09:00:00+05:30`}::timestamptz,ends_at=${`${today}T18:00:00+05:30`}::timestamptz WHERE id=${finance.live.bookingId}`;
+  await sql`INSERT INTO service_health(service,healthy,checked_at) VALUES ('payments',true,now()),('notifications',false,now()-interval '3 minutes')`;
+  const [approved] = await sql`SELECT id FROM client_application WHERE user_id=${f.owner}`;
+  await sql`UPDATE client_application SET reviewed_at=now() WHERE id=${approved.id}`;
+  await sql`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action) VALUES ('admin',${f.admin},'client_application',${approved.id},'application_approved')`;
+  for (const [role, permissions] of Object.entries({
+    finance: ['admin.payments.read'],
+    applications: ['admin.applications.read'],
+    empty: [],
+  })) {
+    const [operator] =
+      await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES (${role + '@fixture.invalid'},'fixture-only',${role},${JSON.stringify(permissions)}::text::jsonb) RETURNING id`;
+    dashboardRoles[role] = operator.id;
+  }
+}
 const { issuePortalSession } = await import('../../src/services/auth/portal-sessions.js');
 const tokens = {};
 for (const [role, id] of Object.entries({
+  ...dashboardRoles,
   full: f.admin,
   readonly: reader.id,
   restricted: f.limited,

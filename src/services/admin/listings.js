@@ -22,6 +22,7 @@ export const REVIEW_SECTIONS = [
   'hours',
 ];
 export const listingQueueQuery = z.object({
+  submitted: z.enum(['1']).optional(),
   status: z
     .enum(['pending_review', 'pending_verification', 'live', 'paused', 'hidden', 'draft', 'rejected', 'all'])
     .default('pending_review'),
@@ -164,7 +165,7 @@ export async function listPropertyReviews(database, adminId, input) {
       : f.assignee === 'unassigned'
         ? database`s.assigned_to IS NULL`
         : database`true`;
-  const filter = database`${status} AND ${assignee}
+  const filter = database`${status} AND ${assignee} AND ${f.submitted === '1' ? database`s.id IS NOT NULL` : database`true`}
     AND (${f.q}='' OR position(lower(${f.q}) in lower(r.title))>0 OR position(lower(${f.q}) in lower(coalesce(u.email,'')))>0 OR r.public_code=${f.q})`;
   const join = database`FROM rentable r JOIN "user" u ON u.id=r.client_id
     LEFT JOIN listing_submission s ON s.rentable_id=r.id AND s.pass_number=r.review_pass

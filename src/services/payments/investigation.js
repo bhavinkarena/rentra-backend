@@ -1,5 +1,6 @@
 import 'server-only';
 import { z } from 'zod';
+import { isLocalDate } from '../domain/booking-dates.js';
 import { reconcilePayment } from './checkout-service.js';
 import { paymentStatus, maskKeyId } from '../domain/payment-investigation.js';
 
@@ -33,19 +34,22 @@ async function requireAdmin(tx, actor) {
 }
 
 /** Per-order money and attention, computed once per payment order. */
-function ledger(tx) {
+export function paymentLedger(tx, filters = {}) {
+  const capturePeriod = filters.basis === 'capture' ? tx`AND tx.verified_at>=${filters.from}::date AT TIME ZONE 'Asia/Kolkata'
+    AND tx.verified_at<(${filters.to}::date+1) AT TIME ZONE 'Asia/Kolkata'` : tx``;
   return tx`SELECT p.id,p.booking_order_id,p.provider,p.environment::text environment,p.mode::text mode,p.currency,p.purpose::text purpose,
       p.state::text state,p.expected_minor,p.provider_order_id,p.created_at,b.reference booking_reference,b.state booking_state,
       b.listing_snapshot->>'title' title,u.name customer_name,
       e.state execution_state,e.failure_code execution_failure,
-      coalesce(t.captured,0) captured_minor,coalesce(t.simulated,0) simulated_minor,
+      coalesce(t.captured,0) captured_minor,coalesce(t.captured_all,0) captured_all_minor,coalesce(t.simulated,0) simulated_minor,
       coalesce(r.refunded,0) refunded_minor,coalesce(r.pending,0) refund_pending_minor,coalesce(r.uncertain,0) refunds_uncertain,
       coalesce(ev.failed,0) events_failed,coalesce(a.unknown,0) attempts_unknown
     FROM payment_order p
     JOIN booking_order b ON b.id=p.booking_order_id
     JOIN "user" u ON u.id=b.customer_id
     LEFT JOIN payment_execution e ON e.payment_order_id=p.id
-    LEFT JOIN LATERAL (SELECT sum(tx.captured_minor) FILTER (WHERE tx.kind='capture' AND tx.outcome='succeeded' AND tx.verified_at IS NOT NULL) captured,
+    LEFT JOIN LATERAL (SELECT sum(tx.captured_minor) FILTER (WHERE tx.kind='capture' AND tx.outcome='succeeded' AND tx.verified_at IS NOT NULL ${capturePeriod}) captured,
+        sum(tx.captured_minor) FILTER (WHERE tx.kind='capture' AND tx.outcome='succeeded' AND tx.verified_at IS NOT NULL) captured_all,
         sum(tx.simulated_minor) FILTER (WHERE tx.kind='simulated') simulated
       FROM payment_attempt at JOIN payment_transaction tx ON tx.attempt_id=at.id WHERE at.payment_order_id=p.id) t ON true
     LEFT JOIN LATERAL (SELECT sum(rf.actual_minor) FILTER (WHERE rf.state='succeeded') refunded,
@@ -58,17 +62,18 @@ function ledger(tx) {
     LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE at.state='unknown') unknown FROM payment_attempt at WHERE at.payment_order_id=p.id) a ON true`;
 }
 
-const attentionSql = (tx) =>
+export const paymentAttentionSql = (tx) =>
   tx`(l.refunds_uncertain>0 OR l.events_failed>0 OR l.attempts_unknown>0
     OR (l.state<>'succeeded' AND (l.execution_state IN ('dispatched','unknown','linked') OR l.execution_failure IS NOT NULL)))`;
 
 const listSchema = z.object({
+  basis: z.enum(['created','capture']).default('created'),
   environment: z.enum(['test', 'simulated', 'live', 'all']).catch('test'),
   state: z.enum([...STATES, 'all']).catch('all'),
   attention: z.enum(['all', 'needs_review']).catch('all'),
   q: z.string().trim().max(100).catch(''),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal('')).catch(''),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal('')).catch(''),
+  from: z.string().refine(v=>v==='' || isLocalDate(v)).or(z.literal('')).catch(''),
+  to: z.string().refine(v=>v==='' || isLocalDate(v)).or(z.literal('')).catch(''),
   page: z.coerce.number().int().min(1).max(999999).catch(1),
 });
 
@@ -95,30 +100,32 @@ function row(l) {
     refundPendingMinor: n(l.refund_pending_minor),
     executionState: l.execution_state,
   };
-  return { ...item, status: paymentStatus({ ...item, refundsUncertain: n(l.refunds_uncertain), eventsFailed: n(l.events_failed), attemptsUnknown: n(l.attempts_unknown), executionFailure: l.execution_failure }) };
+  return { ...item, status: paymentStatus({ ...item, capturedMinor:n(l.captured_all_minor), refundsUncertain: n(l.refunds_uncertain), eventsFailed: n(l.events_failed), attemptsUnknown: n(l.attempts_unknown), executionFailure: l.execution_failure }) };
 }
 
 export async function listPaymentOrders(database, actor, input = {}) {
   const f = listSchema.parse({ environment: 'test', state: 'all', attention: 'all', q: '', from: '', to: '', page: 1, ...input });
+  if (f.basis === 'capture' && (!f.from || !f.to || f.from > f.to)) throw new InvestigationError('INVALID_FILTER', 'Capture evidence needs a valid date range');
   const size = 25;
   return database.begin(async (tx) => {
     await requireAdmin(tx, actor);
     const where = tx`(${f.environment}='all' OR l.environment=${f.environment}) AND (${f.state}='all' OR l.state=${f.state})
-      AND (${f.attention}='all' OR ${attentionSql(tx)})
-      AND (${f.from}='' OR (l.created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${f.from || '1970-01-01'}::date)
-      AND (${f.to}='' OR (l.created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${f.to || '1970-01-01'}::date)
+      AND (${f.attention}='all' OR ${paymentAttentionSql(tx)})
+      AND (${f.basis}='capture' OR ((${f.from}='' OR (l.created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${f.from || '1970-01-01'}::date)
+        AND (${f.to}='' OR (l.created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${f.to || '1970-01-01'}::date)))
+      AND (${f.basis}<>'capture' OR l.captured_minor>0)
       AND (${f.q}='' OR position(lower(${f.q}) in lower(l.booking_reference))>0 OR l.id::text=${f.q} OR l.provider_order_id=${f.q}
         OR EXISTS(SELECT 1 FROM payment_attempt at WHERE at.payment_order_id=l.id AND at.provider_payment_id=${f.q}))`;
     // Totals group by environment: Test, simulated and live money are never added together.
-    const totals = await tx`WITH l AS (${ledger(tx)}) SELECT l.environment,count(*)::int count,
+    const totals = await tx`WITH l AS (${paymentLedger(tx, f)}) SELECT l.environment,count(*)::int count,
       sum(l.expected_minor)::text expected,sum(l.captured_minor)::text captured,sum(l.simulated_minor)::text simulated,
       sum(l.refunded_minor)::text refunded,sum(l.refund_pending_minor)::text refund_pending,
-      count(*) FILTER (WHERE ${attentionSql(tx)})::int needs_review
+      count(*) FILTER (WHERE ${paymentAttentionSql(tx)})::int needs_review
       FROM l WHERE ${where} GROUP BY l.environment ORDER BY l.environment`;
     const total = totals.reduce((sum, t) => sum + t.count, 0);
     const pages = Math.max(1, Math.ceil(total / size)),
       page = Math.min(f.page, pages);
-    const rows = await tx`WITH l AS (${ledger(tx)}) SELECT l.* FROM l WHERE ${where}
+    const rows = await tx`WITH l AS (${paymentLedger(tx, f)}) SELECT l.* FROM l WHERE ${where}
       ORDER BY l.created_at DESC,l.id DESC LIMIT ${size} OFFSET ${(page - 1) * size}`;
     return {
       ...f,
@@ -145,7 +152,7 @@ export async function readPaymentOrder(database, actor, id) {
   if (!uuid.safeParse(id).success) throw new InvestigationError('PAYMENT_NOT_FOUND', 'Not found', 404);
   return database.begin(async (tx) => {
     await requireAdmin(tx, actor);
-    const [l] = await tx`WITH l AS (${ledger(tx)}) SELECT l.*,b.rentable_id,b.customer_id,b.policy_snapshot->>'cancellationTier' tier,
+    const [l] = await tx`WITH l AS (${paymentLedger(tx)}) SELECT l.*,b.rentable_id,b.customer_id,b.policy_snapshot->>'cancellationTier' tier,
       p.due_at,e.config_version,e.credential_key_id,e.next_check_at,e.updated_at execution_updated_at,
       (SELECT enabled FROM payment_gateway_config ORDER BY version DESC LIMIT 1) gateway_enabled
       FROM l JOIN payment_order p ON p.id=l.id JOIN booking_order b ON b.id=l.booking_order_id
@@ -242,7 +249,7 @@ export async function reconcilePaymentOrder(database, actor, input, options = {}
     const [previous] = await tx`SELECT after FROM audit_log WHERE entity='payment_order' AND entity_id=${value.id}
       AND action='payment_reconcile_requested' AND actor_id=${actor.id} AND after->>'requestKey'=${value.requestKey}`;
     if (previous) return { replay: previous.after };
-    const [l] = await tx`WITH l AS (${ledger(tx)}) SELECT l.* FROM l WHERE l.id=${value.id}`;
+    const [l] = await tx`WITH l AS (${paymentLedger(tx)}) SELECT l.* FROM l WHERE l.id=${value.id}`;
     if (!l) throw new InvestigationError('PAYMENT_NOT_FOUND', 'Not found', 404);
     if (!row(l).status.reconcilable) throw new InvestigationError('NOTHING_TO_RECONCILE', 'This payment has no provider outcome to re-fetch.', 409);
     return { before: l.state };

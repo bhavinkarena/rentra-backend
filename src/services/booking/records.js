@@ -1,6 +1,7 @@
 import { ledger } from '../finance/statements.js';
 import { ownerDayVisits, ownerVisitDay } from './owner-visits.js';
 import 'server-only';
+import { orderEnvironmentSql, bookedRentSql, todayVisitSql } from '../admin/dashboard-scope.js';
 import { houseRuleLines } from '../domain/venue-rules.js';
 import { visitLabel } from '../domain/booking-record.js';
 import { savedListingHref } from '../domain/saved-places.js';
@@ -30,6 +31,8 @@ export function historyFilters(input = {}, operational = false) {
       resource: uuid.safeParse(input.resource).success ? input.resource : ''} : {}),
     vertical: ['farmhouse', 'entertainment'].includes(input.vertical) ? input.vertical : '',
     from:isLocalDate(input.from)?input.from:'',to:isLocalDate(input.to)?input.to:'',event:['arriving','leaving'].includes(input.event)?input.event:'all',
+    createdFrom:isLocalDate(input.createdFrom)?input.createdFrom:'',createdTo:isLocalDate(input.createdTo)?input.createdTo:'',
+    environment:['live','test','simulated'].includes(input.environment)?input.environment:'',rentOnly:input.rentOnly==='1'?'1':'',unit:input.unit==='visits'?'visits':'',
     q: typeof input.q === 'string' ? input.q.trim().slice(0, 100) : '' };
 }
 
@@ -75,7 +78,23 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
   return database.begin(async tx => {
     const { condition: scoped } = await scope(tx, actor, env);
     // An unpaid or abandoned checkout is not a booking the owner has to handle.
-    const allowed = actor.kind === 'owner' ? tx`${scoped} AND o.state NOT IN ('held','expired')` : scoped;
+    const dashboardFilter = actor.kind === 'admin' ? tx`(${filters.environment}='' OR ${orderEnvironmentSql(tx)}=${filters.environment})
+      AND (${filters.createdFrom}='' OR o.created_at>=NULLIF(${filters.createdFrom},'')::date AT TIME ZONE 'Asia/Kolkata')
+      AND (${filters.createdTo}='' OR o.created_at<(NULLIF(${filters.createdTo},'')::date+1) AT TIME ZONE 'Asia/Kolkata')
+      AND (${filters.rentOnly}='' OR ${bookedRentSql(tx)}>0)` : tx`true`;
+    const allowed = actor.kind === 'owner' ? tx`${scoped} AND o.state NOT IN ('held','expired')` : tx`${scoped} AND ${dashboardFilter}`;
+    if (actor.kind === 'admin' && filters.tab === 'today' && filters.unit === 'visits') {
+      const visitFilter = tx`${allowed} AND ${todayVisitSql(tx, propertyToday())}
+        AND ${filters.property ? tx`o.rentable_id=${filters.property}` : tx`true`}
+        AND (${filters.q}='' OR position(lower(${filters.q}) in lower(o.reference))>0
+          OR position(lower(${filters.q}) in lower(v.reference))>0
+          OR position(lower(${filters.q}) in lower(coalesce(o.listing_snapshot->>'title','')))>0)`;
+      const [count] = await tx`SELECT count(*)::int total FROM booking v JOIN booking_order o ON o.id=v.order_id JOIN rentable r ON r.id=o.rentable_id WHERE ${visitFilter}`;
+      const pages = Math.max(1,Math.ceil(count.total/size)), page=Math.min(filters.page,pages);
+      const rows = await tx`SELECT o.*,v.id visit_id,v.reference visit_reference,v.local_day::text first_visit,v.state visit_state,v.starts_at,v.ends_at,v.slot,v.hours_known,(SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
+        FROM booking v JOIN booking_order o ON o.id=v.order_id JOIN rentable r ON r.id=o.rentable_id WHERE ${visitFilter} ORDER BY v.starts_at,v.id LIMIT ${size} OFFSET ${(page-1)*size}`;
+      return {...filters,page,pages,total:count.total,summary:{total:count.total,today:count.total},properties:[],verticals:[],resources:[],items:rows.map(r=>({...orderDTO(r),visitId:r.visit_id,visitCount:1,visitStates:[r.visit_state],payments:r.payments || [],firstVisitLabel:`${r.visit_reference} \u00b7 ${r.first_visit}`,firstVisitSlot:r.slot,firstVisitStartsAt:r.hours_known?instant(r.starts_at):null}))};
+    }
     const upcoming = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','disputed') AND v.ends_at>clock_timestamp())`;
     const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed','no_show') AND v.ends_at<=clock_timestamp())`;
     const cancelled = tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))`;
@@ -128,7 +147,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       : filters.tab === 'all' ? tx`(${upcoming}) DESC,CASE WHEN ${upcoming} THEN ${nextStart} END ASC,${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`
       : tx`${lastStart} DESC NULLS LAST,o.created_at DESC,o.id DESC`;
     const pages = Math.max(1, Math.ceil(count / size)), page = Math.min(filters.page, pages);
-    const rows = await tx`SELECT o.*,r.booking_config,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
+    const rows = await tx`SELECT o.*,${actor.kind === 'admin' && filters.rentOnly ? bookedRentSql(tx) : tx`NULL`} dashboard_rent_minor,r.booking_config,r.photos current_photos,o.hold_expires_at<=clock_timestamp() hold_expired,
       (SELECT min(v.local_day)::text FROM booking v WHERE v.order_id=o.id) first_visit,
       (SELECT count(*)::int FROM booking v WHERE v.order_id=o.id) visit_count,
       (SELECT row_to_json(f) FROM (SELECT v.slot,v.local_day,v.starts_at,v.ends_at,v.hours_known,v.time_zone,v.slot_snapshot,rs.name AS resource_name
@@ -143,7 +162,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments
       FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE ${allowed} AND ${property} AND ${tab} AND ${match}
       ORDER BY ${order} LIMIT ${size} OFFSET ${(page - 1) * size}`;
-    return { ...filters, verticals, resources, properties,page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), ...(operational ? {propertyId:row.rentable_id} : {}), visitCount: row.visit_count,
+    return { ...filters, verticals, resources, properties,page, pages, total: count, summary, items: rows.map(row => ({ ...orderDTO(row), ...(actor.kind === 'admin' && filters.rentOnly ? {rentMinor:String(row.dashboard_rent_minor)} : {}), ...(operational ? {propertyId:row.rentable_id} : {}), visitCount: row.visit_count,
       visitStates: row.visit_states || [], payments: row.payments || [], vertical: row.vertical,
       // The first visit's own words and start, so a list says when and which court.
       firstVisitLabel: row.first_row ? visitLabel(row.first_row) : null, firstVisitSlot: row.first_row?.slot ?? null,

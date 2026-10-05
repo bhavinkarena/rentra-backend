@@ -7,6 +7,8 @@ import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
 import { Router } from 'express';
 import * as admin from '@/controllers/admin.controller.js';
+import { dashboard, decisionHistory } from '@/controllers/dashboard.controller.js';
+import { dashboardQuery, dashboardDate } from '@/services/admin/dashboard-scope.js';
 import * as clients from '@/controllers/clients.controller.js';
 import * as propertyReviews from '@/controllers/propertyReviews.controller.js';
 import { listingQueueQuery } from '@/services/admin/listings.js';
@@ -51,7 +53,6 @@ import { supportIdParam, supportListQuery } from '@/validations/support.validati
  */
 const router = Router();
 router.use(requireAdmin);
-router.use(requirePortalCapability('admin'));
 
 /** Nothing under /admin should ever be cached or indexed. */
 router.use((_req, res, next) => {
@@ -60,6 +61,9 @@ router.use((_req, res, next) => {
   next();
 });
 
+// Dashboard has no new super-admin grant: its service checks each module independently.
+router.get('/dashboard', validate({ query: dashboardQuery }), dashboard);
+router.use(requirePortalCapability('admin'));
 router.get('/content', content.list);
 router.get('/security', operators.list);
 router.post('/security', operators.command);
@@ -76,6 +80,19 @@ router.post('/catalogues/:type/:id', catalogues.command);
  * Partner approval queue
  * ---------------------------------------------------------------- */
 router.get('/applications', validate({ query: applicationQueueQuery }), admin.queue);
+router.get(
+  '/applications/history',
+  validate({
+    query: z
+      .object({
+        from: dashboardDate,
+        to: dashboardDate,
+        page: z.coerce.number().int().min(1).max(100000).default(1),
+      })
+      .refine((q) => q.from <= q.to, 'Invalid period'),
+  }),
+  decisionHistory,
+);
 router.get('/properties', validate({ query: listingQueueQuery }), propertyReviews.list);
 router.get('/properties/:id', validate({ params: clientIdParam }), propertyReviews.detail);
 router.post(
