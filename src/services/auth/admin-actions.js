@@ -173,7 +173,7 @@ async function decide(decision, formData) {
     ip: await adminIp(),
   });
   const outcome = decision === 'reject' && result.accountBlocked ? 'blocked' : { approve: 'approved', more_info: 'more_info', reject: 'rejected' }[decision];
-  redirect(`/admin?decided=${outcome}`);
+  redirect(`/admin/applications?decided=${outcome}`);
 }
 
 export async function approveApplication(_prev, formData) {
