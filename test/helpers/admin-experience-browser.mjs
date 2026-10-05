@@ -137,6 +137,25 @@ if (process.env.ADMIN_REVIEW_FIXTURE === '1') {
     dashboardRoles[role] = admin.id;
   }
 }
+// Opt-in communication workspace fixtures; no delivery worker or external storage.
+const comms = {};
+if (process.env.ADMIN_COMMS_FIXTURE === '1') {
+  const { seedReviewModeration } = await import('./review-moderation-fixture.js');
+  const review = await seedReviewModeration(sql, f, booking);
+  comms.reviewId = review.reviewId;
+  const [report] =
+    await sql`INSERT INTO review_report(review_id,reporter_id,reason) VALUES(${review.reviewId},${f.owner},'Please investigate this feedback consistently with publication policy.') RETURNING id`;
+  comms.reportId = report.id;
+  comms.messages = {};
+  for (const state of ['pending', 'accepted', 'delivered', 'failed', 'unknown', 'suppressed']) {
+    const [message] =
+      await sql`INSERT INTO notification_outbox(order_id,customer_id,event_key,template,scheduled_at,state,provider_id,recipient) VALUES(${booking.order},${booking.customer},${'phase9-' + state},'confirmation',now(),${state},${['accepted', 'delivered'].includes(state) ? 'SM' + 'a'.repeat(32) : null},'+919000000077') RETURNING id`;
+    comms.messages[state] = message.id;
+  }
+  const [operator] =
+    await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES('comms-reader@fixture.invalid','fixture-only','Communication reader','["admin.reviews.read","admin.support.read","admin.notifications.read"]'::jsonb) RETURNING id`;
+  dashboardRoles.commsReader = operator.id;
+}
 const { issuePortalSession } = await import('../../src/services/auth/portal-sessions.js');
 const tokens = {};
 for (const [role, id] of Object.entries({
@@ -176,6 +195,7 @@ await writeFile(
     booking,
     application: application.id,
     review: reviewFixture,
+    comms,
     support: support.id,
     tokens,
     password,
