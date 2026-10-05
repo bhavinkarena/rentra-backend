@@ -20,6 +20,7 @@ Object.assign(process.env, {
   CLOUDINARY_API_SECRET: 'fixture',
 });
 const tokens = {};
+const operatorIds = {};
 for (const [role, permissions] of Object.entries({
   full: null,
   readonly: ADMIN_CAPABILITIES.filter((c) => c.endsWith('.read')),
@@ -31,6 +32,7 @@ for (const [role, permissions] of Object.entries({
 })) {
   const [admin] = await fixture.sql`INSERT INTO admin_user(email,name,password_hash,permissions)
     VALUES (${role + '@fixture.invalid'},${role},'fixture-only',${permissions == null ? null : fixture.sql.json(permissions)}) RETURNING id`;
+  operatorIds[role] = admin.id;
   tokens[role] = await new SignJWT({
     adminId: admin.id,
     sessionId: await issuePortalSession(fixture.sql, 'admin', admin.id, 3600),
@@ -52,9 +54,24 @@ tokens.owner = await encryptSession({
   role: 'client',
   sessionId: await issuePortalSession(fixture.sql, 'client', owner.id, 3600),
 });
+let ui = {};
+if (process.env.ADMIN_UI_FIXTURE === '1') {
+  const { seedReviewFixture } = await import('./listing-review-fixture.js');
+  const { seedFinanceFixture } = await import('./finance-fixture.js');
+  const property = await seedReviewFixture(fixture.sql);
+  const finance = await seedFinanceFixture(fixture.sql, property);
+  tokens.activeOwner = await encryptSession({
+    userId: property.owner,
+    role: 'client',
+    sessionId: await issuePortalSession(fixture.sql, 'client', property.owner, 3600),
+  });
+  await fixture.sql`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,reason,at)
+    VALUES ('admin',${operatorIds.full},'admin_user',${operatorIds.full},'operator_fixture_check','Disposable UI fixture','2026-10-04T18:30:00Z')`;
+  ui = { operator: operatorIds.full, property: property.listing, payment: finance.test.paymentId };
+}
 await writeFile(
   process.env.ADMIN_NAV_FIXTURE,
-  JSON.stringify({ tokens, application: application.id, owner: owner.id }),
+  JSON.stringify({ tokens, application: application.id, owner: owner.id, ...ui }),
 );
 const { createApp } = await import('@/app.js');
 const server = createApp().listen(4162, '127.0.0.1', () =>
