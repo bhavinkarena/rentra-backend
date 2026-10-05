@@ -25,7 +25,7 @@ export async function readDocumentFile(adminId, documentId, { ip = null } = {}) 
   const [doc] = await db.select().from(documents).where(eq(documents.id, documentId)).limit(1);
 
   /** 404, not 403 — do not confirm that a document id exists to a stranger. */
-  if (!doc || doc.deletedAt) return { status: 404 };
+  if (!doc || doc.deletedAt || doc.status === 'superseded') return { status: 404 };
 
   const upstream = await fetch(signedUrl(doc.storageKey, { expiresInSeconds: 60 }));
   if (!upstream.ok || !upstream.body) return { status: 502 };

@@ -165,28 +165,34 @@ export async function listPropertyReviews(database, adminId, input) {
       : f.assignee === 'unassigned'
         ? database`s.assigned_to IS NULL`
         : database`true`;
-  const filter = database`${status} AND ${assignee} AND ${f.submitted === '1' ? database`s.id IS NOT NULL` : database`true`}
+  const scope = database`${assignee} AND ${f.submitted === '1' ? database`s.id IS NOT NULL` : database`true`}
     AND (${f.q}='' OR position(lower(${f.q}) in lower(r.title))>0 OR position(lower(${f.q}) in lower(coalesce(u.email,'')))>0 OR r.public_code=${f.q})`;
-  const join = database`FROM rentable r JOIN "user" u ON u.id=r.client_id
+  const filter = database`${scope} AND ${status}`;
+  const joins = database`FROM rentable r JOIN "user" u ON u.id=r.client_id
     LEFT JOIN listing_submission s ON s.rentable_id=r.id AND s.pass_number=r.review_pass
-    LEFT JOIN admin_user a ON a.id=s.assigned_to WHERE ${filter}`;
+    LEFT JOIN admin_user a ON a.id=s.assigned_to`;
+  const join = database`${joins} WHERE ${filter}`;
+  const [counts] = await database`SELECT count(*)::int total,count(*) FILTER (WHERE r.status='pending_review' AND s.id IS NOT NULL)::int waiting,count(*) FILTER (WHERE r.status='pending_review' AND s.id IS NOT NULL AND s.assigned_to IS NULL)::int unassigned,count(*) FILTER (WHERE r.status='pending_verification')::int verification FROM ${database`rentable r JOIN "user" u ON u.id=r.client_id LEFT JOIN listing_submission s ON s.rentable_id=r.id AND s.pass_number=r.review_pass`} WHERE ${scope}`;
   const [{ total }] = await database`SELECT count(*)::int AS total ${join}`;
   const pages = Math.max(1, Math.ceil(total / 20)),
     page = Math.min(f.page, pages);
   const items =
-    await database`SELECT r.id,r.title,r.public_code,r.status,r.content_version,r.review_pass,u.email,u.account_status,
-    s.id AS submission_id,s.content_version AS submitted_version,s.submitted_at,a.email AS reviewer
+    await database`SELECT r.id,r.title,r.public_code,r.status,r.content_version,r.review_pass,r.photos,u.name owner_name,u.email,u.account_status,
+    s.id AS submission_id,s.content_version AS submitted_version,s.submitted_at,a.email AS reviewer,
+    (SELECT v.outcome FROM verification_visit v WHERE v.submission_id=s.id AND v.completed_at IS NOT NULL ORDER BY v.completed_at DESC,v.id LIMIT 1) verification_outcome,
+    EXISTS(SELECT 1 FROM verification_visit v WHERE v.submission_id=s.id AND v.completed_at IS NULL AND v.cancelled_at IS NULL) verification_scheduled
     ${join} ORDER BY s.submitted_at ASC NULLS FIRST,r.id LIMIT 20 OFFSET ${(page - 1) * 20}`;
-  return { ...f, page, pages, total, items: items.map(camel) };
+  return { ...f, page, pages, total, counts, items: items.map(row=>({...camel(row),photos:normalizePublicPhotos(row.photos,{cloudName:process.env.CLOUDINARY_CLOUD_NAME})})) };
 }
 
 export async function readPropertyReview(database, id) {
+  return database.begin('isolation level repeatable read read only', async (tx) => {
   const [owner] =
-    await database`SELECT r.id,r.title,r.slug,r.public_code,r.status,r.content_version,r.client_id,r.rental_unit::text AS rental_unit,u.name,u.email,u.account_status,
+    await tx`SELECT r.id,r.title,r.slug,r.public_code,r.status,r.content_version,r.client_id,r.rental_unit::text AS rental_unit,u.name,u.email,u.account_status,
     (SELECT id FROM client_application WHERE user_id=u.id) AS application_id FROM rentable r JOIN "user" u ON u.id=r.client_id WHERE r.id=${id}`;
   if (!owner) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
   const submissions =
-    await database`SELECT s.*,a.email AS reviewer FROM listing_submission s LEFT JOIN admin_user a ON a.id=s.assigned_to WHERE rentable_id=${id} ORDER BY pass_number DESC`;
+    await tx`SELECT s.*,a.email AS reviewer FROM listing_submission s LEFT JOIN admin_user a ON a.id=s.assigned_to WHERE rentable_id=${id} ORDER BY pass_number DESC`;
   const submissionDTO = (s) => ({
     ...camel(s),
     displayPhotos: normalizePublicPhotos(s.snapshot.photos, {
@@ -194,7 +200,7 @@ export async function readPropertyReview(database, id) {
     }),
   });
   const history =
-    await database`SELECT l.*,a.email AS reviewer FROM listing_review l LEFT JOIN admin_user a ON a.id=l.reviewed_by WHERE rentable_id=${id} ORDER BY reviewed_at DESC`;
+    await tx`SELECT l.*,a.email AS reviewer FROM listing_review l LEFT JOIN admin_user a ON a.id=l.reviewed_by WHERE rentable_id=${id} ORDER BY reviewed_at DESC`;
   const current = submissions[0];
   return {
     property: camel(owner),
@@ -202,13 +208,15 @@ export async function readPropertyReview(database, id) {
     submissions: submissions.map(submissionDTO),
     history: history.map(camel),
     stale: !current || current.content_version !== owner.content_version,
+    draftSnapshot: await snapshot(tx,(await tx`SELECT * FROM rentable WHERE id=${id}`)[0]),
     readiness: current ? listingCompletion(current.snapshot.listing,{...current.snapshot,legacySubmission:current.snapshot.workflowVersion!==2}) : null,
-    verifications: await listVerifications(database, id),
-    publication: await publicationState(database, id),
+    verifications: await listVerifications(tx, id),
+    publication: await publicationState(tx, id),
     checklist: checklistFor(owner.rental_unit).map(([key, label]) => ({ key, label })),
-    lifecycle: await lifecycleState(database, id),
-    activity: await propertyActivity(database, id),
+    lifecycle: await lifecycleState(tx, id),
+    activity: await propertyActivity(tx, id),
   };
+  });
 }
 
 export async function assignPropertyReview(

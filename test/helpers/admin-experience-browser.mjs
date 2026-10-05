@@ -93,6 +93,50 @@ if (process.env.ADMIN_DASHBOARD_FIXTURE === '1') {
     dashboardRoles[role] = operator.id;
   }
 }
+const reviewFixture = {};
+if (process.env.ADMIN_REVIEW_FIXTURE === '1') {
+  await sql`UPDATE rentable SET photos=${JSON.stringify(Array.from({ length: 6 }, (_, i) => ({ url: '/images/guest-login.jpg', alt: 'Fixture property ' + i })))}::text::jsonb WHERE id=${f.listing}`;
+  const { submitProperty, decidePropertyReview } =
+    await import('../../src/services/admin/listings.js');
+  const first = await submitProperty(sql, { id: f.listing, clientId: f.owner });
+  await decidePropertyReview(sql, {
+    id: f.listing,
+    adminId: f.admin,
+    input: {
+      submissionId: first.submissionId,
+      outcome: 'changes_requested',
+      reason: 'Clarify the property description.',
+      flagged: ['basics'],
+    },
+  });
+  await sql`UPDATE rentable SET description='An updated submitted property description with verified access details.' WHERE id=${f.listing}`;
+  const second = await submitProperty(sql, { id: f.listing, clientId: f.owner });
+  reviewFixture.property = f.listing;
+  reviewFixture.historical = first.submissionId;
+  reviewFixture.current = second.submissionId;
+  const [doc] =
+    await sql`INSERT INTO document(owner_type,owner_id,doc_type,side,storage_key,status,mime_type,bytes) VALUES ('client_application',${application.id},'pan_card','front','fixture/private-identity','uploaded','image/jpeg',1000) RETURNING id`;
+  reviewFixture.document = doc.id;
+  const [old] =
+    await sql`INSERT INTO document(owner_type,owner_id,doc_type,side,storage_key,status,mime_type,bytes) VALUES ('client_application',${application.id},'passport','front','fixture/replaced-identity','superseded','image/jpeg',1000) RETURNING id`;
+  reviewFixture.replacedDocument = old.id;
+  reviewFixture.decisions = {};
+  for (const choice of ['approve', 'more_info', 'reject']) {
+    const [user] =
+      await sql`INSERT INTO "user"(email,role,account_status,name) VALUES (${choice + '@fixture.invalid'},'client','pending_application',${'Fixture ' + choice}) RETURNING id`;
+    const [app] =
+      await sql`INSERT INTO client_application(user_id,status,legal_name,submitted_at,consent_at) VALUES (${user.id},'submitted',${'Fixture ' + choice},now()-interval '50 hours',now()) RETURNING id`;
+    reviewFixture.decisions[choice] = app.id;
+  }
+  for (const [role, permissions] of Object.entries({
+    appWriter: ['admin.applications.read', 'admin.applications.write'],
+    documentReader: ['admin.applications.read', 'admin.documents.read'],
+  })) {
+    const [admin] =
+      await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES (${role + '@fixture.invalid'},'fixture-only',${role},${JSON.stringify(permissions)}::text::jsonb) RETURNING id`;
+    dashboardRoles[role] = admin.id;
+  }
+}
 const { issuePortalSession } = await import('../../src/services/auth/portal-sessions.js');
 const tokens = {};
 for (const [role, id] of Object.entries({
@@ -131,6 +175,7 @@ await writeFile(
     ids: f,
     booking,
     application: application.id,
+    review: reviewFixture,
     support: support.id,
     tokens,
     password,

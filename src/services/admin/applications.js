@@ -100,6 +100,7 @@ export async function listApplications(database, adminId, input = {}) {
       : database`a.updated_at DESC, a.id`;
   const rows = await database`SELECT a.id, a.status, a.legal_name, a.submitted_at, a.reviewed_at,
       a.updated_at, a.strike_count, pc.payout_name_match, a.review_version, a.assigned_to,
+      (a.status='submitted' AND a.submitted_at < now() - ${SLA_HOURS} * interval '1 hour') AS overdue,
       coalesce(jsonb_array_length(a.flagged_fields), 0) AS flagged_count,
       u.id AS user_id, u.email, u.client_type, u.account_status, ad.email AS assignee_email,
       round(extract(epoch FROM (now() - a.submitted_at)) / 3600)::int AS age_hours,
@@ -136,7 +137,7 @@ export async function listApplications(database, adminId, input = {}) {
       submittedAt: r.submitted_at,
       updatedAt: r.updated_at,
       ageHours: r.status === 'submitted' ? r.age_hours : null,
-      overdue: r.status === 'submitted' && (r.age_hours ?? 0) > SLA_HOURS,
+      overdue: Boolean(r.overdue),
       strikeCount: r.strike_count,
       blocker: r.payout_name_match === false ? 'payout name mismatch' : null,
       reviewVersion: r.review_version,
