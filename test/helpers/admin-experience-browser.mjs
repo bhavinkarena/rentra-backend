@@ -64,7 +64,10 @@ const support = await createSupportRequest(
   {
     category: 'calendar',
     subject: 'Fixture calendar question',
-    body: 'Please explain availability for the upcoming visit.',
+    body:
+      process.env.ADMIN_SEARCH_FIXTURE === '1'
+        ? 'WITHHELD-PRIVATE support message'
+        : 'Please explain availability for the upcoming visit.',
     orderId: booking.order,
     privacyRequestId: null,
     propertyId: f.listing,
@@ -162,6 +165,45 @@ if (process.env.ADMIN_OPS_FIXTURE === '1') {
   const [operator] =
     await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES('ops-reader@fixture.invalid','fixture-only','Operations reader',${JSON.stringify(['operations', 'privacy', 'audit', 'security', 'content', 'catalogues', 'payments'].map((domain) => 'admin.' + domain + '.read'))}::text::jsonb) RETURNING id`;
   dashboardRoles.opsReader = operator.id;
+}
+const search = {};
+if (process.env.ADMIN_SEARCH_FIXTURE === '1') {
+  for (const [role, permissions] of Object.entries({
+    searchOwner: ['admin.clients.read'],
+    searchCustomer: ['admin.customers.read'],
+    searchApplication: ['admin.applications.read'],
+    searchProperty: ['admin.properties.read'],
+    searchRecords: ['admin.records.read'],
+    searchSupport: ['admin.support.read'],
+    searchEmpty: [],
+  })) {
+    const [operator] = await sql`INSERT INTO admin_user(email,password_hash,name,permissions)
+      VALUES(${role + '@fixture.invalid'},'fixture-only',${role},${JSON.stringify(permissions)}::text::jsonb) RETURNING id`;
+    dashboardRoles[role] = operator.id;
+  }
+  await sql`INSERT INTO "user"(email,role,account_status,name)
+    SELECT 'search-owner-'||n||'@fixture.invalid','client','active','Search fixture owner '||n FROM generate_series(1,23) n`;
+  await sql`INSERT INTO client_application(user_id,status,legal_name)
+    SELECT id,'approved',name FROM "user" WHERE email LIKE 'search-owner-%@fixture.invalid'`;
+  await sql`INSERT INTO "user"(email,phone,role,account_status,name,profile_completed_at)
+    SELECT 'search-customer-'||n||'@fixture.invalid',('9100000'||lpad(n::text,3,'0')),'customer','active','Search fixture customer '||n,now() FROM generate_series(1,23) n`;
+  await sql`INSERT INTO rentable(client_id,slug,title,description,category_id,city_id,area_id,public_code,capacity,farm_size,exact_address,check_in_from,check_out_by,photos)
+    SELECT r.client_id,'search-property-'||n,'Search fixture property '||n,r.description,r.category_id,r.city_id,r.area_id,'srch'||lpad(n::text,3,'0'),r.capacity,r.farm_size,r.exact_address,r.check_in_from,r.check_out_by,'[]'::jsonb
+    FROM rentable r CROSS JOIN generate_series(1,23) n WHERE r.id=${f.listing}`;
+  const { seedBusyOwnerVisits } = await import('./listing-review-fixture.js');
+  await seedBusyOwnerVisits(sql, booking.order, 1, 23, 'Search fixture booked property');
+  await sql`INSERT INTO booking_case(reference,order_id,type,requester_kind,source,reason,created_by_kind,created_by_id,request_key,request_hash)
+    SELECT 'CASE-'||right(reference,2)||'-'||left(id::text,8),id,'operational','admin','internal','WITHHELD-PRIVATE case body','admin',${f.admin},gen_random_uuid(),repeat('a',64) FROM booking_order WHERE reference LIKE 'TODAY-ORDER-%'`;
+  const [order] =
+    await sql`SELECT id,reference FROM booking_order WHERE reference='TODAY-ORDER-23'`;
+  const [visit] = await sql`SELECT reference FROM booking WHERE order_id=${order.id}`;
+  const [c] = await sql`SELECT id,reference FROM booking_case WHERE order_id=${order.id}`;
+  const [property] = await sql`SELECT id,public_code FROM rentable WHERE public_code='srch001'`;
+  search.order = order;
+  search.visit = visit.reference;
+  search.case = c;
+  search.property = property;
+  // Body text deliberately never belongs to any list's search predicate.
 }
 const { issuePortalSession } = await import('../../src/services/auth/portal-sessions.js');
 const tokens = {};
@@ -274,6 +316,7 @@ await writeFile(
     review: reviewFixture,
     comms,
     ops,
+    search,
     support: support.id,
     tokens,
     password,
@@ -283,9 +326,34 @@ await writeFile(
 );
 await writeFile(join(evidence, 'api-routes.json'), JSON.stringify(routes, null, 2) + '\n');
 const { createApp } = await import('../../src/app.js');
-const server = createApp().listen(port, '127.0.0.1', () =>
-  console.log('Disposable admin Phase 1 API ready on', port),
-);
+const app = createApp();
+// Failure injection exists only in this localhost, disposable search fixture.
+let searchFailure = false;
+const { createServer } = await import('node:http');
+const server = createServer((req, res) => {
+  if (process.env.ADMIN_SEARCH_FIXTURE === '1') {
+    if (
+      req.method === 'POST' &&
+      ['/fixture/search-failure/on', '/fixture/search-failure/off'].includes(req.url)
+    ) {
+      searchFailure = req.url.endsWith('/on');
+      res.writeHead(204);
+      return res.end();
+    }
+    if (searchFailure && req.url.startsWith('/api/v1/admin/properties?')) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(
+        JSON.stringify({
+          success: false,
+          code: 'FIXTURE_UNAVAILABLE',
+          message: 'Disposable directory unavailable',
+        }),
+      );
+    }
+  }
+  app(req, res);
+}).listen(port, '127.0.0.1', () => console.log('Disposable admin Phase 1 API ready on', port));
+
 async function stop() {
   await new Promise((r) => server.close(r));
   await fixture.drop();

@@ -75,11 +75,11 @@ export async function seedConfirmedBooking(sql, listingId) {
 }
 
 /** More bookings on the seed visit's day; each slot order has its own immutable identity. */
-export async function seedBusyOwnerVisits(sql, orderId, from = 2, to = 40) {
+export async function seedBusyOwnerVisits(sql, orderId, from = 2, to = 40, listingTitle = null) {
   await sql`WITH orders AS (
     INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,
       amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,confirmed_at)
-    SELECT 'TODAY-ORDER-'||n,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,
+    SELECT 'TODAY-ORDER-'||n,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot||${JSON.stringify(listingTitle ? { title: listingTitle } : {})}::text::jsonb,
       amount_rent_minor,amount_fee_minor,amount_deposit_minor,gen_random_uuid(),request_hash,state,confirmed_at
     FROM booking_order CROSS JOIN generate_series(${from}::int,${to}::int) n WHERE id=${orderId} RETURNING id,reference)
     INSERT INTO booking(reference,rentable_id,customer_id,slot,state,starts_at,ends_at,blocked_start_at,blocked_end_at,order_id,item_position,local_day,
