@@ -47,6 +47,7 @@ function fieldErrors(error) {
 }
 
 function refresh(orderId) {
+  revalidatePath('/admin/bookings');
   for (const base of ['/partner/bookings', '/admin/bookings']) revalidatePath(`${base}/${orderId}`);
 }
 

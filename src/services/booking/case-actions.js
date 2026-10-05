@@ -36,6 +36,7 @@ function failure(error) {
 }
 
 function refresh(orderId, caseId) {
+  revalidatePath('/admin/bookings');
   for (const base of ['/bookings', '/partner/bookings', '/admin/bookings']) revalidatePath(`${base}/${orderId}`);
   revalidatePath('/admin/booking-cases');
   if (caseId) revalidatePath(`/admin/booking-cases/${caseId}`);
