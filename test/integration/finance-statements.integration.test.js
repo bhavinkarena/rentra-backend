@@ -173,3 +173,46 @@ test(
     }
   },
 );
+
+test(
+  'Admin statement and CSV use the same IST month boundaries as owner evidence',
+  { skip: !process.env.PORTAL_TEST_DATABASE_URL },
+  async () => {
+    const db = await createDisposableDatabase(process.env.PORTAL_TEST_DATABASE_URL);
+    try {
+      const f = await seedReviewFixture(db.sql);
+      const fixture = await seedFinanceFixture(db.sql, f);
+      const included = await fixture.add('test', { createdAt: '2001-01-31T18:30:00Z' });
+      await fixture.add('test', { createdAt: '2001-02-28T18:30:00Z' });
+      const actor = { kind: 'admin', id: f.admin };
+      const query = { period: '2001-02', environment: 'test' };
+      const statement = await financeStatement(db.sql, actor, query);
+      assert.equal(statement.count, 2);
+      assert.ok(statement.items.every((row) => row.orderId === included.orderId));
+      assert.equal(statement.totals.collectedMinor, '108000');
+      assert.match(statement.basis, /IST month/);
+      const csv = await financeCsv(db.sql, actor, query);
+      assert.match(csv, /IST month/);
+      assert.ok(csv.includes(included.allocationId));
+      const boundaryPayouts = [];
+      for (const date of ['2001-01-31T18:30:00Z', '2001-02-28T18:30:00Z']) {
+        const source = await fixture.add('live', { createdAt: date });
+        const [payout] =
+          await db.sql`INSERT INTO payout(booking_id,client_id,funding_allocation_id,actual_net_minor,gross_minor,commission_minor,net_minor,status,destination_id,created_at) VALUES (${source.bookingId},${f.owner},${source.allocationId},30000,100000,8000,92000,'pending',${fixture.destinationId},${date}) RETURNING id`;
+        boundaryPayouts.push(payout.id);
+      }
+      const payouts = await financePayouts(db.sql, actor, { ...query, environment: 'live' });
+      assert.deepEqual(
+        payouts.items.map((row) => row.id),
+        [boundaryPayouts[0]],
+      );
+      assert.equal(payouts.totalMinor, '30000');
+
+      await assert.rejects(financeCsv(db.sql, { kind: 'admin', id: f.limited }, query), {
+        statusCode: 403,
+      });
+    } finally {
+      await db.drop();
+    }
+  },
+);

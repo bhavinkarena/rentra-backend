@@ -12,7 +12,7 @@ export function statementFilters(query = {}) {
       period: z
         .string()
         .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
-        .default(new Date().toISOString().slice(0, 7)),
+        .default(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit' }).format(new Date())),
       // No choice = the gateway mode in use (resolved in readStatement).
       environment: z.enum(['live', 'test', 'simulated', 'legacy_unknown']).optional(),
       propertyId: uuid.or(z.literal('')).default(''),
@@ -181,9 +181,11 @@ async function readStatement(tx, actor, chosen) {
   const filters = { ...chosen, environment: chosen.environment ?? gateway?.environment ?? 'live' };
   if (actor.kind === 'owner' && filters.ownerId && filters.ownerId !== actor.id) throw notFound();
   const owner = actor.kind === 'owner' ? actor.id : filters.ownerId;
-  const start = `${filters.period}-01T00:00:00${actor.kind==='owner'?'+05:30':'Z'}`;
+  const start = `${filters.period}-01T00:00:00+05:30`;
+  const [year, month] = filters.period.split('-').map(Number);
+  const end = `${new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10)}T00:00:00+05:30`;
   const rows =
-    await tx`SELECT l.* FROM (${ledger(tx)}) l WHERE l.created_at>=${start}::timestamptz AND l.created_at<${start}::timestamptz+interval '1 month'
+    await tx`SELECT l.* FROM (${ledger(tx)}) l WHERE l.created_at>=${start}::timestamptz AND l.created_at<${end}::timestamptz
     AND l.environment=${filters.environment} AND (${owner}='' OR l.owner_id=${owner})
     AND (${filters.propertyId}='' OR l.rentable_id::text=${filters.propertyId}) ORDER BY l.created_at DESC,l.id LIMIT 1001`;
   if (rows.length > 1000)
@@ -192,7 +194,7 @@ async function readStatement(tx, actor, chosen) {
       'Choose one property or owner; this statement exceeds 1,000 allocations.',
     );
   const properties =
-    await tx`SELECT DISTINCT l.rentable_id id,l.title FROM (${ledger(tx)}) l WHERE l.created_at>=${start}::timestamptz AND l.created_at<${start}::timestamptz+interval '1 month' AND l.environment=${filters.environment} AND (${owner}='' OR l.owner_id=${owner}) ORDER BY l.title,l.rentable_id LIMIT 1000`;
+    await tx`SELECT DISTINCT l.rentable_id id,l.title FROM (${ledger(tx)}) l WHERE l.created_at>=${start}::timestamptz AND l.created_at<${end}::timestamptz AND l.environment=${filters.environment} AND (${owner}='' OR l.owner_id=${owner}) ORDER BY l.title,l.rentable_id LIMIT 1000`;
   // The platform fee is the guest's payment to Rentra, not owner money.
   const items = rows.map((r) => allocation(r, actor)).filter((item) => actor.kind !== 'owner' || item.component !== 'fee');
   const totals = Object.fromEntries(keys.map((k) => [k, 0n]));
@@ -210,7 +212,7 @@ async function readStatement(tx, actor, chosen) {
     asOf: new Date().toISOString(),
     currency: 'INR',
     basis:
-      `Allocations received in this ${actor.kind==='owner'?'IST':'UTC'} month, with their current refund and payout outcomes. This is a current receipt-cohort statement, not a historical cash-flow or tax statement.`,
+      `Allocations received in this IST month, with their current refund and payout outcomes. This is a current receipt-cohort statement, not a historical cash-flow or tax statement.`,
     disbursementAvailable: false,
     settlementNotice:
       'Live payout execution and bank verification are unavailable. Accounting eligibility does not initiate a transfer.',
@@ -250,10 +252,12 @@ export async function financePayouts(database, actor, query = {}) {
     await authorize(tx, actor);
     if (actor.kind === 'owner' && filters.ownerId && filters.ownerId !== actor.id) throw notFound();
     const owner = actor.kind === 'owner' ? actor.id : filters.ownerId;
-    const start = `${filters.period}-01T00:00:00${actor.kind==='owner'?'+05:30':'Z'}`;
+    const start = `${filters.period}-01T00:00:00+05:30`;
+  const [year, month] = filters.period.split('-').map(Number);
+  const end = `${new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10)}T00:00:00+05:30`;
     const rows = await tx`SELECT p.id FROM payout p JOIN booking b ON b.id=p.booking_id
       WHERE (${owner}='' OR p.client_id::text=${owner}) AND (${filters.propertyId}='' OR b.rentable_id::text=${filters.propertyId})
-      AND p.created_at>=${start}::timestamptz AND p.created_at<${start}::timestamptz+interval '1 month'
+      AND p.created_at>=${start}::timestamptz AND p.created_at<${end}::timestamptz
       AND ${payoutEnvironment(tx)}=${filters.environment}
       ORDER BY p.created_at DESC,p.id LIMIT 1001`;
     if (rows.length > 1000)
