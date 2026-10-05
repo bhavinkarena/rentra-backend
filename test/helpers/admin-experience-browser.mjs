@@ -156,8 +156,16 @@ if (process.env.ADMIN_COMMS_FIXTURE === '1') {
     await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES('comms-reader@fixture.invalid','fixture-only','Communication reader','["admin.reviews.read","admin.support.read","admin.notifications.read"]'::jsonb) RETURNING id`;
   dashboardRoles.commsReader = operator.id;
 }
+// Phase 10 read-only role deliberately lacks linked-record grants.
+const ops = {};
+if (process.env.ADMIN_OPS_FIXTURE === '1') {
+  const [operator] =
+    await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES('ops-reader@fixture.invalid','fixture-only','Operations reader',${JSON.stringify(['operations', 'privacy', 'audit', 'security', 'content', 'catalogues', 'payments'].map((domain) => 'admin.' + domain + '.read'))}::text::jsonb) RETURNING id`;
+  dashboardRoles.opsReader = operator.id;
+}
 const { issuePortalSession } = await import('../../src/services/auth/portal-sessions.js');
 const tokens = {};
+const roleSessions = {};
 for (const [role, id] of Object.entries({
   ...dashboardRoles,
   full: f.admin,
@@ -165,15 +173,84 @@ for (const [role, id] of Object.entries({
   restricted: f.limited,
   customerReader: customerReader.id,
 })) {
+  roleSessions[role] = await issuePortalSession(sql, 'admin', id, 3600);
   tokens[role] = await new SignJWT({
     adminId: id,
-    sessionId: await issuePortalSession(sql, 'admin', id, 3600),
+    sessionId: roleSessions[role],
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setAudience('rentra:admin')
     .setIssuedAt()
     .setExpirationTime('1h')
     .sign(new TextEncoder().encode(process.env.SESSION_SECRET));
+}
+if (process.env.ADMIN_OPS_FIXTURE === '1') {
+  const actor = { kind: 'admin', id: f.admin, sessionId: roleSessions.full };
+  const { seedFinanceFixture } = await import('./finance-fixture.js');
+  await seedFinanceFixture(sql, f);
+  const audit = await import('../../src/services/admin/audit-browser.js');
+  const [event] =
+    await sql`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,before,after,reason) VALUES('admin',${f.admin},'rentable',${f.listing},'phase10_fixture','{"state":"draft"}','{"state":"active","email":"WITHHELD-PRIVATE"}','PRIVATE reason must be redacted') RETURNING id`;
+  ops.event = event.id;
+  ops.filters = audit.defaultFilters();
+  const job = await audit.createExport(sql, actor, {
+    dataset: 'audit_events',
+    filters: { ...ops.filters, action: 'phase10_fixture' },
+    limit: 100,
+    requestKey: crypto.randomUUID(),
+    reason: 'Review this synthetic scoped audit export.',
+    confirmed: true,
+  });
+  await audit.processExport(sql, job.id, { env: process.env });
+  ops.export = job.id;
+  const expired = await audit.createExport(sql, actor, {
+    dataset: 'audit_events',
+    filters: { ...ops.filters, action: 'phase10_fixture' },
+    limit: 100,
+    requestKey: crypto.randomUUID(),
+    reason: 'Verify expired synthetic audit export.',
+    confirmed: true,
+  });
+  await audit.processExport(sql, expired.id, { env: process.env });
+  await sql`UPDATE admin_export_job SET expires_at=now()-interval '1 hour' WHERE id=${expired.id}`;
+  ops.expiredExport = expired.id;
+  const [session] =
+    await sql`INSERT INTO auth_session(user_id,expires_at) VALUES(${booking.customer},now()+interval '1 day') RETURNING id`;
+  const { requestCustomerPrivacy } = await import('../../src/services/customer/account.js');
+  const privacy = await import('../../src/services/customer/privacy-fulfillment.js');
+  const customer = { role: 'customer', userId: booking.customer, sessionId: session.id };
+  const access = await requestCustomerPrivacy(sql, customer, 'access', process.env);
+  const command = async (name, extra = {}) => {
+    const [row] = await sql`SELECT version FROM customer_privacy_request WHERE id=${access.id}`;
+    return privacy.privacyCommand(
+      sql,
+      actor,
+      access.id,
+      {
+        command: name,
+        version: row.version,
+        reason: 'Verified this synthetic privacy scope.',
+        confirmed: true,
+        ...extra,
+      },
+      process.env,
+    );
+  };
+  await command('review', {
+    authority: 'self',
+    identityReference: 'fixture-reviewed-identity',
+    deliveryReference: 'fixture-reviewed-delivery',
+    retentionAccepted: true,
+  });
+  const preview = await command('preview');
+  await command('queue', { previewToken: preview.previewToken });
+  await privacy.processPrivacyJob(sql, access.id, { env: process.env });
+  ops.privacy = access.id;
+  ops.privacyOpen = (await requestCustomerPrivacy(sql, customer, 'deletion', process.env)).id;
+  const [category] = await sql`SELECT category_id FROM rentable WHERE id=${f.listing}`;
+  ops.category = category.category_id;
+  await sql`INSERT INTO service_health(service,healthy,checked_at) VALUES('payments',true,now()),('notifications',false,now()) ON CONFLICT(service) DO UPDATE SET healthy=excluded.healthy,checked_at=excluded.checked_at`;
+  await sql`INSERT INTO notification_outbox(order_id,customer_id,event_key,template,scheduled_at,state) VALUES(${booking.order},${booking.customer},'phase10-failed','confirmation',now()-interval '2 hours','blocked')`;
 }
 const router = (await import('../../src/routes/admin.route.js')).default;
 const routes = router.stack
@@ -196,6 +273,7 @@ await writeFile(
     application: application.id,
     review: reviewFixture,
     comms,
+    ops,
     support: support.id,
     tokens,
     password,

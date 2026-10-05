@@ -45,6 +45,8 @@ test(
         second = { kind: 'admin', id: f.second };
       const legacy = await publicContent(sql, 'terms', '2026-09-20'),
         original = await publicContent(sql, 'terms');
+      const initialTermsHistory = (await readContent(sql, { kind: 'admin', id: f.admin }, 'terms'))
+        .history;
       assert.equal((await listContent(sql, admin)).items.length, 6);
       for (const actor of [
         { kind: 'owner', id: f.owner },
@@ -201,7 +203,14 @@ test(
       await command('help', 'review', 1, { confirmed: true });
       await command('help', 'save', 2, { body: { ...help, intro: 'Updated practical answers' } });
       await assert.rejects(command('help', 'preview', 3), { code: 'REVIEW_REQUIRED' });
-      assert.equal((await readContent(sql, admin, 'terms')).history.length, 4);
+      const termsHistory = (await readContent(sql, admin, 'terms')).history;
+      assert.equal(termsHistory.length, initialTermsHistory.length + 2);
+      for (const version of [
+        ...initialTermsHistory.map((entry) => entry.version),
+        published.version,
+        restored.version,
+      ])
+        assert.ok(termsHistory.some((entry) => entry.version === version));
       const contact = (await publicContent(sql, 'contact')).body;
       await command('contact', 'save', 0, { body: contact });
       assert.deepEqual(
