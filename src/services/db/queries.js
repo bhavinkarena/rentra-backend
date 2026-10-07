@@ -37,9 +37,15 @@ function hourlyCardFields(row) {
   };
 }
 
+const photoContext = (row) => ({
+  cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+  title: row.title,
+  place: [row.areaName, row.cityName].filter(Boolean).join(', '),
+});
+
 /** Shape the ListingCard component expects. */
 function toCard(row) {
-  const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME });
+  const photos = normalizePublicPhotos(row.photos, photoContext(row));
   const card = {
     id: row.id,
     slug: row.slug,
@@ -300,7 +306,7 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
   return {
     ...toCard(row),
     description: row.description,
-    photos: normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME }),
+    photos: normalizePublicPhotos(row.photos, photoContext(row)),
     amenities,
     houseRules: publicHouseRules(row.houseRules),
     depositAmount: row.depositAmount,
@@ -500,6 +506,7 @@ export async function getSitemapEntries() {
       slug: rentable.slug,
       publicCode: rentable.publicCode,
       updatedAt: rentable.updatedAt,
+      photos: rentable.photos,
     })
     .from(rentable).where(publiclyListed);
 
@@ -510,7 +517,16 @@ export async function getSitemapEntries() {
     .select({ citySlug: city.slug, areaSlug: area.slug })
     .from(area).innerJoin(city, eq(city.id, area.cityId)).where(and(eq(city.isActive, true), eq(area.isActive, true)));
 
-  return { listings, cities, areas };
+  // Google Images reads up to the first few photos per page from the sitemap.
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  return {
+    listings: listings.map(({ photos, ...listing }) => ({
+      ...listing,
+      images: normalizePublicPhotos(photos, { cloudName }).slice(0, 6).map((p) => p.url),
+    })),
+    cities,
+    areas,
+  };
 }
 
 /**

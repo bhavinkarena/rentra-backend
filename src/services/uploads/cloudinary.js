@@ -143,8 +143,11 @@ export async function uploadPublicListingPhoto({ buffer, folder, publicId }) {
       access_mode: 'public',
       overwrite: false,
       resource_type: 'image',
+      // Stored as WebP, capped at 2560px on the long edge: full detail for a
+      // gallery, a fraction of a phone JPEG's bytes.
+      format: 'webp',
       image_metadata: false,
-      transformation: [{flags:'strip_profile'}],
+      transformation: [{ width: 2560, height: 2560, crop: 'limit', flags: 'strip_profile' }],
       tags: ['listing-photo', 'public'],
     }, (error, result) => {
       if (error) return reject(new Error(error.message ?? 'Cloudinary upload failed'));
@@ -225,7 +228,7 @@ export async function destroyProfilePhoto(publicId) {
 
 export function signListingPhoto(listingId, nonce) {
  const api=client(),env=getEnv(),timestamp=Math.floor(Date.now()/1000);
- const params={timestamp,public_id:`rentra/listings/${listingId}/${nonce}`,overwrite:false,transformation:'fl_strip_profile',image_metadata:false};
+ const params={timestamp,public_id:`rentra/listings/${listingId}/${nonce}`,overwrite:false,format:'webp',transformation:'c_limit,h_2560,w_2560,fl_strip_profile',image_metadata:false};
  return {...params,signature:api.utils.api_sign_request(params,env.CLOUDINARY_API_SECRET),api_key:env.CLOUDINARY_API_KEY,cloudName:env.CLOUDINARY_CLOUD_NAME};
 }
 export async function listingPhotoAsset(key){return client().api.resource(key,{resource_type:'image',type:'upload',image_metadata:false});}

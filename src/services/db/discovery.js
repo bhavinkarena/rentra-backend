@@ -117,7 +117,7 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
         const price = totals ? totals.totalMinor / 100 : rates.length ? Math.min(...rates) : null;
         if ((filters.min != null || filters.max != null) && price == null) return null;
         if (filters.min != null && price < filters.min || filters.max != null && price > filters.max) return null;
-        const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME });
+        const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME, title: row.title, place: `${row.area_name}, ${row.city_name}` });
         return { id: row.id, href: savedListingHref(listingPath(row.slug, row.public_code), selection), selection,
           title: row.title, area: `${row.area_name}, ${row.city_name}`, capacity: row.capacity, bedrooms: row.bedrooms,
           highlight: row.highlight, price, priceMinor: totals?.totalMinor ?? null, isFromPrice: !totals, unit: totals ? `${filters.dates.length} visit${filters.dates.length === 1 ? '' : 's'}` : filters.slot.replace('_', ' '),
@@ -208,7 +208,7 @@ async function searchVenues({ filters, city, area, category, vertical, amenities
         // Budget filters are per hour for venues.
         const perHour = times ? price / (duration / 60) : price;
         if (filters.min != null && perHour < filters.min || filters.max != null && perHour > filters.max) return null;
-        const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME });
+        const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME, title: row.title, place: `${row.area_name}, ${row.city_name}` });
         const selection = date ? { kind: 'hourly', activity, date, durationMinutes: duration, guests: players } : null;
         const query = selection ? `?${new URLSearchParams({ activity, date, duration: String(duration), players: String(players) })}` : '';
         return { id: row.id, vertical, rentalUnit: 'hour', href: `${listingPath(row.slug, row.public_code)}${query}`, selection,

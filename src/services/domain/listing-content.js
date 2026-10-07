@@ -25,12 +25,28 @@ export function publicPhotoUrl(photo, { cloudName = '' } = {}) {
   return `https://res.cloudinary.com/${encodeURIComponent(cloudName)}/image/upload/${safeKey}`;
 }
 
-export function normalizePublicPhotos(photos, options) {
+/**
+ * Alt text for Google Images and screen readers. Owner uploads store a
+ * placeholder ("<title> — photo 3"), so when the listing context is known the
+ * photo is described by its tag and place: "Pool at Green Acres, Dumas, Surat".
+ * A hand-written alt (seeded photography) is kept as it is.
+ */
+export function photoAlt(photo, index, { title = '', place = '' } = {}) {
+  const stored = String(photo?.alt ?? '').trim();
+  const placeholder = !stored || stored === title || / — photo \d+$/.test(stored);
+  if (!title || !placeholder) return stored || `Listing photo ${index + 1}`;
+  const where = place ? `${title}, ${place}` : title;
+  const tag = String(photo?.tag ?? '').trim();
+  return tag && tag !== 'Other' ? `${tag} at ${where}` : `${where} — photo ${index + 1}`;
+}
+
+/** `title` and `place` ("Dumas, Surat") turn placeholder alts into descriptive ones. */
+export function normalizePublicPhotos(photos, options = {}) {
   return (Array.isArray(photos) ? photos : []).flatMap((photo, index) => {
     const url = publicPhotoUrl(photo, options);
     return url ? [{
       url,
-      alt: String(photo?.alt ?? '').trim() || `Listing photo ${index + 1}`,
+      alt: photoAlt(photo, index, options),
       width: Number(photo?.width ?? photo?.w) || undefined,
       height: Number(photo?.height ?? photo?.h) || undefined,
     }] : [];
