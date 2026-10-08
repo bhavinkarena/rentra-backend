@@ -27,9 +27,9 @@ import {
 const env = {
   ...process.env,
   NODE_ENV: 'test',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_HOURLY1234',
-  RAZORPAY_TEST_KEY_SECRET: 'hourly-disposable-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'hourly-disposable-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_HOURLY1234',
+  RAZORPAY_KEY_SECRET: 'hourly-disposable-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'hourly-disposable-webhook-secret',
 };
 
 function fakeProvider() {
@@ -305,7 +305,7 @@ test(
         {
           orderId: heldA.orderId,
           paymentId: 'pay_HOURLY1',
-          signature: createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+          signature: createHmac('sha256', env.RAZORPAY_KEY_SECRET)
             .update(`${order.id}|pay_HOURLY1`)
             .digest('hex'),
         },
@@ -356,7 +356,7 @@ test(
         {
           orderId: lateHold.orderId,
           paymentId: 'pay_HOURLYLATE',
-          signature: createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+          signature: createHmac('sha256', env.RAZORPAY_KEY_SECRET)
             .update(`${lateStart.providerOrderId}|pay_HOURLYLATE`)
             .digest('hex'),
         },

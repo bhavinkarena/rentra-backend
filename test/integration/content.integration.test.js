@@ -27,9 +27,9 @@ test(
     const env = {
       ...process.env,
       NODE_ENV: 'test',
-      RAZORPAY_TEST_KEY_ID: 'rzp_test_CP25',
-      RAZORPAY_TEST_KEY_SECRET: 'fixture-secret',
-      RAZORPAY_TEST_WEBHOOK_SECRET: 'fixture-webhook',
+      RAZORPAY_KEY_ID: 'rzp_test_CP25',
+      RAZORPAY_KEY_SECRET: 'fixture-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'fixture-webhook',
     };
     try {
       const f = await seedReviewFixture(sql),

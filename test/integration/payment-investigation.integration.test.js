@@ -29,9 +29,9 @@ import {
 const env = {
   ...process.env,
   NODE_ENV: 'test',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_CP19KEY1234',
-  RAZORPAY_TEST_KEY_SECRET: 'cp19-disposable-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'cp19-disposable-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_CP19KEY1234',
+  RAZORPAY_KEY_SECRET: 'cp19-disposable-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'cp19-disposable-webhook-secret',
 };
 
 /** A fake Razorpay transport: orders are created on POST; payments are whatever the test registers. */
@@ -153,7 +153,7 @@ test(
         return { ...held, providerOrder: provider.orders.get(started.providerOrderId) };
       };
       const sign = (order, paymentId) =>
-        createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+        createHmac('sha256', env.RAZORPAY_KEY_SECRET)
           .update(`${order}|${paymentId}`)
           .digest('hex');
 
@@ -265,7 +265,7 @@ test(
         return ingestRazorpayEvent(
           sql,
           raw,
-          createHmac('sha256', env.RAZORPAY_TEST_WEBHOOK_SECRET).update(raw).digest('hex'),
+          createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET).update(raw).digest('hex'),
           eventId,
           env,
         );

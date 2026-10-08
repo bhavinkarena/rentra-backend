@@ -17,9 +17,9 @@ import {
 const env = {
   ...process.env,
   NODE_ENV: 'test',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_SEARCH1234',
-  RAZORPAY_TEST_KEY_SECRET: 'search-disposable-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'search-disposable-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_SEARCH1234',
+  RAZORPAY_KEY_SECRET: 'search-disposable-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'search-disposable-webhook-secret',
 };
 
 /**

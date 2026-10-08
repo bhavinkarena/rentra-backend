@@ -7,9 +7,9 @@ export class ProviderError extends Error {
 }
 export function pinnedCredentials(keyId, env = process.env) {
   if (!/^rzp_test_[A-Za-z0-9]+$/.test(keyId)) throw new ProviderError('TEST_CREDENTIAL_REQUIRED');
-  if (keyId === env.RAZORPAY_TEST_KEY_ID?.trim()) return requirePaymentCredentials('razorpay', 'test', env);
+  if (keyId === env.RAZORPAY_KEY_ID?.trim()) return requirePaymentCredentials('razorpay', 'test', env);
   let ring;
-  try { ring = JSON.parse(env.RAZORPAY_TEST_KEYRING_JSON ?? '{}'); } catch { throw new ProviderError('INVALID_TEST_KEYRING'); }
+  try { ring = JSON.parse(env.RAZORPAY_KEYRING_JSON ?? '{}'); } catch { throw new ProviderError('INVALID_TEST_KEYRING'); }
   if (!Object.hasOwn(ring, keyId) || typeof ring[keyId]?.keySecret !== 'string' || !ring[keyId].keySecret) throw new ProviderError('PINNED_CREDENTIAL_MISSING');
   return { keyId, keySecret: ring[keyId].keySecret };
 }
@@ -19,9 +19,9 @@ export function validSignature(body, signature, secret) {
 }
 export function verifyWebhookSignature(body, signature, env = process.env) {
   let old;
-  try { old = JSON.parse(env.RAZORPAY_TEST_PREVIOUS_WEBHOOK_SECRETS ?? '[]'); } catch { throw new ProviderError('INVALID_WEBHOOK_KEYS'); }
+  try { old = JSON.parse(env.RAZORPAY_PREVIOUS_WEBHOOK_SECRETS ?? '[]'); } catch { throw new ProviderError('INVALID_WEBHOOK_KEYS'); }
   if (!Array.isArray(old) || old.length > 10 || old.some(s => typeof s !== 'string')) throw new ProviderError('INVALID_WEBHOOK_KEYS');
-  const secrets = [env.RAZORPAY_TEST_WEBHOOK_SECRET, ...old].filter(Boolean);
+  const secrets = [env.RAZORPAY_WEBHOOK_SECRET, ...old].filter(Boolean);
   if (!secrets.length) throw new ProviderError('WEBHOOK_NOT_CONFIGURED');
   if (!secrets.some(secret => validSignature(body, signature, secret))) throw new ProviderError('INVALID_SIGNATURE');
 }

@@ -17,9 +17,9 @@ Object.assign(process.env, {
   CLOUDINARY_CLOUD_NAME: 'phase13-fixture',
   CLOUDINARY_API_KEY: 'fixture',
   CLOUDINARY_API_SECRET: 'fixture',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_PHASE13',
-  RAZORPAY_TEST_KEY_SECRET: 'phase13-fixture-payment-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'phase13-fixture-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_PHASE13',
+  RAZORPAY_KEY_SECRET: 'phase13-fixture-payment-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'phase13-fixture-webhook-secret',
 });
 globalThis.__rentraSql = db.sql;
 globalThis.__rentraPaymentFetcher = (await import('./fake-razorpay.mjs')).fileBackedRazorpay(

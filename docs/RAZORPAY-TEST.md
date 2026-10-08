@@ -9,9 +9,16 @@ actual bank money. Live keys remain rejected.
 
 The backend needs these values in `.env` (never `NEXT_PUBLIC_` variables):
 
-- `RAZORPAY_TEST_KEY_ID`
-- `RAZORPAY_TEST_KEY_SECRET`
-- `RAZORPAY_TEST_WEBHOOK_SECRET`
+- `RAZORPAY_KEY_ID`
+- `RAZORPAY_KEY_SECRET`
+- `RAZORPAY_WEBHOOK_SECRET`
+
+These standard names hold sandbox credentials in development. There are no separate
+test/live credential variables. Set them in `rentra-backend/.env` for the API and
+worker; the backend does not load `Rentra/.env.local`. The current ledger and
+checkout remain sandbox-only, so live execution needs a separate implementation
+before production values can be used. Optional `RAZORPAY_KEYRING_JSON` and
+`RAZORPAY_PREVIOUS_WEBHOOK_SECRETS` retain rotated credentials for retries.
 
 The configured test API credentials were accepted by Razorpay. A new webhook
 secret was generated locally because it was missing; its value was not printed or
@@ -41,7 +48,7 @@ In Razorpay Test mode, add a webhook for your publicly reachable backend:
 https://<backend-host>/webhooks/razorpay
 ```
 
-Use the exact secret in the backend's `RAZORPAY_TEST_WEBHOOK_SECRET`. For local
+Use the exact secret in the backend's `RAZORPAY_WEBHOOK_SECRET`. For local
 work, use a public HTTPS tunnel to backend port 4000; Razorpay cannot send requests
 to your localhost. Select `payment.authorized`, `payment.captured`, `payment.failed`,
 `order.paid`, `refund.created`, `refund.processed`, and `refund.failed`. Run the

@@ -25,9 +25,9 @@ import {
 const env = {
   ...process.env,
   NODE_ENV: 'test',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_GRID1234',
-  RAZORPAY_TEST_KEY_SECRET: 'grid-disposable-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'grid-disposable-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_GRID1234',
+  RAZORPAY_KEY_SECRET: 'grid-disposable-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'grid-disposable-webhook-secret',
 };
 const skip = !process.env.PORTAL_TEST_DATABASE_URL;
 

@@ -1,5 +1,5 @@
 // CP19 gate: run after seed-pricing-operations-gate.mjs with the same FAKE_RAZORPAY_STATE and
-// RAZORPAY_TEST_* values as the fixture API. Disposable fixture only; never .env DATABASE_URL.
+// RAZORPAY_* values as the fixture API. Disposable fixture only; never .env DATABASE_URL.
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHmac, randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -10,8 +10,8 @@ const url = new URL(fixture.databaseUrl);
 if (url.hostname !== '127.0.0.1' || !url.pathname.startsWith('/rentra_test_'))
   throw new Error('Disposable fixture required');
 const state = process.env.FAKE_RAZORPAY_STATE;
-if (!state || !process.env.RAZORPAY_TEST_KEY_ID)
-  throw new Error('Set FAKE_RAZORPAY_STATE and RAZORPAY_TEST_* like the fixture API');
+if (!state || !process.env.RAZORPAY_KEY_ID)
+  throw new Error('Set FAKE_RAZORPAY_STATE and RAZORPAY_* like the fixture API');
 Object.assign(process.env, { NODE_ENV: 'test' });
 const env = { ...process.env };
 const fetcher = fileBackedRazorpay(state);
@@ -76,7 +76,7 @@ try {
   // Paid two-visit order with one visit cancelled by the customer → a pending refund obligation.
   const paid = await hold([days[0], days[1]]);
   providerCaptures(state, paid.providerOrderId, 'pay_FAKEPAID');
-  const signature = createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+  const signature = createHmac('sha256', env.RAZORPAY_KEY_SECRET)
     .update(`${paid.providerOrderId}|pay_FAKEPAID`)
     .digest('hex');
   await verifyCheckoutPayment(

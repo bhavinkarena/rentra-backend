@@ -23,9 +23,9 @@ try {
       collectionPurpose: 'full',
     },
     {
-      RAZORPAY_TEST_KEY_ID: 'rzp_test_cp30fixture',
-      RAZORPAY_TEST_KEY_SECRET: 'cp30-disposable-fake-provider-secret',
-      RAZORPAY_TEST_WEBHOOK_SECRET: 'cp30-disposable-webhook-secret',
+      RAZORPAY_KEY_ID: 'rzp_test_cp30fixture',
+      RAZORPAY_KEY_SECRET: 'cp30-disposable-fake-provider-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'cp30-disposable-webhook-secret',
     },
   );
   await db.begin(async (db) => {

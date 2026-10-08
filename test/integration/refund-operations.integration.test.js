@@ -31,9 +31,9 @@ import {
 const env = {
   ...process.env,
   NODE_ENV: 'test',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_CP20KEY1234',
-  RAZORPAY_TEST_KEY_SECRET: 'cp20-disposable-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'cp20-disposable-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_CP20KEY1234',
+  RAZORPAY_KEY_SECRET: 'cp20-disposable-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'cp20-disposable-webhook-secret',
 };
 
 /** Fake Razorpay with refunds: a refund POST can be accepted while its response is lost. */
@@ -172,7 +172,7 @@ test(
       const started = await startCheckoutPayment(sql, session, held.orderId, opts);
       const order = provider.orders.get(started.providerOrderId);
       provider.capture(order, 'pay_CP20A');
-      const signature = createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+      const signature = createHmac('sha256', env.RAZORPAY_KEY_SECRET)
         .update(`${order.id}|pay_CP20A`)
         .digest('hex');
       await verifyCheckoutPayment(
@@ -341,7 +341,7 @@ test(
         JSON.stringify({ event: 'refund.processed', payload: { refund: { entity: remote } } }),
       );
       const sign = (body) =>
-        createHmac('sha256', env.RAZORPAY_TEST_WEBHOOK_SECRET).update(body).digest('hex');
+        createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET).update(body).digest('hex');
       const one = await ingestRazorpayEvent(sql, raw, sign(raw), 'evt_CP20_1', env);
       const duplicate = await ingestRazorpayEvent(sql, raw, sign(raw), 'evt_CP20_1', env);
       assert.equal(duplicate.duplicate, true);

@@ -20,9 +20,9 @@ Object.assign(process.env, {
 });
 const env = {
   ...process.env,
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_CP14GATE',
-  RAZORPAY_TEST_KEY_SECRET: 'cp14-gate-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'cp14-gate-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_CP14GATE',
+  RAZORPAY_KEY_SECRET: 'cp14-gate-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'cp14-gate-webhook-secret',
 };
 const { openBookingDates } = await import('@/services/booking/owner-settings.js');
 const { createBookingQuote } = await import('@/services/booking/quotes.js');
@@ -99,7 +99,7 @@ try {
     return { ok: Boolean(reply), json: async () => reply };
   };
   await startCheckoutPayment(sql, session, held.orderId, { env, fetcher });
-  const signature = createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+  const signature = createHmac('sha256', env.RAZORPAY_KEY_SECRET)
     .update('order_CP14GATE|pay_CP14GATE')
     .digest('hex');
   const status = await verifyCheckoutPayment(

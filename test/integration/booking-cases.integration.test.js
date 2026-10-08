@@ -30,9 +30,9 @@ import {
 const env = {
   ...process.env,
   NODE_ENV: 'test',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_CP14',
-  RAZORPAY_TEST_KEY_SECRET: 'cp14-disposable-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'cp14-disposable-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_CP14',
+  RAZORPAY_KEY_SECRET: 'cp14-disposable-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'cp14-disposable-webhook-secret',
 };
 
 test(
@@ -132,7 +132,7 @@ test(
         return { ok: Boolean(reply), json: async () => reply };
       };
       await startCheckoutPayment(sql, session, held.orderId, { env, fetcher });
-      const signature = createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+      const signature = createHmac('sha256', env.RAZORPAY_KEY_SECRET)
         .update('order_CP14|pay_CP14')
         .digest('hex');
       assert.equal(

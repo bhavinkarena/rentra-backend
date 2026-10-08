@@ -23,9 +23,9 @@ try {
   const env = {
     ...process.env,
     NODE_ENV: 'test',
-    RAZORPAY_TEST_KEY_ID: 'rzp_test_PERFORMANCE',
-    RAZORPAY_TEST_KEY_SECRET: 'local-performance-fixture',
-    RAZORPAY_TEST_WEBHOOK_SECRET: 'local-performance-webhook',
+    RAZORPAY_KEY_ID: 'rzp_test_PERFORMANCE',
+    RAZORPAY_KEY_SECRET: 'local-performance-fixture',
+    RAZORPAY_WEBHOOK_SECRET: 'local-performance-webhook',
   };
   await setPaymentGatewayConfiguration(
     sql,

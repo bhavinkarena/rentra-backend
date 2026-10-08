@@ -266,9 +266,9 @@ test(
       const env = {
         ...process.env,
         NODE_ENV: 'test',
-        RAZORPAY_TEST_KEY_ID: 'rzp_test_CP12',
-        RAZORPAY_TEST_KEY_SECRET: 'cp12-disposable-key-secret',
-        RAZORPAY_TEST_WEBHOOK_SECRET: 'cp12-disposable-webhook-secret',
+        RAZORPAY_KEY_ID: 'rzp_test_CP12',
+        RAZORPAY_KEY_SECRET: 'cp12-disposable-key-secret',
+        RAZORPAY_WEBHOOK_SECRET: 'cp12-disposable-webhook-secret',
       };
       const [{ version: gatewayVersion }] =
         await sql`SELECT coalesce(max(version),0)::int version FROM payment_gateway_config`;
@@ -339,7 +339,7 @@ test(
           code: 'PROVIDER_PAYMENT_MISMATCH',
         },
       );
-      const signature = createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+      const signature = createHmac('sha256', env.RAZORPAY_KEY_SECRET)
         .update('order_CP12|pay_CP12')
         .digest('hex');
       const verified = { orderId: held.orderId, paymentId: 'pay_CP12', signature };

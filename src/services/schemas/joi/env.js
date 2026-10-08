@@ -73,9 +73,9 @@ const envSchema = Joi.object({
       }),
     }),
 
-  RAZORPAY_TEST_KEY_ID: Joi.string().pattern(/^rzp_test_[A-Za-z0-9]+$/).allow('').optional(),
-  RAZORPAY_TEST_KEY_SECRET: Joi.string().allow('').optional(),
-  RAZORPAY_TEST_WEBHOOK_SECRET: Joi.string().allow('').optional(),
+  RAZORPAY_KEY_ID: Joi.string().pattern(/^rzp_test_[A-Za-z0-9]+$/).allow('').optional(),
+  RAZORPAY_KEY_SECRET: Joi.string().allow('').optional(),
+  RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('').optional(),
 
   WHATSAPP_API_TOKEN: Joi.string().allow('').optional(),
   WHATSAPP_PHONE_ID: Joi.string().allow('').optional(),

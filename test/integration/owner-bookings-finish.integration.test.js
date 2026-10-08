@@ -31,9 +31,9 @@ import { notificationMessage } from '../../src/services/domain/notifications.js'
 const env = {
   ...process.env,
   NODE_ENV: 'test',
-  RAZORPAY_TEST_KEY_ID: 'rzp_test_BOOK08KEY12',
-  RAZORPAY_TEST_KEY_SECRET: 'book08-disposable-key-secret',
-  RAZORPAY_TEST_WEBHOOK_SECRET: 'book08-disposable-webhook-secret',
+  RAZORPAY_KEY_ID: 'rzp_test_BOOK08KEY12',
+  RAZORPAY_KEY_SECRET: 'book08-disposable-key-secret',
+  RAZORPAY_WEBHOOK_SECRET: 'book08-disposable-webhook-secret',
 };
 const gate = 'https://res.cloudinary.com/demo/image/upload/gate.jpg';
 // Local clusters without PostGIS store the point as text; read it back the same way.
@@ -266,7 +266,7 @@ test(
         {
           orderId: held.orderId,
           paymentId: 'pay_BOOK08',
-          signature: createHmac('sha256', env.RAZORPAY_TEST_KEY_SECRET)
+          signature: createHmac('sha256', env.RAZORPAY_KEY_SECRET)
             .update(`${started.providerOrderId}|pay_BOOK08`)
             .digest('hex'),
         },

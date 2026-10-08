@@ -21,7 +21,7 @@ let server;
 let base;
 
 before(async () => {
-  process.env.RAZORPAY_TEST_WEBHOOK_SECRET = SECRET;
+  process.env.RAZORPAY_WEBHOOK_SECRET = SECRET;
   const { createApp } = await import('@/app.js');
   server = createApp().listen(0);
   base = `http://127.0.0.1:${server.address().port}/webhooks/razorpay`;
