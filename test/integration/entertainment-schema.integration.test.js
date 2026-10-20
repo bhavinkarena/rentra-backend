@@ -97,10 +97,9 @@ test(
 
       // Backfill: everything that existed is farmhouse, nothing public changed.
       assert.deepEqual(
-        (await sql`SELECT code,status FROM vertical ORDER BY sort_order`).map((r) => [
-          r.code,
-          r.status,
-        ]),
+        (
+          await sql`SELECT code,status FROM vertical WHERE code IN ('farmhouse','entertainment') ORDER BY sort_order`
+        ).map((r) => [r.code, r.status]),
         [
           ['farmhouse', 'public'],
           ['entertainment', 'hidden'],

@@ -159,6 +159,9 @@ export async function expireInventoryHolds(tx, rentableId, now) {
     FROM booking b WHERE r.booking_id = b.id AND b.order_id IN ${tx(expiredIds)}
     AND r.rentable_id = ${rentableId} AND r.source = 'booking' AND r.state = 'held'
     RETURNING r.id`;
+  // Hotel stays: their rooms go back on sale (booking_room triggers update room_night).
+  await tx`UPDATE booking_room SET state = 'released', updated_at = ${clock.toISOString()}
+    WHERE state = 'held' AND booking_id IN (SELECT id FROM booking WHERE order_id IN ${tx(expiredIds)})`;
   await tx`UPDATE booking SET state = 'cancelled', cancelled_at = ${clock.toISOString()}, cancelled_by_kind = 'system',
     cancellation_reason = 'Inventory hold expired', lifecycle_version = lifecycle_version + 1, updated_at = ${clock.toISOString()}
     WHERE order_id IN ${tx(expiredIds)} AND state = 'requested'`;

@@ -1,4 +1,5 @@
 import 'server-only';
+import { hotelForEdit } from '../booking/hotel-setup.js';
 import { listingCompletion } from '../domain/listing-completion.js';
 import {getEnv} from '../schemas/joi/env.js';
 import {firstIncompleteStepId, stepIndex} from '../domain/listing-steps.js';
@@ -270,12 +271,14 @@ export async function getListingForEdit(id, clientId = null) {
 
   const [{ vertical, categorySlug }] = await sql`SELECT slug AS "categorySlug", vertical_code AS vertical FROM category WHERE id=${row.categoryId}`;
   const venue = row.rentalUnit === 'hour' ? await venueForEdit(id) : { resources: [], hourlyRates: [] };
+  const hotel = row.rentalUnit === 'night' ? await hotelForEdit(sql, id) : {};
   const [bookings]=await sql`SELECT count(*)::int AS n FROM booking WHERE rentable_id=${id}`;
   return {
     // Money is stored in paise; the editor keeps its whole-rupee fields.
-    listing: { ...row, hasBookings:bookings.n>0,hasReviewHistory:reviews.length>0, vertical, categorySlug, completion: listingCompletion({...row,categorySlug,depositAmount:row.depositMinor/100},{prices,amenities:tags,photos:row.photos,documents:docs,...venue}), depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
+    listing: { ...row, hasBookings:bookings.n>0,hasReviewHistory:reviews.length>0, vertical, categorySlug, completion: listingCompletion({...row,categorySlug,depositAmount:row.depositMinor/100},{prices,amenities:tags,photos:row.photos,documents:docs,...venue,...hotel}), depositAmount: row.depositMinor / 100, extraGuestCharge: row.extraGuestChargeMinor / 100 },
     prices,
     ...venue,
+    ...hotel,
     amenities: tags,
     photos: Array.isArray(row.photos) ? row.photos.map(withPhotoUrl) : [],
     documents: docs,

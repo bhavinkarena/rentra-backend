@@ -1,0 +1,477 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { createDisposableDatabase } from '../helpers/disposable-db.js';
+import { insertStayBooking, seedCustomer } from '../helpers/hotel-fixture.js';
+import { addLocalDays, propertyToday } from '../../src/services/domain/booking-dates.js';
+
+/** Hotel plan, Phase 3: an owner sets up a 30-room hotel through the wizard services and submits it. */
+test(
+  'Phase 3: hotel rooms, rates, policies, GST, completion and submission',
+  { skip: !process.env.PORTAL_TEST_DATABASE_URL },
+  async (t) => {
+    const fixture = await createDisposableDatabase(process.env.PORTAL_TEST_DATABASE_URL);
+    t.after(() => fixture.drop());
+    const { sql } = fixture;
+    globalThis.__rentraSql = sql;
+    process.env.DATABASE_URL = fixture.url;
+    const { saveHotelRooms, saveHotelRates, saveHotelProfile, hotelForEdit } =
+      await import('@/services/booking/hotel-setup.js');
+    const { submitProperty } = await import('@/services/admin/listings.js');
+    const { listingCompletion } = await import('@/services/domain/listing-completion.js');
+    const { quoteHotelStay, holdHotelRooms } = await import('@/services/booking/hotel-stays.js');
+    const { withListingInventory } = await import('@/services/booking/inventory.js');
+
+    const rejects = (promise, code) =>
+      assert.rejects(promise, (error) => {
+        assert.equal(error.code, code, `${error.code}: ${error.message}`);
+        return true;
+      });
+    const [owner] =
+      await sql`INSERT INTO "user"(email,role,account_status,name) VALUES (${`hotelier-${randomUUID()}@fixture.invalid`},'client','active','Hotelier') RETURNING id`;
+    const [city] =
+      await sql`INSERT INTO city(slug,name,state) VALUES ('surat','Surat','Gujarat') RETURNING id`;
+    const [area] =
+      await sql`INSERT INTO area(city_id,slug,name) VALUES (${city.id},'adajan','Adajan') RETURNING id`;
+    const [category] =
+      await sql`INSERT INTO category(slug,name,vertical_code,default_rental_unit) VALUES ('hotel','Hotel','hotel','night') RETURNING id`;
+    const photos = Array.from({ length: 8 }, (_, i) => ({
+      url: `/seed/hotel-${i}.jpg`,
+      alt: `Photo ${i + 1}`,
+      tag: i ? 'Rooms' : 'Exterior',
+    }));
+    const [hotel] =
+      await sql`INSERT INTO rentable(client_id,slug,title,description,category_id,city_id,area_id,public_code,rental_unit,status,exact_address,photos)
+    VALUES (${owner.id},'riverside-x','Riverside Residency Adajan','A 30-room hotel on the Adajan riverfront, renovated in 2024.',${category.id},${city.id},${area.id},'htl00001','night','draft',
+      '12 Riverfront Road, Adajan',${JSON.stringify(photos)}::text::jsonb) RETURNING id, content_version`;
+    const [amenity] =
+      await sql`INSERT INTO amenity(slug,group_slug,label_en) VALUES ('wifi','practical','Wi-Fi') RETURNING id`;
+    await sql`INSERT INTO amenity_vertical(amenity_id,vertical_code) VALUES (${amenity.id},'hotel')`;
+    for (const slug of ['parking', 'lift']) {
+      const [row] =
+        await sql`INSERT INTO amenity(slug,group_slug,label_en) VALUES (${slug},'practical',${slug}) RETURNING id`;
+      await sql`INSERT INTO amenity_vertical(amenity_id,vertical_code) VALUES (${row.id},'hotel')`;
+      await sql`INSERT INTO rentable_amenity(rentable_id,amenity_id) VALUES (${hotel.id},${row.id})`;
+    }
+    await sql`INSERT INTO rentable_amenity(rentable_id,amenity_id) VALUES (${hotel.id},${amenity.id})`;
+    // Valid EWKB in the helper's text fallback (no PostGIS locally), as listing-review-fixture does.
+    const point = Buffer.alloc(25);
+    point.writeUInt8(1, 0);
+    point.writeUInt32LE(0x20000001, 1);
+    point.writeUInt32LE(4326, 5);
+    point.writeDoubleLE(72.8, 9);
+    point.writeDoubleLE(21.2, 17);
+    const [{ udt_name: geometryType }] =
+      await sql`SELECT udt_name FROM information_schema.columns WHERE table_name='rentable' AND column_name='location'`;
+    if (geometryType === 'geometry')
+      await sql`UPDATE rentable SET location=ST_SetSRID(ST_MakePoint(72.8,21.2),4326) WHERE id=${hotel.id}`;
+    else await sql`UPDATE rentable SET location=${point.toString('hex')} WHERE id=${hotel.id}`;
+    const version = async () =>
+      (await sql`SELECT content_version FROM rentable WHERE id=${hotel.id}`)[0].content_version;
+    const room = (name, roomCount, extra = {}) => ({
+      name,
+      beds: [{ type: 'king', count: 1 }],
+      sizeSqm: 24,
+      view: 'city',
+      maxAdults: 3,
+      maxChildren: 2,
+      maxOccupancy: 4,
+      baseOccupancy: 2,
+      roomCount,
+      extraAdult: 700,
+      extraChild: 400,
+      amenities: ['ac', 'tv'],
+      sortOrder: 10,
+      isActive: true,
+      ...extra,
+    });
+
+    let rooms;
+    await t.test('room types: validation, version guard, save', async () => {
+      await rejects(
+        saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: [],
+        }),
+        'VALIDATION_FAILED',
+      );
+      await rejects(
+        saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: [room('Deluxe', 12, { maxAdults: 5 })],
+        }),
+        'VALIDATION_FAILED',
+      );
+      await rejects(
+        saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: 1,
+          rooms: [room('Deluxe', 12)],
+        }),
+        'LISTING_CHANGED',
+      );
+      const saved = await saveHotelRooms(sql, owner.id, {
+        rentableId: hotel.id,
+        expectedVersion: await version(),
+        rooms: [
+          room('Deluxe Double', 12),
+          room('Standard Twin', 14, {
+            beds: [{ type: 'single', count: 2 }],
+            maxAdults: 2,
+            maxOccupancy: 3,
+            sortOrder: 20,
+          }),
+          room('Family Suite', 4, { maxAdults: 4, maxOccupancy: 5, sortOrder: 30 }),
+        ],
+      });
+      assert.equal(saved.roomTypeIds.length, 3);
+      rooms = (await hotelForEdit(sql, hotel.id)).hotel.roomTypes;
+      assert.deepEqual(
+        rooms.map((r) => [r.name, r.roomCount, r.extraAdult]),
+        [
+          ['Deluxe Double', 12, 700],
+          ['Standard Twin', 14, 700],
+          ['Family Suite', 4, 700],
+        ],
+      );
+      assert.equal(
+        (await sql`SELECT capacity FROM rentable WHERE id=${hotel.id}`)[0].capacity,
+        5,
+        'capacity = largest room',
+      );
+    });
+
+    await t.test('rate plans: base and derived by key, refusals', async () => {
+      const [deluxe, standard, family] = rooms;
+      const plans = [
+        {
+          key: 'd-base',
+          roomTypeId: deluxe.id,
+          name: 'Room only',
+          weekday: 2600,
+          weekend: 3000,
+          cancellation: 'flexible',
+          sortOrder: 0,
+        },
+        {
+          key: 'd-bf',
+          roomTypeId: deluxe.id,
+          name: 'Breakfast included',
+          mealPlan: 'CP',
+          derivedFrom: 'd-base',
+          perGuest: 250,
+          cancellation: 'flexible',
+          sortOrder: 1,
+        },
+        {
+          key: 'd-nr',
+          roomTypeId: deluxe.id,
+          name: 'Non-refundable',
+          derivedFrom: 'd-base',
+          adjustPct: -10,
+          cancellation: 'non_refundable',
+          sortOrder: 2,
+        },
+        {
+          key: 's-base',
+          roomTypeId: standard.id,
+          name: 'Room only',
+          weekday: 2000,
+          weekend: 2300,
+          cancellation: 'moderate',
+          sortOrder: 0,
+        },
+        {
+          key: 'f-base',
+          roomTypeId: family.id,
+          name: 'Room only',
+          weekday: 4200,
+          weekend: 4800,
+          cancellation: 'strict',
+          sortOrder: 0,
+        },
+      ];
+      await rejects(
+        saveHotelRates(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          plans: [{ ...plans[1], derivedFrom: 's-base' }, plans[3]],
+        }),
+        'VALIDATION_FAILED',
+      );
+      await rejects(
+        saveHotelRates(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          plans: [{ ...plans[0], weekday: 100 }],
+        }),
+        'VALIDATION_FAILED',
+      );
+      const saved = await saveHotelRates(sql, owner.id, {
+        rentableId: hotel.id,
+        expectedVersion: await version(),
+        plans,
+      });
+      assert.equal(Object.keys(saved.ratePlanIds).length, 5);
+      const edit = (await hotelForEdit(sql, hotel.id)).hotel.ratePlans;
+      const breakfast = edit.find((p) => p.name === 'Breakfast included');
+      assert.equal(breakfast.derivedFrom, saved.ratePlanIds['d-base']);
+      assert.deepEqual([breakfast.perGuest, breakfast.cancellation], [250, 'flexible']);
+      assert.deepEqual(
+        edit.find((p) => p.name === 'Non-refundable') && [
+          edit.find((p) => p.name === 'Non-refundable').adjustPct,
+          edit.find((p) => p.name === 'Non-refundable').cancellation,
+        ],
+        [-10, 'non_refundable'],
+      );
+      await rejects(
+        saveHotelRates(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          plans: edit
+            .map((p) =>
+              p.id === breakfast.id ? { ...p, derivedFrom: null, weekday: 3000, weekend: 3000 } : p,
+            )
+            .map(
+              ({
+                id,
+                roomTypeId,
+                name,
+                mealPlan,
+                derivedFrom,
+                weekday,
+                weekend,
+                adjustPct,
+                perGuest,
+                cancellation,
+                minNights,
+                sortOrder,
+                isActive,
+              }) => ({
+                id,
+                roomTypeId,
+                name,
+                mealPlan,
+                derivedFrom,
+                weekday,
+                weekend,
+                adjustPct,
+                perGuest,
+                cancellation,
+                minNights,
+                sortOrder,
+                isActive,
+              }),
+            ),
+        }),
+        'VALIDATION_FAILED',
+      );
+    });
+
+    await t.test('stay, rules and GST answers', async () => {
+      const save = async (part, values) =>
+        saveHotelProfile(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          part,
+          values,
+        });
+      await rejects(
+        saveHotelProfile(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: 0,
+          part: 'stay',
+          values: {},
+        }),
+        'VALIDATION_FAILED',
+      );
+      await save('stay', {
+        checkInTime: '12:00',
+        checkOutTime: '11:00',
+        childFreeAge: '6',
+        weekendNights: ['5', '6'],
+        starRating: '3',
+      });
+      await rejects(
+        saveHotelProfile(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          part: 'rules',
+          values: { couples: 'yes', localId: 'yes', idTypes: [] },
+        }),
+        'VALIDATION_FAILED',
+      );
+      await save('rules', {
+        couples: 'yes',
+        localId: 'yes',
+        idTypes: ['aadhaar', 'passport'],
+        pets: 'no',
+        smoking: 'no',
+        parties: 'no',
+        extraRules: '',
+      });
+      await rejects(
+        saveHotelProfile(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          part: 'gst',
+          values: { gstRegistered: 'yes', gstin: 'ABC' },
+        }),
+        'VALIDATION_FAILED',
+      );
+      await save('gst', { gstRegistered: 'yes', gstin: '24abcde1234f1z5' });
+      const { profile } = (await hotelForEdit(sql, hotel.id)).hotel;
+      assert.deepEqual(
+        [
+          profile.checkInMinute,
+          profile.checkOutMinute,
+          profile.childFreeAge,
+          profile.weekendNights,
+          profile.starRating,
+          profile.gstin,
+        ],
+        [720, 660, 6, [5, 6], 3, '24ABCDE1234F1Z5'],
+      );
+      assert.equal(profile.policies.couples, true);
+    });
+
+    await t.test('completion: everything but proof, then submit', async () => {
+      await sql`UPDATE vertical SET status='partners' WHERE code='hotel'`;
+      const completion = async () => {
+        const [row] = await sql`SELECT * FROM rentable WHERE id=${hotel.id}`;
+        const camel = Object.fromEntries(
+          Object.entries(row).map(([k, v]) => [
+            k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+            v,
+          ]),
+        );
+        return listingCompletion(camel, {
+          ...(await hotelForEdit(sql, hotel.id)),
+          photos: row.photos,
+          amenities: [1, 2, 3],
+          documents: await sql`SELECT status FROM document WHERE owner_id=${hotel.id}`,
+        });
+      };
+      const before = await completion();
+      assert.deepEqual(
+        before.remaining.map((s) => s.id),
+        ['ownership'],
+      );
+      await sql`INSERT INTO document(owner_type,owner_id,doc_type,storage_key,status) VALUES ('rentable',${hotel.id},'rent_agreement','fixture/hotel-lease','uploaded')`;
+      assert.equal((await completion()).canSubmit, true);
+      await sql`UPDATE vertical SET status='hidden' WHERE code='hotel'`;
+      await rejects(submitProperty(sql, { id: hotel.id, clientId: owner.id }), 'VERTICAL_CLOSED');
+      await sql`UPDATE vertical SET status='partners' WHERE code='hotel'`;
+      const submitted = await submitProperty(sql, { id: hotel.id, clientId: owner.id });
+      const [snapshot] =
+        await sql`SELECT snapshot FROM listing_submission WHERE id=${submitted.submissionId}`;
+      assert.equal(snapshot.snapshot.hotel.roomTypes.length, 3);
+      assert.equal(snapshot.snapshot.hotel.ratePlans.length, 5);
+    });
+
+    await t.test(
+      'rooms booked ahead protect their room type; live facts go back to review',
+      async () => {
+        await sql`UPDATE rentable SET status='live' WHERE id=${hotel.id}`;
+        const checkIn = addLocalDays(propertyToday(), 12);
+        const checkOut = addLocalDays(checkIn, 1);
+        const [deluxe] = rooms;
+        const plan = (await hotelForEdit(sql, hotel.id)).hotel.ratePlans.find(
+          (p) => p.roomTypeId === deluxe.id && !p.derivedFrom,
+        );
+        const quote = await quoteHotelStay(sql, {
+          rentableId: hotel.id,
+          checkIn,
+          checkOut,
+          rooms: [
+            { roomTypeId: deluxe.id, ratePlanId: plan.id, adults: 2 },
+            { roomTypeId: deluxe.id, ratePlanId: plan.id, adults: 2 },
+          ],
+        });
+        assert.equal(quote.lines[0].nights[0].taxBps, 500);
+        const guest = await seedCustomer(sql);
+        await withListingInventory(sql, hotel.id, async (tx, listing) => {
+          const ids = await insertStayBooking(tx, {
+            customerId: guest,
+            rentableId: hotel.id,
+            quote,
+          });
+          await holdHotelRooms(tx, listing, { bookingId: ids.bookingId, quote });
+        });
+        const current = (await hotelForEdit(sql, hotel.id)).hotel.roomTypes;
+        assert.equal(current[0].upcomingRooms, 2);
+        const payload = (patch) =>
+          current.map(
+            ({
+              id,
+              name,
+              beds,
+              sizeSqm,
+              view,
+              maxAdults,
+              maxChildren,
+              maxOccupancy,
+              baseOccupancy,
+              roomCount,
+              extraAdult,
+              extraChild,
+              amenities,
+              sortOrder,
+              isActive,
+            }) => ({
+              id,
+              name,
+              beds,
+              sizeSqm,
+              view,
+              maxAdults,
+              maxChildren,
+              maxOccupancy,
+              baseOccupancy,
+              roomCount,
+              extraAdult,
+              extraChild,
+              amenities,
+              sortOrder,
+              isActive,
+              ...(patch[id] ?? {}),
+            }),
+          );
+        await rejects(
+          saveHotelRooms(sql, owner.id, {
+            rentableId: hotel.id,
+            expectedVersion: await version(),
+            rooms: payload({ [deluxe.id]: { isActive: false } }),
+          }),
+          'ROOM_HAS_BOOKINGS',
+        );
+        await rejects(
+          saveHotelRooms(sql, owner.id, {
+            rentableId: hotel.id,
+            expectedVersion: await version(),
+            rooms: payload({ [deluxe.id]: { roomCount: 1 } }),
+          }),
+          'ROOMS_BELOW_BOOKINGS',
+        );
+        const count = await saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: payload({ [deluxe.id]: { roomCount: 10 } }),
+        });
+        assert.equal(count.sentBack, false, 'selling fewer rooms is not a change of facts');
+        const facts = await saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: payload({ [deluxe.id]: { roomCount: 10, maxOccupancy: 3, maxAdults: 3 } }),
+        });
+        assert.equal(facts.sentBack, true);
+        assert.equal(
+          (await sql`SELECT status FROM rentable WHERE id=${hotel.id}`)[0].status,
+          'pending_review',
+        );
+      },
+    );
+  },
+);

@@ -11,6 +11,7 @@ import { submitProperty } from '../admin/listings.js';
 import { changePropertyPolicy } from '../booking/property-policy.js';
 import { changeHourlyRates } from '../booking/hourly-rates.js';
 import { saveVenueResources } from '../booking/venue.js';
+import { saveHotelProfile, saveHotelRates, saveHotelRooms } from '../booking/hotel-setup.js';
 import {
   rentable, rentableAmenity, documents, users,
   category, city, area,
@@ -21,7 +22,7 @@ import {
   basicsSchema, listingStartSchema, locationSchema, capacitySchema, rulesSchema,
   ownershipDocSchema, venueRulesSchema, termsSchema,
 } from '@/services/schemas/zod/listing';
-import { MAX_PHOTOS, billIsFresh, ownershipDocTypesFor } from '@/services/domain/listing-completion';
+import { maxPhotosFor, billIsFresh, ownershipDocTypesFor } from '@/services/domain/listing-completion';
 import { movePhoto, photoId, renumberPhotos } from '@/services/domain/listing-photos';
 import { getListingForEdit } from '@/services/db/listing-queries';
 import { revalidateListing } from '@/services/cache/listing-cache';
@@ -286,6 +287,7 @@ export async function saveAmenities(_prev, formData) {
 
 export async function saveRules(_prev, formData) {
   const { listing } = await load(String(formData.get('id')));
+  if (listing.rentalUnit === 'night') return hotelProfileAction(formData, 'rules', listing);
   if (formData.get('wizardRules')==='1') { const [booking]=await sql`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`;if(!['draft','rejected'].includes(listing.status)||booking)throw conflict('EXPLICIT_SAVE_REQUIRED','Use the policy preview for this property'); const terms=termsSchema.safeParse(Object.fromEntries(formData)); if (!terms.success) return {errors:fieldErrors(terms.error)}; if(formData.get('cancellationConfirmed')!=='on') return {errors:{cancellationConfirmed:'Confirm your cancellation policy'}}; }
   if (listing.rentalUnit === 'hour') return saveVenueRules(listing, formData);
   const parsed = rulesSchema.safeParse({
@@ -398,6 +400,53 @@ export async function saveVenue(_prev, formData) {
 }
 export async function saveTerms(_prev, formData) { return policyAction(formData,'terms'); }
 
+/* ------------------------------ hotels (hotel plan, Phase 3) ------------------------------ */
+
+async function hotelListing(formData) {
+  const user = await requireClient();
+  const data = await getListingForEdit(String(formData.get('id')), user.id);
+  if (!data) throw notFound();
+  return { user, listing: data.listing };
+}
+
+/** Room types: `rooms` is one JSON field (wizard step `space`). */
+export async function saveHotelRoomsStep(_prev, formData) {
+  const { user, listing } = await hotelListing(formData);
+  const result = await saveHotelRooms(sql, user.id, { rentableId: listing.id, expectedVersion: Number(formData.get('contentVersion')), rooms: jsonField(formData, 'rooms') });
+  revalidateListing(listing);
+  return result;
+}
+
+/** Rate plans: `plans` is one JSON field (wizard step `pricing`). */
+export async function saveHotelRatesStep(_prev, formData) {
+  const { user, listing } = await hotelListing(formData);
+  const result = await saveHotelRates(sql, user.id, { rentableId: listing.id, expectedVersion: Number(formData.get('contentVersion')), plans: jsonField(formData, 'plans') });
+  revalidateListing(listing);
+  return result;
+}
+
+async function hotelProfileAction(formData, part, known = null) {
+  const { user, listing } = known ? { user: await requireClient(), listing: known } : await hotelListing(formData);
+  const values = part === 'stay'
+    ? { checkInTime: formData.get('checkInTime'), checkOutTime: formData.get('checkOutTime'), childFreeAge: formData.get('childFreeAge'),
+      weekendNights: formData.getAll('weekendNights'), starRating: formData.get('starRating') ?? '' }
+    : part === 'rules'
+      ? { couples: formData.get('couples') ?? undefined, localId: formData.get('localId') ?? undefined, idTypes: formData.getAll('idTypes'),
+        pets: formData.get('pets') ?? 'no', smoking: formData.get('smoking') ?? 'no', parties: formData.get('parties') ?? 'no', extraRules: formData.get('extraRules') ?? '' }
+      : { gstRegistered: formData.get('gstRegistered') ?? undefined, gstin: formData.get('gstin') ?? '' };
+  try {
+    const result = await saveHotelProfile(sql, user.id, { rentableId: listing.id, expectedVersion: Number(formData.get('contentVersion')), part, values });
+    revalidateListing(listing);
+    return result;
+  } catch (error) {
+    // Field problems come back as the form's errors, like every other step.
+    if (error.statusCode === 422 && error.fields) return { errors: Object.fromEntries(Object.entries(error.fields).map(([k, v]) => [k, [].concat(v)[0]])) };
+    throw error;
+  }
+}
+export async function saveHotelStayStep(_prev, formData) { return hotelProfileAction(formData, 'stay'); }
+export async function saveHotelGstStep(_prev, formData) { return hotelProfileAction(formData, 'gst'); }
+
 /* ------------------------------ photos ------------------------------ */
 
 export async function uploadListingPhotos(_prev, formData) {
@@ -409,8 +458,8 @@ export async function uploadListingPhotos(_prev, formData) {
 
   const files = formData.getAll('photos').filter((f) => f && f.size > 0);
   if (!files.length) return { errors: { photos: 'Choose at least one photo' } };
-  if (photos.length + files.length > MAX_PHOTOS) {
-    return { errors: { photos: `That would be more than ${MAX_PHOTOS} photos` } };
+  if (photos.length + files.length > maxPhotosFor(listing.rentalUnit)) {
+    return { errors: { photos: `That would be more than ${maxPhotosFor(listing.rentalUnit)} photos` } };
   }
 
   const staged = [];
@@ -691,7 +740,8 @@ export async function attachPhoto(_previous,form){
  if(!['jpg','jpeg','png','webp'].includes(asset.format)||asset.bytes>8*1024*1024||asset.type!=='upload')return {errors:{photos:'Choose a JPG, PNG or WEBP under 8MB'}};
  const current=await getListingForEdit(listing.id,listing.clientId);
  if(current.photos.some(p=>p.key===key))return {ok:true,contentVersion:current.listing.contentVersion};
- if(current.photos.length>=MAX_PHOTOS)return {errors:{photos:'15 of 15 — remove one to add another'}};
+ const maxPhotos=maxPhotosFor(listing.rentalUnit);
+ if(current.photos.length>=maxPhotos)return {errors:{photos:`${maxPhotos} of ${maxPhotos} — remove one to add another`}};
  const hash=String(form.get('hash')||'');
  if(current.photos.some(p=>hash&&p.hash===hash)){await destroyListingPhoto(key);return {ok:true,duplicate:true,contentVersion:current.listing.contentVersion};}
  const photo={key,alt:listing.title,width:asset.width,height:asset.height,tag:String(form.get('tag')||'Other').slice(0,40),hash:hash.slice(0,64)};

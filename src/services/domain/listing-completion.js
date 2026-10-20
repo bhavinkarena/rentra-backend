@@ -14,6 +14,11 @@ import { hourlyBookingConfigSchema } from '../schemas/zod/booking-config.js';
 
 export const MIN_PHOTOS = 6;
 export const MAX_PHOTOS = 15;
+/** Hotels show rooms, bathrooms, lobby and dining: more photos, and a higher minimum. */
+export const HOTEL_MIN_PHOTOS = 8;
+export const HOTEL_MAX_PHOTOS = 40;
+export const minPhotosFor = (rentalUnit) => (rentalUnit === 'night' ? HOTEL_MIN_PHOTOS : MIN_PHOTOS);
+export const maxPhotosFor = (rentalUnit) => (rentalUnit === 'night' ? HOTEL_MAX_PHOTOS : MAX_PHOTOS);
 
 /** Documents that can prove ownership, best first. */
 export const OWNERSHIP_DOC_TYPES = [
@@ -75,7 +80,19 @@ export const VENUE_OWNERSHIP_DOC_TYPES = [
   { id: 'authorisation_letter', label: 'Authorisation letter', note: "Required if you are not the owner. Send the owner's ID and their document too.", sides: ['single'], agentOnly: true },
 ];
 
-/** Which documents prove a listing, by booking model ('hour' = venue). */
+/** Hotels: the right to run a hotel at these premises. */
+export const HOTEL_OWNERSHIP_DOC_TYPES = [
+  { id: 'rent_agreement', label: 'Rent or lease agreement', note: 'For a leased building — must cover today’s date.', sides: ['single'] },
+  { id: 'property_tax', label: 'Property tax receipt', note: 'If you own the building.', sides: ['single'] },
+  { id: 'shop_establishment', label: 'Shop & Establishment (Gumasta) registration', note: 'The hotel’s business registration.', sides: ['single'] },
+  { id: 'gst_certificate', label: 'GST registration certificate', note: 'Shows the business name and the hotel’s address.', sides: ['single'] },
+  { id: 'electricity_bill', label: 'Electricity bill', note: 'In the hotel’s or your name. Must be under 3 months old.', sides: ['single'], freshMonths: 3 },
+  { id: 'sale_deed', label: 'Registered sale deed', note: 'If you own the property outright.', sides: ['single'] },
+  { id: 'noc', label: 'Owner’s NOC', note: 'If the landlord’s permission is needed to run the hotel.', sides: ['single'] },
+  { id: 'authorisation_letter', label: 'Authorisation letter', note: "Required if you are not the owner or a director. Send the owner's ID and their document too.", sides: ['single'], agentOnly: true },
+];
+
+/** Which documents prove a listing, by booking model ('hour' = venue, 'night' = hotel). */
 /** An electricity bill (YYYY-MM-DD) issued today or within the last 3 calendar months, UTC dates. */
 export function billIsFresh(issuedAt, now = new Date()) {
   const issued = new Date(`${issuedAt}T00:00:00Z`);
@@ -85,11 +102,12 @@ export function billIsFresh(issuedAt, now = new Date()) {
   cutoff.setUTCMonth(cutoff.getUTCMonth() - 3);
   return issued >= cutoff && issued <= today;
 }
-export const ownershipDocTypesFor = (rentalUnit) => (rentalUnit === 'hour' ? VENUE_OWNERSHIP_DOC_TYPES : OWNERSHIP_DOC_TYPES);
+export const ownershipDocTypesFor = (rentalUnit) =>
+  rentalUnit === 'hour' ? VENUE_OWNERSHIP_DOC_TYPES : rentalUnit === 'night' ? HOTEL_OWNERSHIP_DOC_TYPES : OWNERSHIP_DOC_TYPES;
 
 export function listingCompletion(
   listing,
-  { prices = [], amenities = [], photos = [], documents = [], legacySubmission=false, resources = [], hourlyRates = [] } = {},
+  { prices = [], amenities = [], photos = [], documents = [], legacySubmission=false, resources = [], hourlyRates = [], hotel = null } = {},
 ) {
   const l = listing ?? {};
   const photoList = Array.isArray(photos) ? photos : [];
@@ -188,11 +206,15 @@ export function listingCompletion(
   // slots; venue rules replace the check-in window; hourly bands replace slot prices.
   if (l.rentalUnit === 'hour') sections = venueSections(sections, l, { resources, hourlyRates });
 
+  // Hotels (hotel plan, Phase 3): rooms, rates, check-in and hotel rules; already in walkthrough order.
+  if (l.rentalUnit === 'night') sections = hotelSections(sections, l, { hotel, photos: photoList, liveDocs, rejectedDoc });
+  else {
   const by = id => sections.find(section=>section.id===id);
   const story=by('basics'), rules=by('rules'), terms=by('terms');
   const space=by(l.rentalUnit==='hour'?'venue':'capacity');
   const availability=l.rentalUnit==='hour'?by('hours'):{id:'availability',label:'Availability',hint:'Arrival, departure and open dates',done:legacySubmission || l.bookingConfig?.inventoryReady===true,minutes:3};
   sections=[{id:'type',label:'Type',done:Boolean(l.categoryId),minutes:1},by('location'),{...space,id:'space'},by('amenities'),by('photos'),{...story,id:'story',label:'Title and description'},by('pricing'),{...availability,id:'availability'}, {...rules,id:'rules',label:'Rules and cancellation',done:rules.done && terms.done && (legacySubmission || !['draft','rejected'].includes(l.status??'draft') || l.houseRules?.cancellationConfirmed===true)},by('ownership')];
+  }
   const total = sections.length;
   const done = sections.filter((s) => s.done).length;
   const remaining = sections.filter((s) => !s.done);
@@ -287,5 +309,70 @@ function venueSections(farm, l, { resources, hourlyRates }) {
     by('terms'),
     { ...by('photos'), hint: `${MIN_PHOTOS}–${MAX_PHOTOS} photos of the actual venue` },
     by('ownership'),
+  ];
+}
+
+/** The hotel variant, in the hotel walkthrough order (step ids). */
+function hotelSections(farm, l, { hotel, photos, liveDocs, rejectedDoc }) {
+  const by = (id) => farm.find((s) => s.id === id);
+  const profile = hotel?.profile ?? null;
+  const policies = profile?.policies ?? {};
+  const rooms = (hotel?.roomTypes ?? []).filter((r) => r.isActive !== false);
+  const plans = (hotel?.ratePlans ?? []).filter((p) => p.isActive !== false);
+  const roomsTotal = rooms.reduce((sum, r) => sum + (r.roomCount ?? 0), 0);
+  const unpriced = rooms.filter((r) => !plans.some((p) => p.roomTypeId === r.id && p.derivedFrom == null && p.weekday > 0 && p.weekend > 0));
+  const gstAnswered = policies.gstAnswered === true;
+  return [
+    { id: 'type', label: 'Type', done: Boolean(l.categoryId), minutes: 1 },
+    { ...by('location'), note: l.exactAddress ? 'Guests see the full address on the hotel page' : null },
+    {
+      id: 'space',
+      label: 'Rooms',
+      hint: 'Room types, beds, guests and how many of each',
+      done: rooms.length >= 1 && roomsTotal >= 1,
+      note: rooms.length ? `${rooms.length} room type${rooms.length === 1 ? '' : 's'} · ${roomsTotal} room${roomsTotal === 1 ? '' : 's'}` : null,
+      minutes: 6,
+    },
+    { ...by('amenities'), hint: 'Wi-Fi, parking, restaurant, lift…' },
+    {
+      ...by('photos'),
+      hint: `${HOTEL_MIN_PHOTOS}–${HOTEL_MAX_PHOTOS} photos: outside, lobby, every room type, bathroom`,
+      done: photos.length >= HOTEL_MIN_PHOTOS,
+      note: photos.length > 0 && photos.length < HOTEL_MIN_PHOTOS ? `${photos.length} of ${HOTEL_MIN_PHOTOS} minimum` : null,
+    },
+    { ...by('basics'), id: 'story', label: 'Title and description' },
+    {
+      id: 'pricing',
+      label: 'Rates',
+      hint: 'Weekday and weekend price per room type, plans and cancellation',
+      done: rooms.length >= 1 && unpriced.length === 0,
+      note: unpriced.length && rooms.length ? `No price yet: ${unpriced.map((r) => r.name).join(', ')}` : plans.length ? `${plans.length} rate${plans.length === 1 ? '' : 's'}` : null,
+      minutes: 6,
+    },
+    {
+      id: 'availability',
+      label: 'Check-in and check-out',
+      hint: 'Times, free child age, weekend nights',
+      done: policies.stayAnswered === true,
+      minutes: 2,
+    },
+    {
+      id: 'rules',
+      label: 'House rules',
+      hint: 'Couples, local ID, ID types, pets and smoking',
+      done: typeof policies.couples === 'boolean' && typeof policies.localId === 'boolean' && (policies.idTypes ?? []).length > 0,
+      minutes: 2,
+    },
+    {
+      ...by('ownership'),
+      label: 'Proof and GST',
+      hint: 'One document for the premises, and the hotel’s GST status',
+      done: liveDocs.length >= 1 && gstAnswered,
+      failed: !liveDocs.length && Boolean(rejectedDoc),
+      note: !liveDocs.length && rejectedDoc
+        ? `Rejected — ${rejectedDoc.reviewNote ?? 'please upload a clearer copy'}`
+        : liveDocs.length && !gstAnswered ? 'Answer the GST question' : null,
+      minutes: 4,
+    },
   ];
 }
