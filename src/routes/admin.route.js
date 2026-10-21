@@ -337,6 +337,12 @@ router.get('/payments/hotel-commission', hotelFinance.commission);
 router.post('/payments/hotel-commission', formFields(), hotelFinance.commissionSave);
 router.get('/payments/hotel-tax-slabs', hotelFinance.taxSlabs);
 router.post('/payments/hotel-tax-slabs', formFields(), hotelFinance.taxSlabsSave);
+// Hotel plan, Phase 8: weekly payout runs and hotel analytics.
+router.get('/payments/hotel-payout-runs/preview', hotelFinance.payoutRunPreview);
+router.post('/payments/hotel-payout-runs', hotelFinance.payoutRunExecute);
+router.post('/payments/hotel-payout-runs/:id/settle', hotelFinance.payoutRunSettle);
+router.get('/payments/hotel-payout-runs', hotelFinance.payoutRunsList);
+router.get('/payments/hotel-analytics', hotelFinance.hotelAnalytics);
 router.use('/payments/disputes', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   next();

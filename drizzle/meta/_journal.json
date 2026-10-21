@@ -477,6 +477,13 @@
       "when": 1790591500012,
       "tag": "0067_hotel_checkout",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1790591500013,
+      "tag": "0068_hotel_post_stay",
+      "breakpoints": true
     }
   ]
 }

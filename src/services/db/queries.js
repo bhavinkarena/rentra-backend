@@ -306,6 +306,11 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
       cleanliness: review.cleanliness,
       accuracy: review.accuracy,
       valueForMoney: review.valueForMoney,
+      staff: review.staff,
+      location: review.location,
+      comfort: review.comfort,
+      facilities: review.facilities,
+      travellerType: review.travellerType,
       publishedAt: review.publishedAt, authorName: users.name,
     })
       .from(review)
@@ -321,6 +326,10 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
       cleanliness: raw`round(avg(${review.cleanliness})::numeric, 1)::float8`.as('cleanliness'),
       accuracy: raw`round(avg(${review.accuracy})::numeric, 1)::float8`.as('accuracy'),
       valueForMoney: raw`round(avg(${review.valueForMoney})::numeric, 1)::float8`.as('value_for_money'),
+      staff: raw`round(avg(${review.staff})::numeric, 1)::float8`.as('staff'),
+      location: raw`round(avg(${review.location})::numeric, 1)::float8`.as('location'),
+      comfort: raw`round(avg(${review.comfort})::numeric, 1)::float8`.as('comfort'),
+      facilities: raw`round(avg(${review.facilities})::numeric, 1)::float8`.as('facilities'),
     }).from(review).where(published),
   ]);
 
@@ -377,6 +386,10 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
         cleanliness: agg.cleanliness,
         accuracy: agg.accuracy,
         valueForMoney: agg.valueForMoney,
+        staff: agg.staff,
+        location: agg.location,
+        comfort: agg.comfort,
+        facilities: agg.facilities,
       }
       : null,
     // Both rates per slot — a Saturday and a Tuesday are different prices,

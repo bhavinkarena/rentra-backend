@@ -9,14 +9,21 @@ const uuid = z.string().uuid();
 const score = z.number().int().min(1).max(5);
 const submission = z
   .object({
-    visitId: uuid,
+    visitId: uuid.optional(),
+    ref: z.string().trim().optional(),
     rating: score,
     body: z.string().trim().min(20).max(3000),
     cleanliness: score.nullable().default(null),
     accuracy: score.nullable().default(null),
     valueForMoney: score.nullable().default(null),
+    staff: score.nullable().default(null),
+    location: score.nullable().default(null),
+    comfort: score.nullable().default(null),
+    facilities: score.nullable().default(null),
+    travellerType: z.enum(['business', 'couple', 'family', 'friends', 'solo']).nullable().default(null),
   })
-  .strict();
+  .strict()
+  .refine((v) => v.visitId || v.ref, { message: 'visitId or ref is required' });
 export class ReviewError extends AppError {
   constructor(code) {
     super(
@@ -24,6 +31,7 @@ export class ReviewError extends AppError {
         CHANGED: 'This review changed. Reload and try again.',
         PREVIEW_REQUIRED: 'Preview these exact values before confirming.',
         INVALID_REASON: 'Choose a policy basis. Negative sentiment is not a removal reason.',
+        NOT_ELIGIBLE: 'Reviews require a completed stay within 30 days.',
       }[code] || code,
       ['NOT_FOUND', 'FORBIDDEN'].includes(code) ? 404 : 409,
       { code },
@@ -51,29 +59,40 @@ async function scopedReview(database, id, run) {
 }
 export async function submitReview(database, session, input, env = process.env) {
   const v = submission.parse(input);
-  const [scope] = await database`SELECT rentable_id FROM booking WHERE id=${v.visitId}`;
+  let visitId = v.visitId;
+  if (!visitId && v.ref) {
+    const [found] = await database`SELECT id FROM booking WHERE reference=${v.ref}`;
+    if (!found) throw new ReviewError('NOT_FOUND');
+    visitId = found.id;
+  }
+  const [scope] = await database`SELECT rentable_id FROM booking WHERE id=${visitId}`;
   if (!scope) throw new ReviewError('NOT_ELIGIBLE');
   return withListingInventory(database, scope.rentable_id, async (tx) => {
     const customer = await lockCustomerAccount(tx, session, env);
     const [eligible] =
-      await tx`SELECT id FROM booking WHERE id=${v.visitId} AND rentra_review_eligible(id,${customer.id},rentable_id)`;
+      await tx`SELECT id FROM booking WHERE id=${visitId} AND rentra_review_eligible(id,${customer.id},rentable_id)`;
     if (!eligible) throw new ReviewError('NOT_ELIGIBLE');
     const [old] =
-      await tx`SELECT * FROM review WHERE booking_id=${v.visitId} AND author_id=${customer.id}`;
+      await tx`SELECT * FROM review WHERE booking_id=${visitId} AND author_id=${customer.id}`;
     if (old) {
       if (
         old.rating !== v.rating ||
         old.body !== v.body ||
         old.cleanliness !== v.cleanliness ||
         old.accuracy !== v.accuracy ||
-        old.value_for_money !== v.valueForMoney
+        old.value_for_money !== v.valueForMoney ||
+        old.staff !== v.staff ||
+        old.location !== v.location ||
+        old.comfort !== v.comfort ||
+        old.facilities !== v.facilities ||
+        old.traveller_type !== v.travellerType
       )
         throw new ReviewError('ALREADY_REVIEWED');
       return { id: old.id, state: old.moderation_state };
     }
     const [row] =
-      await tx`INSERT INTO review(booking_id,rentable_id,author_id,author_role,rating,body,cleanliness,accuracy,value_for_money)
-      VALUES(${v.visitId},${scope.rentable_id},${customer.id},'customer',${v.rating},${v.body},${v.cleanliness},${v.accuracy},${v.valueForMoney}) RETURNING id,moderation_state`;
+      await tx`INSERT INTO review(booking_id,rentable_id,author_id,author_role,rating,body,cleanliness,accuracy,value_for_money,staff,location,comfort,facilities,traveller_type)
+      VALUES(${visitId},${scope.rentable_id},${customer.id},'customer',${v.rating},${v.body},${v.cleanliness},${v.accuracy},${v.valueForMoney},${v.staff},${v.location},${v.comfort},${v.facilities},${v.travellerType}) RETURNING id,moderation_state`;
     return { id: row.id, state: row.moderation_state };
   });
 }
@@ -151,13 +170,18 @@ export async function replyToReview(database, ownerId, input) {
     .strict()
     .parse(input);
   return scopedReview(database, v.id, async (tx, row, listing) => {
-    if (
-      listing.client_id !== ownerId ||
-      !(
+    const isOwner =
+      listing.client_id === ownerId &&
+      (
         await tx`SELECT id FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`
-      ).length
-    )
-      throw new ReviewError('FORBIDDEN');
+      ).length > 0;
+    let isManager = false;
+    if (!isOwner) {
+      const [staff] = await tx`SELECT s.id FROM client_staff s JOIN staff_property sp ON sp.staff_id=s.id AND sp.rentable_id=${listing.id}
+        WHERE s.id=${ownerId} AND s.client_id=${listing.client_id} AND s.is_active AND s.revoked_at IS NULL AND s.permissions->>'hotelRole'='manager' FOR SHARE`;
+      if (staff) isManager = true;
+    }
+    if (!isOwner && !isManager) throw new ReviewError('FORBIDDEN');
     if (
       row.version !== v.version ||
       !(await tx`SELECT id FROM public_customer_review WHERE id=${v.id}`).length
