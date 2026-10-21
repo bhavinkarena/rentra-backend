@@ -2,12 +2,14 @@ import { sql } from '@/config/database.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import { listCatalogues, readCatalogue, catalogueCommand } from '@/services/catalogues/service.js';
 import { listVerticals, verticalCommand } from '@/services/catalogues/verticals.js';
+import { listLandmarks, landmarkCommand } from '@/services/catalogues/landmarks.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 
-/** `verticals` is keyed by code and has its own launch-switch rules; every other type is generic. */
+/** `verticals` (launch switch) and `landmarks` (map points) have their own rules; every other type is generic. */
 export const list = asyncHandler(async (req, res) => {
   const actor = await bookingActor('admin');
+  if (req.params.type === 'landmarks') return ok(res, await listLandmarks(sql, actor));
   return ok(
     res,
     req.params.type === 'verticals'
@@ -26,6 +28,8 @@ export const detail = asyncHandler(async (req, res) => {
 });
 export const command = asyncHandler(async (req, res) => {
   const actor = await bookingActor('admin');
+  if (req.params.type === 'landmarks')
+    return ok(res, await landmarkCommand(sql, actor, req.params.id, req.body));
   return ok(
     res,
     req.params.type === 'verticals'

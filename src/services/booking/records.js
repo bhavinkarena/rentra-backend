@@ -1,3 +1,4 @@
+import { parsePoint } from '../domain/geo.js';
 import { ledger } from '../finance/statements.js';
 import { ownerDayVisits, ownerVisitDay } from './owner-visits.js';
 import 'server-only';
@@ -250,9 +251,10 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     const operationalContact = visits.some(v=>arrivalStates.includes(v.state)) || (actor.kind==='owner' && (await tx`SELECT 1 FROM visit_evidence e JOIN booking b ON b.id=e.booking_id WHERE b.order_id=${order.id} AND b.state='completed' AND e.kind='complete' AND e.occurred_at>now()-interval '7 days' LIMIT 1`).length>0);
     // No private listing fields are even selected until ownership and confirmed visit status are established.
     if (visits.some(visit => arrivalStates.includes(visit.state))) {
-      const [place] = await tx`SELECT r.exact_address,ST_X(r.location) longitude,ST_Y(r.location) latitude,u.name,u.phone
+      const [place] = await tx`SELECT r.exact_address,r.location,u.name,u.phone
         FROM rentable r JOIN "user" u ON u.id=r.client_id WHERE r.id=${order.rentable_id}`;
-      arrival = { address: place.exact_address || null, longitude: place.longitude, latitude: place.latitude,
+      const pin = parsePoint(place.location);
+      arrival = { address: place.exact_address || null, longitude: pin?.longitude ?? null, latitude: pin?.latitude ?? null,
         hostName: place.name || null, hostPhone: place.phone || null,
         visitIds: visits.filter(visit => arrivalStates.includes(visit.state)).map(visit => visit.id) };
     }
@@ -262,9 +264,20 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       relationships={propertyId:order.rentable_id,...(actor.kind==='admin'?{customerId:order.customer_id,clientId:property.client_id}:{})};
     }
     const cases = await casesForOrder(tx, order.id, actor.kind);
+    // Hotel stays (Phase 7): rooms, guests and the GST invoice details given at checkout.
+    const stayRow = rows.find(row => row.slot === 'stay');
+    const stay = stayRow ? {
+      checkIn: stayRow.slot_snapshot?.checkIn ?? null, checkOut: stayRow.slot_snapshot?.checkOut ?? null, nights: stayRow.slot_snapshot?.nights ?? null,
+      roomMinor: amount(stayRow.slot_snapshot?.roomMinor), taxMinor: amount(stayRow.slot_snapshot?.taxMinor),
+      rooms: (await tx`SELECT br.id,br.state,br.adults,br.child_ages,br.guest_name,br.amount_room_minor,br.amount_tax_minor,br.plan_snapshot,t.name
+        FROM booking_room br JOIN room_type t ON t.id=br.room_type_id WHERE br.booking_id=${stayRow.id} ORDER BY t.name,br.id`).map(room => ({
+        id: room.id, name: room.name, state: room.state, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
+        plan: room.plan_snapshot, roomMinor: amount(room.amount_room_minor), taxMinor: amount(room.amount_tax_minor) })),
+      details: order.guest_details ?? null,
+    } : null;
     const rebookHref = actor.kind === 'customer' ? await hourlyRebookHref(tx, order.id) : null;
     const earningLines = actor.kind==='owner' ? await tx`SELECT l.id,l.booking_id FROM (${ledger(tx)}) l WHERE l.order_id=${order.id} AND l.owner_id=${actor.id} AND l.component='rent' ORDER BY l.created_at,l.id` : [];
-    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note,earningLines:earningLines.map(r=>({id:r.id,visitId:r.booking_id}))}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.rentMinor,0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.feeMinor,0)}:{}),
+    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note,earningLines:earningLines.map(r=>({id:r.id,visitId:r.booking_id}))}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(stay ? { stay } : {}), ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.rentMinor,0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.feeMinor,0)}:{}),
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
       policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,

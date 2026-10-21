@@ -1113,6 +1113,8 @@ export const bookingOrder = pgTable('booking_order', {
   policyVersion: varchar('policy_version', { length: 32 }).notNull(),
   policySnapshot: jsonb('policy_snapshot').notNull(),
   listingSnapshot: jsonb('listing_snapshot').notNull(),
+  /** Hotel stays (0067): room guest names, arrival time, requests, GST invoice details. */
+  guestDetails: jsonb('guest_details'),
   amountRentMinor: minor('amount_rent_minor').notNull(),
   amountFeeMinor: minor('amount_fee_minor').notNull(),
   amountDepositMinor: minor('amount_deposit_minor').notNull(),

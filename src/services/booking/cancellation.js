@@ -4,6 +4,20 @@ import { z } from 'zod';
 import { ownedCheckout, CheckoutError, lifecycle } from './checkout.js';
 import { quoteDigest } from './quotes.js';
 import { cancellationEntitlement } from '../domain/cancellation.js';
+import { previewHotelCancellation } from './hotel-stays.js';
+
+/**
+ * Hotel stay (Phase 7): each room's own rate rule (free until a deadline, then
+ * first night or whole stay), from the booked room snapshots. The refund is
+ * split over room and tax in the same proportion as they were paid.
+ */
+async function stayEntitlement(tx, visit, now) {
+  let preview;
+  try { preview = await previewHotelCancellation(tx, visit.id, now); } catch (error) { throw new CheckoutError(error.code ?? error.message); }
+  const total = Number(visit.slot_snapshot.rentMinor);
+  const tax = Math.round(preview.refundMinor * Number(visit.slot_snapshot.taxMinor) / Math.max(1, total));
+  return { rent: preview.refundMinor - tax, tax, fee: 0, deposit: 0, chargeMinor: preview.chargeMinor, rooms: preview.lines.length };
+}
 
 const selection = z.object({ orderId:z.string().uuid(), visitIds:z.array(z.string().uuid()).min(1).max(10) }).strict();
 const normalize = input => { const value=selection.parse(input); value.visitIds=[...new Set(value.visitIds)].sort(); return value; };
@@ -17,7 +31,7 @@ export async function capturedAllocations(tx, visitIds) {
 }
 /** Split an entitlement over captured allocations, never past what earlier refunds left. */
 export function allocateRefund(sources, entitlement) {
-  const remaining={rent:entitlement.rent,fee:entitlement.fee,deposit:entitlement.deposit};
+  const remaining={rent:entitlement.rent,fee:entitlement.fee,deposit:entitlement.deposit,tax:entitlement.tax??0};
   return sources.map(a=>{
     if(!(a.component in remaining)) throw new CheckoutError('PAYMENT_UNSUPPORTED');
     const entitled=Math.min(Number(a.actual_minor),remaining[a.component]);
@@ -54,7 +68,8 @@ async function estimate(tx, order, value) {
   for(const visit of visits) {
     if(visit.state!=='confirmed') throw new CheckoutError('VISIT_NOT_CANCELLABLE');
     let entitlement;
-    try { entitlement=cancellationEntitlement(visit,now); } catch(error) { throw new CheckoutError(error.message); }
+    if(visit.slot==='stay') entitlement=await stayEntitlement(tx,visit,now);
+    else try { entitlement=cancellationEntitlement(visit,now); } catch(error) { throw new CheckoutError(error.message); }
     const sources=allocations.filter(a=>a.booking_id===visit.id);
     if(!sources.length || !testSourcesOnly(sources)) throw new CheckoutError('PAYMENT_UNSUPPORTED');
     const refunds=allocateRefund(sources, entitlement);

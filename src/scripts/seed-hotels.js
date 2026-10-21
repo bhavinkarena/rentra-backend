@@ -13,6 +13,7 @@
  */
 import postgres from 'postgres';
 import { seedDatabaseUrl } from './seed-guard.js';
+import { pointHex } from '../services/domain/geo.js';
 
 const sql = postgres(seedDatabaseUrl('seed-hotels'), {
   prepare: false,
@@ -141,6 +142,31 @@ const DEMO = [
   ['Dumas Beach Retreat', 'dumas', 'resort', 3, [['Sea Breeze Room', 12, 3, 3900, 4900]]],
 ];
 
+/** Demo map pins [latitude, longitude] by hotel name (approximate, inside each area). */
+const PINS = {
+  'Riverside Residency': [21.196, 72.793],
+  'Hotel Sai Palace': [21.142, 72.771],
+  'Green Leaf Resort': [21.085, 72.725],
+  'Hotel Textile Inn': [21.19, 72.838],
+  'The Diamond Court': [21.21, 72.865],
+  'Tapi View Boutique': [21.18, 72.81],
+  'Hotel Shreeji Comfort': [21.17, 72.845],
+  'Citrus Business Hotel': [21.155, 72.775],
+  'Sunrise Family Hotel': [21.195, 72.765],
+  'Dumas Beach Retreat': [21.079, 72.716],
+};
+
+/** Starter Surat landmarks [slug, name, kind, latitude, longitude]; admins correct and extend them in Catalogues. */
+const LANDMARKS = [
+  ['surat-railway-station', 'Surat Railway Station', 'station', 21.2052, 72.8408],
+  ['surat-airport', 'Surat Airport', 'airport', 21.1141, 72.7418],
+  ['surat-diamond-bourse', 'Surat Diamond Bourse', 'business', 21.132, 72.852],
+  ['vr-surat-mall', 'VR Surat Mall', 'mall', 21.1449, 72.757],
+  ['dumas-beach', 'Dumas Beach', 'attraction', 21.0772, 72.712],
+  ['ambika-niketan-temple', 'Ambika Niketan Temple', 'temple', 21.188, 72.796],
+  ['svnit-surat', 'SVNIT Surat', 'education', 21.164, 72.785],
+];
+
 const code = () =>
   Array.from(
     { length: 8 },
@@ -190,8 +216,16 @@ try {
       `[seed-hotels] ${CATEGORIES.length} categories, ${HOTEL_AMENITIES.length} hotel amenities.`,
     );
 
-    if (!demo) return;
     const [city] = await tx`SELECT id FROM city WHERE slug = 'surat'`;
+    if (city) {
+      for (const [index, [slug, name, kind, latitude, longitude]] of LANDMARKS.entries()) {
+        await tx`INSERT INTO landmark (city_id, slug, name, kind, latitude, longitude, sort_order)
+          VALUES (${city.id}, ${slug}, ${name}, ${kind}, ${latitude}, ${longitude}, ${index * 10})
+          ON CONFLICT (slug) DO NOTHING`;
+      }
+      console.log(`[seed-hotels] ${LANDMARKS.length} Surat landmarks (existing ones kept).`);
+    }
+    if (!demo) return;
     if (!city) throw new Error('Seed cities and areas first (npm run db:seed): Surat is missing.');
     const [owner] = (await tx`SELECT id FROM "user" WHERE email = 'demo-hotels@rentra.invalid'`)
       .length
@@ -236,6 +270,10 @@ try {
       }
       await tx`UPDATE rentable SET status = 'live' WHERE id = ${hotel.id}`;
       created += 1;
+    }
+    for (const [name, [latitude, longitude]] of Object.entries(PINS)) {
+      await tx`UPDATE rentable SET location = ${pointHex({ latitude, longitude })}
+        WHERE slug = ${`${slugify(name)}-surat`} AND location IS NULL`;
     }
     console.log(
       `[seed-hotels] ${created} demo hotels created (${DEMO.length - created} already present). Hotels vertical status unchanged.`,

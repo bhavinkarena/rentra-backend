@@ -1,6 +1,16 @@
 import 'server-only';
 import { SignJWT, jwtVerify } from 'jose';
+import { z } from 'zod';
 import { bookingSelectionSchema } from '../schemas/zod/booking.js';
+
+/** A hotel search the guest was pricing before login (hotel plan, Phase 7): dates and party only. */
+const stayIntentSchema = z.object({
+  kind: z.literal('stay'), rentableId: z.string().uuid(),
+  checkIn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), checkOut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  rooms: z.number().int().min(1).max(8), adults: z.number().int().min(1).max(48),
+  children: z.array(z.number().int().min(0).max(17)).max(16).default([]),
+}).strict();
+export const loginSelectionSchema = z.union([stayIntentSchema, bookingSelectionSchema]);
 
 export const SELECTION_COOKIE = 'rentra_login_selection';
 export const SELECTION_TTL = 15 * 60;
@@ -13,13 +23,13 @@ function key(env) {
   return new TextEncoder().encode(env.SESSION_SECRET);
 }
 export async function signCustomerSelection(selection, returnTo, env = process.env) {
-  return new SignJWT({ selection: bookingSelectionSchema.parse(selection), returnTo: safeCustomerReturnPath(returnTo) })
+  return new SignJWT({ selection: loginSelectionSchema.parse(selection), returnTo: safeCustomerReturnPath(returnTo) })
     .setProtectedHeader({ alg: 'HS256' }).setAudience('rentra:customer-selection').setIssuedAt().setExpirationTime(`${SELECTION_TTL}s`).sign(key(env));
 }
 export async function readCustomerSelection(token, env = process.env) {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, key(env), { algorithms: ['HS256'], audience: 'rentra:customer-selection', maxTokenAge: `${SELECTION_TTL}s` });
-    return { selection: bookingSelectionSchema.parse(payload.selection), returnTo: safeCustomerReturnPath(payload.returnTo) };
+    return { selection: loginSelectionSchema.parse(payload.selection), returnTo: safeCustomerReturnPath(payload.returnTo) };
   } catch { return null; }
 }

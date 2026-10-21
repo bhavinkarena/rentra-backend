@@ -8,6 +8,7 @@ import {
   nearbyQuery,
   searchQuery,
   routePathQuery,
+  stayQuoteBody,
 } from '@/validations/discovery.validation.js';
 import { slug, idParam } from '@/validations/common.validation.js';
 import { z } from 'zod';
@@ -55,6 +56,19 @@ router.get(
   discoveryLimiter,
   validate({ params: codeParam }),
   discovery.times,
+);
+router.get(
+  '/suggest',
+  discoveryLimiter,
+  validate({ query: z.object({ q: z.string().max(60).default(''), vertical: z.string().regex(/^[a-z][a-z0-9_]{0,23}$/).default('hotel') }) }),
+  discovery.suggest,
+);
+router.get('/listings/:code/rooms', discoveryLimiter, validate({ params: codeParam }), discovery.rooms);
+router.post(
+  '/listings/:code/stay-quote',
+  discoveryLimiter,
+  validate({ params: codeParam, body: stayQuoteBody }),
+  discovery.stayQuote,
 );
 router.get('/listings/:id/similar', validate({ params: idParam }), discovery.similar);
 

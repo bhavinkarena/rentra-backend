@@ -19,6 +19,7 @@ const router = Router();
 const customer = requireRole('customer');
 
 router.post('/quote', booking.quote);
+router.post('/stay-quote', customer, checkoutLimiter, booking.stayQuote);
 
 router.post('/checkout/hold', customer, checkoutLimiter, checkout.hold);
 router.get(

@@ -29,54 +29,80 @@ const planOf = (row) => ({
   minNights: row.min_nights, maxNights: row.max_nights,
 });
 
-/** Everything pricing and availability need for [checkIn, checkOut), in one consistent read. */
-async function loadHotel(tx, listing, checkIn, checkOut, now) {
-  const [hotel] = await tx`SELECT p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights, c.vertical_code
-    FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id JOIN category c ON c.id = r.category_id
-    WHERE p.rentable_id = ${listing.id}`;
-  if (!hotel || hotel.vertical_code !== 'hotel') throw new HotelError('NOT_FOUND', 'Hotel unavailable.');
-  const [rooms, plans, overrides, nightRows, staleHolds, slabs] = await Promise.all([
-    tx`SELECT * FROM room_type WHERE rentable_id = ${listing.id} AND is_active ORDER BY sort_order, name, id`,
-    tx`SELECT * FROM rate_plan WHERE rentable_id = ${listing.id} ORDER BY sort_order, name, id`,
+/**
+ * Everything pricing and availability need for [checkIn, checkOut), for one or
+ * many hotels, in one consistent read: a fixed number of queries whatever the
+ * number of hotels (search prices hundreds at once). Map rentable id → data.
+ */
+async function loadHotels(tx, listings, checkIn, checkOut, now) {
+  const ids = listings.map((l) => l.id);
+  if (!ids.length) return new Map();
+  const [profiles, rooms, plans, overrides, nightRows, staleHolds, slabs] = await Promise.all([
+    tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights
+      FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id JOIN category c ON c.id = r.category_id
+      WHERE p.rentable_id IN ${tx(ids)} AND c.vertical_code = 'hotel'`,
+    tx`SELECT * FROM room_type WHERE rentable_id IN ${tx(ids)} AND is_active ORDER BY sort_order, name, id`,
+    tx`SELECT * FROM rate_plan WHERE rentable_id IN ${tx(ids)} ORDER BY sort_order, name, id`,
     tx`SELECT o.rate_plan_id, o.night, o.rate_minor FROM rate_override o JOIN rate_plan p ON p.id = o.rate_plan_id
-      WHERE p.rentable_id = ${listing.id} AND o.night >= ${checkIn} AND o.night < ${checkOut}`,
+      WHERE p.rentable_id IN ${tx(ids)} AND o.night >= ${checkIn} AND o.night < ${checkOut}`,
     tx`SELECT n.* FROM room_night n JOIN room_type t ON t.id = n.room_type_id
-      WHERE t.rentable_id = ${listing.id} AND n.night >= ${checkIn} AND n.night < ${checkOut}`,
+      WHERE t.rentable_id IN ${tx(ids)} AND n.night >= ${checkIn} AND n.night < ${checkOut}`,
     // Holds whose order has expired but not yet been swept count as free, as they do for farmhouses.
     tx`SELECT br.room_type_id, d::date AS night, count(*)::int AS rooms
       FROM booking_room br JOIN booking b ON b.id = br.booking_id JOIN booking_order o ON o.id = b.order_id,
         generate_series(br.check_in, br.check_out - 1, interval '1 day') d
-      WHERE br.rentable_id = ${listing.id} AND br.state = 'held' AND o.state = 'held' AND o.hold_expires_at <= ${now.toISOString()}
+      WHERE br.rentable_id IN ${tx(ids)} AND br.state = 'held' AND o.state = 'held' AND o.hold_expires_at <= ${now.toISOString()}
         AND br.check_in < ${checkOut} AND br.check_out > ${checkIn}
       GROUP BY 1, 2`,
     tx`SELECT min_rate_minor, max_rate_minor, tax_bps, effective_from, effective_to FROM tax_slab
       WHERE vertical_code = 'hotel' AND effective_from < ${checkOut} AND (effective_to IS NULL OR effective_to >= ${checkIn})`,
   ]);
   const stale = new Map(staleHolds.map((row) => [`${row.room_type_id}|${day(row.night)}`, row.rooms]));
-  const overridesByPlan = {};
-  for (const row of overrides) (overridesByPlan[row.rate_plan_id] ??= {})[day(row.night)] = int(row.rate_minor);
-  return {
-    listing,
-    hotel: {
-      checkInMinute: hotel.check_in_minute, checkOutMinute: hotel.check_out_minute,
-      childFreeAge: hotel.child_free_age, weekendNights: hotel.weekend_nights.map(Number),
-    },
-    roomTypes: rooms.map(roomTypeOf),
-    plans: plans.map(planOf),
-    overridesByPlan,
-    nightsByRoom: Map.groupBy(nightRows.map((row) => {
-      const night = day(row.night);
-      return {
-        roomTypeId: row.room_type_id, night, allotment: row.allotment, sold: row.sold,
-        held: row.held - (stale.get(`${row.room_type_id}|${night}`) ?? 0),
-        stopSell: row.stop_sell, closedToArrival: row.closed_to_arrival, minNights: row.min_nights,
-      };
-    }), (row) => row.roomTypeId),
-    slabs: slabs.map((row) => ({
-      minRateMinor: int(row.min_rate_minor), maxRateMinor: int(row.max_rate_minor), taxBps: row.tax_bps,
-      effectiveFrom: day(row.effective_from), effectiveTo: day(row.effective_to),
-    })),
-  };
+  const taxSlabs = slabs.map((row) => ({
+    minRateMinor: int(row.min_rate_minor), maxRateMinor: int(row.max_rate_minor), taxBps: row.tax_bps,
+    effectiveFrom: day(row.effective_from), effectiveTo: day(row.effective_to),
+  }));
+  const roomsByHotel = Map.groupBy(rooms, (row) => row.rentable_id);
+  const plansByHotel = Map.groupBy(plans, (row) => row.rentable_id);
+  const planHotel = new Map(plans.map((row) => [row.id, row.rentable_id]));
+  const overridesByHotel = new Map();
+  for (const row of overrides) {
+    const own = overridesByHotel.get(planHotel.get(row.rate_plan_id)) ?? {};
+    (own[row.rate_plan_id] ??= {})[day(row.night)] = int(row.rate_minor);
+    overridesByHotel.set(planHotel.get(row.rate_plan_id), own);
+  }
+  const nights = nightRows.map((row) => {
+    const night = day(row.night);
+    return {
+      roomTypeId: row.room_type_id, night, allotment: row.allotment, sold: row.sold,
+      held: row.held - (stale.get(`${row.room_type_id}|${night}`) ?? 0),
+      stopSell: row.stop_sell, closedToArrival: row.closed_to_arrival, minNights: row.min_nights,
+    };
+  });
+  const nightsByRoom = Map.groupBy(nights, (row) => row.roomTypeId);
+  const result = new Map();
+  for (const profile of profiles) {
+    const listing = listings.find((l) => l.id === profile.rentable_id);
+    result.set(listing.id, {
+      listing,
+      hotel: {
+        checkInMinute: profile.check_in_minute, checkOutMinute: profile.check_out_minute,
+        childFreeAge: profile.child_free_age, weekendNights: profile.weekend_nights.map(Number),
+      },
+      roomTypes: (roomsByHotel.get(listing.id) ?? []).map(roomTypeOf),
+      plans: (plansByHotel.get(listing.id) ?? []).map(planOf),
+      overridesByPlan: overridesByHotel.get(listing.id) ?? {},
+      nightsByRoom,
+      slabs: taxSlabs,
+    });
+  }
+  return result;
+}
+
+async function loadHotel(tx, listing, checkIn, checkOut, now) {
+  const data = (await loadHotels(tx, [listing], checkIn, checkOut, now)).get(listing.id);
+  if (!data) throw new HotelError('NOT_FOUND', 'Hotel unavailable.');
+  return data;
 }
 
 function availabilityFor(data, roomType, nights) {
@@ -98,32 +124,45 @@ const planSnapshot = (plan) => ({
   name: plan.name, mealPlan: plan.mealPlan, freeCancelHours: plan.freeCancelHours, lateCharge: plan.lateCharge, noShow: plan.noShow,
 });
 
+/** Price `party` (one entry per room) in one room type and plan; throws HotelError when the plan cannot take it. */
+function partyPrice(data, nights, roomType, plan, party) {
+  let roomMinor = 0;
+  let taxMinor = 0;
+  for (const guests of party) {
+    const price = priceLine(data, nights, { roomType, plan, adults: guests.adults, childAges: guests.childAges });
+    roomMinor += price.roomMinor;
+    taxMinor += price.taxMinor;
+  }
+  return { roomMinor, taxMinor, totalMinor: roomMinor + taxMinor };
+}
+
 /**
  * Public availability for a stay: every active room type with rooms left and,
- * per plan, the price for the room's base occupancy (or why it cannot be booked).
+ * per plan, the price for the party split over `rooms` rooms of that type (the
+ * search card's split), or for one room at base occupancy without a party.
  */
-export async function getHotelAvailability(database, { rentableId, checkIn, checkOut, now = new Date() }) {
+export async function getHotelAvailability(database, { rentableId, checkIn, checkOut, rooms = null, adults = null, childAges = [], now = new Date() }) {
   if (!UUID.test(rentableId ?? '')) throw new HotelError('NOT_FOUND', 'Hotel unavailable.');
   const nights = stayNights(checkIn, checkOut, now);
+  const split = rooms ? splitParty({ rooms, adults, childAges }) : null;
   return withListingSnapshot(database, rentableId, async (tx, listing) => {
     const data = await loadHotel(tx, listing, checkIn, checkOut, new Date(now));
     const { startsAt } = stayInstants({ checkIn, checkOut, ...data.hotel });
     return {
-      checkIn, checkOut, nights: nights.length,
+      checkIn, checkOut, nights: nights.length, rooms: split?.length ?? 1, party: split,
       roomTypes: data.roomTypes.map((roomType) => {
         const { available, reason } = availabilityFor(data, roomType, nights);
-        const adults = Math.min(roomType.baseOccupancy, roomType.maxAdults);
+        const party = split ?? [{ adults: Math.min(roomType.baseOccupancy, roomType.maxAdults), childAges: [] }];
         return {
           id: roomType.id, name: roomType.name, available, reason,
           plans: data.plans.filter((plan) => plan.roomTypeId === roomType.id && plan.isActive).map((plan) => {
             const terms = cancellationTerms(plan, startsAt);
+            const base = { id: plan.id, name: plan.name, mealPlan: plan.mealPlan, adults: party[0].adults, terms };
             try {
-              const price = priceLine(data, nights, { roomType, plan, adults, childAges: [] });
-              return { id: plan.id, name: plan.name, mealPlan: plan.mealPlan, adults, terms, bookable: available > 0,
-                roomMinor: price.roomMinor, taxMinor: price.taxMinor, totalMinor: price.totalMinor };
+              return { ...base, bookable: available >= party.length, ...partyPrice(data, nights, roomType, plan, party) };
             } catch (error) {
               if (!(error instanceof HotelError)) throw error;
-              return { id: plan.id, name: plan.name, mealPlan: plan.mealPlan, adults, terms, bookable: false, reason: error.code };
+              return { ...base, bookable: false, reason: error.code, message: error.message };
             }
           }),
         };
@@ -258,4 +297,66 @@ export async function resolveCommission(sql, { rentableId, date }) {
     ORDER BY (cr.rentable_id IS NOT NULL) DESC, (cr.city_id IS NOT NULL) DESC LIMIT 1`;
   if (!rule) throw new HotelError('COMMISSION_UNCONFIGURED', 'No commission rule covers this hotel on this date.');
   return { ruleId: rule.id, rateBps: rule.rate_bps, tier: rule.tier };
+}
+
+/** How a party is placed in rooms for search: adults as evenly as possible, children one by one. */
+export function splitParty({ rooms, adults, childAges = [] }) {
+  if (!Number.isInteger(rooms) || rooms < 1 || rooms > HOTEL_POLICY.maxRooms || !Number.isInteger(adults) || adults < rooms) {
+    throw new HotelError('ROOMS_INVALID', 'Each room needs at least one adult.');
+  }
+  return Array.from({ length: rooms }, (_, index) => ({
+    adults: Math.floor(adults / rooms) + (index < adults % rooms ? 1 : 0),
+    childAges: childAges.filter((_, child) => child % rooms === index),
+  }));
+}
+
+/**
+ * Search (hotel plan, Phase 6): for each hotel, the cheapest way to sell the
+ * party `rooms` rooms of one type for the stay, honouring the free-cancellation
+ * and breakfast filters. One read for every hotel; prices come from the same
+ * functions as the hotel page and the quote, so the card price is the quote.
+ */
+export async function hotelSearchOffers(database, listings, { checkIn, checkOut, rooms, adults, childAges = [], freeCancel = false, breakfast = false }, now = new Date()) {
+  const nights = stayNights(checkIn, checkOut, now);
+  const party = splitParty({ rooms, adults, childAges });
+  return database.begin('isolation level repeatable read read only', async (tx) => {
+    const all = await loadHotels(tx, listings, checkIn, checkOut, new Date(now));
+    const offers = new Map();
+    for (const [id, data] of all) {
+      const { startsAt } = stayInstants({ checkIn, checkOut, ...data.hotel });
+      let best = null;
+      for (const roomType of data.roomTypes) {
+        const { available } = availabilityFor(data, roomType, nights);
+        if (available < rooms) continue;
+        for (const plan of data.plans.filter((row) => row.roomTypeId === roomType.id && row.isActive)) {
+          // Free cancellation that already ended for these dates is not free cancellation.
+          const { freeUntil } = cancellationTerms(plan, startsAt);
+          const freeNow = freeUntil != null && new Date(freeUntil) > new Date(now);
+          if (freeCancel && !freeNow) continue;
+          if (breakfast && plan.mealPlan === 'EP') continue;
+          let price;
+          try {
+            price = partyPrice(data, nights, roomType, plan, party);
+          } catch (error) {
+            if (error instanceof HotelError) continue;
+            throw error;
+          }
+          if (!best || price.totalMinor < best.totalMinor) {
+            best = {
+              roomTypeId: roomType.id, roomTypeName: roomType.name, planId: plan.id, planName: plan.name, mealPlan: plan.mealPlan,
+              freeUntil: freeNow ? freeUntil : null, roomsLeft: available, nights: nights.length,
+              ...price,
+            };
+          }
+        }
+      }
+      if (best) offers.set(id, best);
+    }
+    return offers;
+  });
+}
+
+/** A priced, availability-checked stay inside the caller's transaction (checkout quote and hold). */
+export async function stayQuoteIn(tx, listing, { checkIn, checkOut, rooms }, now) {
+  return buildQuote(await loadHotel(tx, listing, checkIn, checkOut, new Date(now)), { checkIn, checkOut, rooms }, now);
 }

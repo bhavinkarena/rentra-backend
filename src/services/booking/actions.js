@@ -3,6 +3,7 @@
 import { sql } from '../db/index.js';
 import { getCurrentUser } from '../auth/dal.js';
 import { createBookingQuote } from './quotes.js';
+import { createStayQuote } from './hotel-checkout.js';
 import { measure } from '../operations/measurement.js';
 import { measurementError } from '../domain/measurement.js';
 
@@ -21,6 +22,21 @@ export async function requestBookingQuote(input) {
     if (error instanceof RangeError || (error.code && !/^[0-9A-Z]{5}$/.test(error.code))) {
       return { error: error.message, code: error.code ?? 'INVALID_SELECTION', conflicts: error.conflicts ?? [] };
     }
+    return { error: 'Quotes are temporarily unavailable. Please try again.', code: 'QUOTE_UNAVAILABLE' };
+  }
+}
+
+/** Hotel stay quote (Phase 7): a signed-in customer only, since it leads straight to checkout. */
+export async function requestStayQuote(input) {
+  const user = await getCurrentUser();
+  if (user?.role !== 'customer' || user.accountStatus !== 'active') return { error: 'Log in as a guest to book.', code: 'CUSTOMER_REQUIRED' };
+  try {
+    const quote = await createStayQuote(sql, input, { customerId: user.id });
+    await measure(sql, 'quote_ready', 'single');
+    return { quote };
+  } catch (error) {
+    if (error.name === 'ZodError') return { error: 'Check your dates, rooms and guests.', code: 'INVALID_SELECTION' };
+    if (error instanceof RangeError || (error.code && !/^[0-9A-Z]{5}$/.test(error.code))) return { error: error.message, code: error.code ?? 'INVALID_SELECTION' };
     return { error: 'Quotes are temporarily unavailable. Please try again.', code: 'QUOTE_UNAVAILABLE' };
   }
 }

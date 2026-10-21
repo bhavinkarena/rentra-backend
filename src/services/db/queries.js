@@ -11,6 +11,7 @@ import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { amenityStates, normalizePublicPhotos, publicHouseRules, publicSlotSchedules } from '@/services/domain/listing-content';
 import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
 import { minuteToHhmm } from '@/services/domain/hourly';
+import { distanceKm, parsePoint } from '@/services/domain/geo';
 
 /**
  * Data access for public, indexable pages.
@@ -36,6 +37,29 @@ function hourlyCardFields(row) {
     priceNote: 'Per hour; platform fee added at checkout. Choose a date and time for a total.',
   };
 }
+
+/**
+ * Hotel card facts (hotel plan, Phase 6) without dates: the lowest nightly room
+ * rate of any active plan, before taxes and per-guest extras, so "from" is a floor.
+ */
+function hotelCardFields(row) {
+  return {
+    vertical: 'hotel',
+    rentalUnit: 'night',
+    price: row.hotelFromMinor == null ? null : Number(row.hotelFromMinor) / 100,
+    priceWeekend: null,
+    unit: 'night',
+    priceNote: 'Per room per night, before taxes. Add dates for the total.',
+    starRating: row.starRating ?? null,
+    couples: Boolean(row.hotelPolicies?.couples),
+    localId: Boolean(row.hotelPolicies?.localId),
+  };
+}
+
+/** Lowest nightly rate over active plans of active room types; a derived plan is its base rate ± its percentage. */
+const HOTEL_FROM_MINOR = (id) => raw`(select min(case when rp.derived_from is null then least(rp.weekday_minor, rp.weekend_minor)
+    else (select least(b.weekday_minor, b.weekend_minor) from rate_plan b where b.id = rp.derived_from) * (10000 + rp.derived_pct_bps) / 10000 end)
+  from rate_plan rp join room_type rt on rt.id = rp.room_type_id and rt.is_active where rp.rentable_id = ${id} and rp.is_active)`;
 
 const photoContext = (row) => ({
   cloudName: process.env.CLOUDINARY_CLOUD_NAME,
@@ -79,6 +103,7 @@ function toCard(row) {
     vertical: row.vertical ?? DEFAULT_VERTICAL,
     rentalUnit: row.rentalUnit ?? 'slot',
   };
+  if (row.vertical === 'hotel') return { ...card, ...hotelCardFields(row) };
   return row.rentalUnit === 'hour' ? { ...card, ...hourlyCardFields(row) } : card;
 }
 
@@ -107,6 +132,9 @@ const cardColumns = {
   vertical: raw`(select vc.vertical_code from category vc where vc.id=${rentable.categoryId})`.as('vertical'),
   // Time-booked venues only (NULL / empty for farmhouses): one subquery each, all index-backed.
   hourFromMinor: raw`(select min(rr.hourly_rate_minor) from rentable_rate rr where rr.rentable_id=${rentable.id})`.as('hour_from_minor'),
+  hotelFromMinor: HOTEL_FROM_MINOR(rentable.id).as('hotel_from_minor'),
+  starRating: raw`(select hp.star_rating from hotel_profile hp where hp.rentable_id=${rentable.id})`.as('star_rating'),
+  hotelPolicies: raw`(select hp.policies from hotel_profile hp where hp.rentable_id=${rentable.id})`.as('hotel_policies'),
   resourceCount: raw`(select count(*)::int from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('resource_count'),
   maxPlayers: raw`(select max(rs.capacity) from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('max_players'),
   indoorKinds: raw`(select case when bool_and(rs.is_indoor) then 'indoor' when not bool_or(rs.is_indoor) then 'outdoor' when count(rs.is_indoor)>0 then 'mixed' end
@@ -297,7 +325,7 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
   ]);
 
   const agg = subScoreRows[0] ?? {};
-  const venue = row.rentalUnit === 'hour' ? await venueDetail(row) : {};
+  const venue = row.vertical === 'hotel' ? await hotelDetail(row) : row.rentalUnit === 'hour' ? await venueDetail(row) : {};
   const amenities = amenityStates({
     selected: selectedAmenities,
     catalogue: amenityCatalogue,
@@ -392,6 +420,49 @@ async function venueDetail(row) {
     rates: rates.map((r) => ({ activity: r.activity, dayKind: r.dayKind, from: minuteToHhmm(r.startMinute), to: minuteToHhmm(r.endMinute),
       endsNextDay: r.endMinute > 1440, hourlyRate: r.hourlyRate })),
     venueRules: row.houseRules ?? {},
+  };
+}
+
+/** Public policy answers only: never the wizard's bookkeeping flags. */
+const HOTEL_PUBLIC_POLICIES = ['couples', 'localId', 'idTypes', 'pets', 'smoking', 'parties', 'notes'];
+
+/**
+ * Public facts of a hotel (hotel plan, Phase 6): profile, room types with their
+ * plans (no prices: those come from /rooms for the guest's dates and party),
+ * and the nearest landmarks. The exact pin only when the owner chose to show it.
+ */
+async function hotelDetail(row) {
+  const [[profile], roomTypes, plans, landmarks] = await Promise.all([
+    sql`SELECT p.star_rating, p.check_in_minute, p.check_out_minute, p.child_free_age, p.policies, p.show_exact_address,
+        r.location, CASE WHEN p.show_exact_address THEN r.exact_address END AS address
+      FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id WHERE p.rentable_id = ${row.id}`,
+    sql`SELECT id, name, beds, size_sqm AS "sizeSqm", view, max_adults AS "maxAdults", max_children AS "maxChildren",
+        max_occupancy AS "maxOccupancy", room_count AS "roomCount", amenities, photos
+      FROM room_type WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
+    sql`SELECT id, room_type_id AS "roomTypeId", name, meal_plan AS "mealPlan", free_cancel_hours AS "freeCancelHours", min_nights AS "minNights"
+      FROM rate_plan WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
+    sql`SELECT slug, name, kind, latitude::float8 AS latitude, longitude::float8 AS longitude
+      FROM landmark WHERE city_id = ${row.cityId} AND is_active`,
+  ]);
+  const pin = parsePoint(profile?.location);
+  const policies = Object.fromEntries(HOTEL_PUBLIC_POLICIES.filter((key) => profile?.policies?.[key] != null).map((key) => [key, profile.policies[key]]));
+  return {
+    slotSchedules: [],
+    prices: {},
+    hotel: profile ? {
+      starRating: profile.star_rating, checkIn: minuteToHhmm(profile.check_in_minute), checkOut: minuteToHhmm(profile.check_out_minute),
+      childFreeAge: profile.child_free_age, policies,
+      exactLocation: profile.show_exact_address && pin ? { ...pin, address: profile.address } : null,
+    } : null,
+    roomTypes: roomTypes.map((room) => ({
+      ...room,
+      photos: normalizePublicPhotos(room.photos, { ...photoContext(row), title: `${row.title} · ${room.name}` }),
+      plans: plans.filter((plan) => plan.roomTypeId === room.id).map(({ roomTypeId: _roomTypeId, ...plan }) => plan),
+    })),
+    // Nearest six within 25 km, measured from the real pin even when the pin itself is not shown.
+    landmarks: pin ? landmarks.map(({ latitude, longitude, ...landmark }) => ({ ...landmark, km: Math.round(distanceKm(pin, { latitude, longitude }) * 10) / 10 }))
+      .filter((landmark) => landmark.km <= 25).sort((a, b) => a.km - b.km).slice(0, 6) : [],
+    bookable: roomTypes.length > 0 && plans.length > 0,
   };
 }
 

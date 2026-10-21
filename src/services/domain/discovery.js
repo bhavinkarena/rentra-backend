@@ -2,9 +2,13 @@ import { addLocalDays, consecutiveVisitDates, normalizeVisitDates, propertyToday
 import { DEFAULT_VERTICAL, VERTICAL_PATTERN } from './verticals.js';
 
 /** Landing titles for a whole vertical in a city, e.g. /surat/entertainment. */
-export const VERTICAL_LANDING_TITLES = { farmhouse: 'Farmhouses', entertainment: 'Sports and play venues' };
+export const VERTICAL_LANDING_TITLES = { farmhouse: 'Farmhouses', entertainment: 'Sports and play venues', hotel: 'Hotels' };
+/** Hotels (hotel plan, Phase 6): booked by the night, by room type. */
+export const STAY_VERTICAL = 'hotel';
 
 export const SEARCH_SORTS = { recommended: 'Recommended', price_asc: 'Price: low to high', price_desc: 'Price: high to low', newest: 'Newest' };
+/** Hotels add guest rating and, when searching near a landmark, distance. */
+export const HOTEL_SORTS = { recommended: 'Recommended', price_asc: 'Price: low to high', price_desc: 'Price: high to low', rating: 'Guest rating', distance: 'Distance' };
 export const DISCOVERY_INTENTS = [
   { slug: 'day-picnic', vertical: 'farmhouse', label: 'Day picnic', slot: 'day', description: 'Browse day visits. Select dates to check current hours, capacity and availability.' },
   { slug: 'with-pool', vertical: 'farmhouse', label: 'With pool', amenity: 'swimming_pool', description: 'Places with a swimming pool listed by the owner. Check pool rules on the listing.' },
@@ -14,6 +18,10 @@ export const DISCOVERY_INTENTS = [
   { slug: 'night-games', vertical: 'entertainment', label: 'Night games', amenity: 'floodlights', description: 'Venues with floodlights listed by the owner. Check the evening hours on each venue.' },
   { slug: 'air-conditioned', vertical: 'entertainment', label: 'Air-conditioned', amenity: 'air_conditioned', description: 'Indoor venues listed as air-conditioned by the owner.' },
   { slug: 'equipment-on-rent', vertical: 'entertainment', label: 'Equipment on rent', amenity: 'equipment_rental', description: 'Venues that rent out bats, rackets or balls. Charges are set by each venue.' },
+  { slug: 'couple-friendly', vertical: 'hotel', label: 'Couple-friendly', policy: 'couples', description: 'Hotels that say unmarried couples with valid ID are welcome. Carry ID for both guests.' },
+  { slug: 'local-id-accepted', vertical: 'hotel', label: 'Local ID accepted', policy: 'localId', description: 'Hotels that accept guests with an ID from the same city.' },
+  { slug: 'with-pool', vertical: 'hotel', label: 'With pool', amenity: 'swimming_pool', description: 'Hotels and resorts with a pool listed by the hotel. Check pool timings with the hotel.' },
+  { slug: 'pure-veg', vertical: 'hotel', label: 'Pure veg kitchen', amenity: 'pure_veg_kitchen', description: 'Hotels whose kitchen serves vegetarian food only.' },
 ];
 /** Intents of one vertical; farmhouse unless told otherwise, so older callers keep their five chips. */
 export const intentsFor = (vertical = DEFAULT_VERTICAL) => DISCOVERY_INTENTS.filter(row => (row.vertical ?? DEFAULT_VERTICAL) === vertical);
@@ -76,13 +84,45 @@ export function parseDiscoveryQuery(input = {}, today = propertyToday()) {
     bedrooms: number('bedrooms', null, 1, 50),
     verified: choose('verified', ['1'], ''),
     cancellation: choose('cancellation', ['flexible', 'moderate', 'strict'], ''),
-    sort: choose('sort', Object.keys(SEARCH_SORTS), 'recommended'), page: number('page', 1, 1, 1000000),
+    sort: 'recommended', page: number('page', 1, 1, 1000000),
     amenities: [], dates: [],
     vertical: value('vertical') || DEFAULT_VERTICAL,
     start: '', duration: null, players: null, indoor: null,
+    checkin: '', checkout: '', rooms: 1, adults: 2, children: [], freecancel: '', breakfast: '', couples: '', localid: '', rating: '', near: '',
   };
   if (!VERTICAL_PATTERN.test(filters.vertical)) { errors.push('Choose a supported vertical.'); filters.vertical = DEFAULT_VERTICAL; }
-  const timeBooked = filters.vertical !== DEFAULT_VERTICAL;
+  const stay = filters.vertical === STAY_VERTICAL;
+  const timeBooked = filters.vertical !== DEFAULT_VERTICAL && !stay;
+  filters.sort = choose('sort', Object.keys(stay ? HOTEL_SORTS : SEARCH_SORTS), 'recommended');
+  if (stay) {
+    // Hotel search: a check-in and check-out, rooms and guests (children by age), hotel filters.
+    // Farmhouse and venue parameters are ignored, so links shared from another tab still open.
+    filters.slot = ''; filters.mode = 'single'; filters.bedrooms = null;
+    filters.rooms = number('rooms', 1, 1, 8);
+    filters.adults = number('adults', 2, 1, 48);
+    const children = value('children');
+    if (children) {
+      const ages = children.split(',');
+      if (ages.length > 16 || ages.some(a => !/^\d{1,2}$/.test(a) || Number(a) > 17)) errors.push('Give each child’s age from 0 to 17.');
+      else filters.children = ages.map(Number);
+    }
+    if (filters.adults < filters.rooms) errors.push('Each room needs at least one adult.');
+    filters.guests = filters.adults + filters.children.length;
+    for (const key of ['freecancel', 'breakfast', 'couples', 'localid']) filters[key] = choose(key, ['1'], '');
+    filters.rating = choose('rating', ['3.5', '4', '4.5'], '');
+    const near = value('near');
+    if (near && !validRouteSlug(near)) errors.push('Choose a valid landmark.'); else filters.near = near;
+    const checkin = value('checkin'), checkout = value('checkout');
+    if (checkin || checkout) {
+      try {
+        normalizeVisitDates([checkin]); normalizeVisitDates([checkout]);
+        if (checkout <= checkin) errors.push('Check-out must be after check-in.');
+        else if (checkin < today || checkin > addLocalDays(today, 365)) errors.push('Choose a check-in within the next 365 days.');
+        else if (addLocalDays(checkin, 30) < checkout) errors.push('Stays can be up to 30 nights.');
+        else { filters.checkin = checkin; filters.checkout = checkout; }
+      } catch { errors.push('Choose check-in and check-out dates.'); }
+    }
+  }
   if (timeBooked) {
     // Time-booked search: one date, an optional earliest start, a duration and players.
     // Farmhouse-only parameters (slot, mode, several dates) are ignored, not rejected,
@@ -110,7 +150,9 @@ export function parseDiscoveryQuery(input = {}, today = propertyToday()) {
   }
   const dates = value('dates'), date = value('date'), end = value('end');
   if (dates && date) errors.push('Use one date selection.');
-  if (timeBooked) {
+  if (stay) {
+    // Hotels use check-in and check-out instead of visit dates.
+  } else if (timeBooked) {
     const day = date || (dates ? dates.split(',')[0] : '');
     try {
       if (day) filters.dates = normalizeVisitDates([day]);
@@ -135,14 +177,18 @@ export function parseDiscoveryQuery(input = {}, today = propertyToday()) {
 export function discoveryQuery(filters, changes = {}) {
   const values = { ...filters, ...changes };
   const params = new URLSearchParams();
-  const timeBooked = values.vertical && values.vertical !== DEFAULT_VERTICAL;
-  if (timeBooked) params.set('vertical', values.vertical);
-  const keys = timeBooked
+  const stay = values.vertical === STAY_VERTICAL;
+  const timeBooked = values.vertical && values.vertical !== DEFAULT_VERTICAL && !stay;
+  if (timeBooked || stay) params.set('vertical', values.vertical);
+  const keys = stay
+    ? ['q', 'city', 'area', 'near', 'category', 'checkin', 'checkout', 'rooms', 'adults', 'children', 'min', 'max', 'freecancel', 'breakfast', 'couples', 'localid', 'rating', 'verified', 'sort', 'page', 'amenities']
+    : timeBooked
     ? ['q', 'city', 'area', 'category', 'date', 'start', 'duration', 'players', 'indoor', 'min', 'max', 'verified', 'cancellation', 'sort', 'page', 'amenities']
     : ['q', 'city', 'area', 'category', 'mode', 'slot', 'guests', 'min', 'max', 'bedrooms', 'verified', 'cancellation', 'sort', 'page', 'dates', 'amenities'];
   if (timeBooked && values.dates?.length && values.date == null) values.date = values.dates[0];
   for (const key of keys) {
     let value = values[key];
+    if (stay && ((key === 'rooms' && value === 1) || (key === 'adults' && value === 2))) continue;
     if (Array.isArray(value)) value = value.join(',');
     if (value !== '' && value != null) params.set(key, String(value));
   }
@@ -155,6 +201,8 @@ export function sortDiscoveryCards(cards, sort) {
       if (a.price == null || b.price == null) return (a.price == null) - (b.price == null) || a.id.localeCompare(b.id);
       return (sort === 'price_asc' ? a.price - b.price : b.price - a.price) || a.id.localeCompare(b.id);
     }
+    if (sort === 'rating') return (b.rating ?? 0) - (a.rating ?? 0) || (b.reviewCount ?? 0) - (a.reviewCount ?? 0) || a.id.localeCompare(b.id);
+    if (sort === 'distance') return (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity) || a.id.localeCompare(b.id);
     if (sort === 'newest') return String(b.createdAt).localeCompare(String(a.createdAt)) || a.id.localeCompare(b.id);
     return Number(Boolean(b.badge === 'verified')) - Number(Boolean(a.badge === 'verified')) || a.id.localeCompare(b.id);
   });

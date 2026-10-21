@@ -118,7 +118,9 @@ export async function resolvePinnedPaymentConfiguration(database, pinned) {
     SELECT version, provider, environment, enabled, collection_purpose
     FROM payment_gateway_config WHERE version=${pinned.version}`;
   const config = snapshot(row);
-  if (!row || !config.enabled || ['provider', 'environment', 'mode', 'collectionPurpose'].some((key) => pinned[key] !== config[key])) {
+  // Hotel stays (collection policy hotel-v1) are always collected in full, whatever the default.
+  const stayFull = pinned.collectionPolicyVersion === 'hotel-v1' && pinned.collectionPurpose === 'full';
+  if (!row || !config.enabled || ['provider', 'environment', 'mode', ...(stayFull ? [] : ['collectionPurpose'])].some((key) => pinned[key] !== config[key])) {
     throw new PaymentConfigurationError('INVALID_GATEWAY_SNAPSHOT', 'The payment configuration reference does not match.');
   }
   registeredPaymentProvider(config.provider, config.environment);

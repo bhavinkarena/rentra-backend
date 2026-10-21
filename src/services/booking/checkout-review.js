@@ -5,6 +5,17 @@ import { ownedCheckout, checkoutStatus, CheckoutError } from './checkout.js';
 import { savedListingHref } from '../domain/saved-places.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 
+/** Room and plan names and hotel times for a stay's review page (ids alone are not readable). */
+async function stayFacts(tx, quote) {
+  const ids = [...new Set(quote.selection.rooms.map((room) => room.roomTypeId))];
+  const [types, profile] = await Promise.all([
+    tx`SELECT id,name FROM room_type WHERE id IN ${tx(ids)}`,
+    tx`SELECT check_in_minute,check_out_minute FROM hotel_profile WHERE rentable_id=${quote.selection.rentableId}`,
+  ]);
+  const hhmm = (minute) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+  return { roomNames: Object.fromEntries(types.map((t) => [t.id, t.name])),
+    checkInTime: profile[0] ? hhmm(profile[0].check_in_minute) : null, checkOutTime: profile[0] ? hhmm(profile[0].check_out_minute) : null };
+}
 function review(row) {
   return { id: row.id, version: row.version, hash: row.quote_hash, selection: row.selection,
     visits: row.visit_snapshots, policy: row.policy_snapshot, payment: row.payment_snapshot,
@@ -21,7 +32,9 @@ async function details(tx, quote, customer, snapshot = null) {
     photo: photo ? { url: photo.url, alt: photo.alt } : null, area: `${listing.area}, ${listing.city}`,
     rating: Number(listing.rating_avg) || 0, reviewCount: listing.review_count ?? 0,
     contact: { name: snapshot?.contact?.name ?? customer.name ?? '', phone: snapshot?.contact?.phone ?? customer.phone ?? '' }, purpose: snapshot?.purpose ?? '',
-    listingHref: savedListingHref(`/listing/${listing.slug}-${listing.public_code}`, quote.selection),
+    listingHref: quote.selection.kind === 'stay'
+      ? `/listing/${listing.slug}-${listing.public_code}?${new URLSearchParams({ checkin: quote.selection.checkIn, checkout: quote.selection.checkOut })}`
+      : savedListingHref(`/listing/${listing.slug}-${listing.public_code}`, quote.selection),
     serverNow: new Date().toISOString() };
 }
 /** A held time-booked visit as the hourly selection it was quoted from. */
@@ -37,7 +50,9 @@ export async function readCheckoutReview(database, session, quoteId, env = proce
     const [row] = await tx`SELECT * FROM booking_quote WHERE id=${quoteId} AND customer_id=${customer.id}`;
     if (!row) throw new CheckoutError('CHECKOUT_NOT_FOUND');
     const [existing] = await tx`SELECT id FROM booking_order WHERE quote_id=${quoteId} AND customer_id=${customer.id} ORDER BY created_at DESC LIMIT 1`;
-    return { ...await details(tx, review(row), customer), existingOrderId: existing?.id ?? null };
+    const quote = review(row);
+    return { ...await details(tx, quote, customer), existingOrderId: existing?.id ?? null,
+      ...(quote.selection.kind === 'stay' ? { stay: await stayFacts(tx, quote) } : {}) };
   });
 }
 export async function readOwnedCheckoutReview(database, session, orderId, env = process.env) {
@@ -47,14 +62,18 @@ export async function readOwnedCheckoutReview(database, session, orderId, env = 
     if (!visits.length || !payment) throw new CheckoutError('CHECKOUT_NOT_FOUND');
     // Accepted order/visit/payment snapshots are protected by database triggers.
     // Do not repaint an existing checkout from a later edited listing or advisory quote.
+    const stay = visits[0].slot === 'stay' ? visits[0].slot_snapshot : null;
     const quote = { id:order.quote_id, version:order.quote_version, hash:order.quote_hash,
-      selection: visits[0].slot === 'hourly' ? hourlySelection(order, visits[0])
+      selection: stay ? { kind:'stay', rentableId:order.rentable_id, checkIn:stay.checkIn, checkOut:stay.checkOut,
+          rooms:stay.rooms.map(({ roomTypeId, ratePlanId, adults, childAges }) => ({ roomTypeId, ratePlanId, adults, childAges })) }
+        : visits[0].slot === 'hourly' ? hourlySelection(order, visits[0])
         : {rentableId:order.rentable_id,dates:visits.map(v=>v.slot_snapshot.date),slot:visits[0].slot,guests:visits[0].guests,currency:order.currency},
       visits:visits.map(v=>v.slot_snapshot), policy:order.policy_snapshot, payment:payment.snapshot,
       timeZone:order.time_zone, expiresAt:new Date(order.quote_expires_at).toISOString(),
       totals:{rentMinor:Number(order.amount_rent_minor),feeMinor:Number(order.amount_fee_minor),
         totalMinor:Number(order.amount_rent_minor)+Number(order.amount_fee_minor),depositMinor:Number(order.amount_deposit_minor)} };
-    return { ...await details(tx, quote, {}, order.listing_snapshot), checkout: await checkoutStatus(tx, orderId) };
+    return { ...await details(tx, quote, {}, order.listing_snapshot), checkout: await checkoutStatus(tx, orderId),
+      ...(stay ? { guestDetails: order.guest_details ?? null, stay: await stayFacts(tx, quote) } : {}) };
   }, env);
 }
 
