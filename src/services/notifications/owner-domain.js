@@ -37,7 +37,10 @@ export function quietUntil(now, urgent = false) {
 export function ownerNotificationMessage(row, origin) {
   const d=row.detail || row.payload?.detail || {};
   const title=ownerEventTitles[row.event || row.action] || 'Rentra update';
-  const context=[row.property_title,d.reference,d.visitDate,d.slot?.replaceAll('_',' '),d.guests ? `${d.guests} guests` : null].filter(Boolean).join(' · ');
+  // Hotel stays (hotel plan, Phase 5): dates and rooms instead of a slot.
+  const when=d.slot==='stay' && d.checkOut ? `${d.visitDate} to ${d.checkOut}` : d.visitDate;
+  const unit=d.slot==='stay' ? (d.rooms ? `${d.rooms} room${d.rooms===1?'':'s'}` : null) : d.slot?.replaceAll('_',' ');
+  const context=[row.property_title,d.reference,when,unit,d.guests ? `${d.guests} guests` : null].filter(Boolean).join(' · ');
   const rent=d.rentMinor != null && /^\d+$/.test(String(d.rentMinor)) ? `Booked rent ₹${(BigInt(d.rentMinor)/100n).toLocaleString('en-IN')}.${(BigInt(d.rentMinor)%100n).toString().padStart(2,'0')}.` : '';
   return `${title}${context ? ': '+context : ''}. ${rent} Open: ${origin}${ownerUpdateHref(row)}`;
 }

@@ -21,6 +21,11 @@ export const REVIEW_SECTIONS = [
   // Time-booked venues (entertainment plan): courts and opening hours.
   'venue',
   'hours',
+  // Hotels (hotel plan, Phase 4): room types, rates, check-in times and GST.
+  'rooms',
+  'rates',
+  'stay',
+  'gst',
 ];
 export const listingQueueQuery = z.object({
   submitted: z.enum(['1']).optional(),

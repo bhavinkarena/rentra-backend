@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { revalidateListing } from '@/services/cache/listing-cache.js';
 import { listingCompletion } from '../domain/listing-completion.js';
+import { hotelForEdit } from '../booking/hotel-setup.js';
 
 /**
  * Verification scheduling and publication (CP07).
@@ -32,9 +33,17 @@ export const VENUE_CHECKLIST = [
   ['playSafety', 'Nets, padding, flooring, first aid and fire safety are in place'],
   ['lightingWorks', 'Lighting works for the evening and night hours offered'],
 ];
+/** Hotels (hotel plan, Phase 4): rooms as listed, fire safety and the guest register. */
+export const HOTEL_CHECKLIST = [
+  ...CHECKLIST.filter(([key]) => key !== 'safeForGuests'),
+  ['roomsMatch', 'Room types, beds and the number of rooms match the listing'],
+  ['fireSafety', 'Fire extinguishers, marked exits and the fire NOC (where required) are in place'],
+  ['guestRegister', 'Guest ID checks and the guest register (Form C for foreign guests) are in use'],
+];
 /** The checklist an admin must confirm, by the property's booking model. */
-export const checklistFor = (rentalUnit) => (rentalUnit === 'hour' ? VENUE_CHECKLIST : CHECKLIST);
-const CHECKLIST_KEYS = [...new Set([...CHECKLIST, ...VENUE_CHECKLIST].map(([key]) => key))];
+export const checklistFor = (rentalUnit) =>
+  rentalUnit === 'hour' ? VENUE_CHECKLIST : rentalUnit === 'night' ? HOTEL_CHECKLIST : CHECKLIST;
+const CHECKLIST_KEYS = [...new Set([...CHECKLIST, ...VENUE_CHECKLIST, ...HOTEL_CHECKLIST].map(([key]) => key))];
 const TIME_ZONE = 'Asia/Kolkata';
 const IST_OFFSET = '+05:30';
 const uuid = z.string().uuid();
@@ -112,6 +121,22 @@ async function audit(tx, { adminId, id, action, after, reason = null, ip = null 
 /** Saleable inventory facts shared by the admin publish panel and the owner overview. */
 export async function listingInventory(database, id, row) {
   const config = row.booking_config;
+  if (row.rental_unit === 'night') {
+    // A hotel sells room types by the night: it needs active rooms, a priced base rate for each, and check-in times.
+    const { hotel } = await hotelForEdit(database, id);
+    const completion = listingCompletion({ rentalUnit: 'night' }, { hotel });
+    const ready = (step) => completion.sections.find((s) => s.id === step).done;
+    const rooms = hotel.roomTypes.filter((r) => r.isActive).reduce((sum, r) => sum + r.roomCount, 0);
+    const scheduleReady = ready('availability');
+    const bookable = scheduleReady && ready('space') && ready('pricing');
+    return {
+      scheduleReady, openDates: null, rooms, bookable,
+      note: !ready('space') ? 'Not bookable yet: add at least one room type.'
+        : !ready('pricing') ? 'Not bookable yet: every room type needs a weekday and weekend price.'
+          : !scheduleReady ? 'Not bookable yet: confirm check-in and check-out times.'
+            : `Bookable: ${rooms} rooms on sale every night unless the hotel closes them.`,
+    };
+  }
   if (config?.model === 'hourly') {
     // A time-booked venue opens by weekly hours: it needs a court and hourly prices instead of open dates.
     const resources = await database`SELECT r.capacity,r.is_active AS "isActive",
@@ -173,7 +198,7 @@ export async function publicationState(database, id) {
     blockers.push('The submitted revision is incomplete.');
   if (!visit) blockers.push('No passed verification of this exact revision is recorded.');
   const inventory = await listingInventory(database, id, row);
-  if (row.rental_unit === 'hour' && !inventory.bookable) blockers.push(inventory.note);
+  if (['hour', 'night'].includes(row.rental_unit) && !inventory.bookable) blockers.push(inventory.note);
   return {
     eligible: blockers.length === 0,
     blockers,

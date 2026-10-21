@@ -82,6 +82,10 @@ export const legacyStep = (id) =>
     capacity: 'space',
     venue: 'space',
     hours: 'availability',
+    rooms: 'space',
+    rates: 'pricing',
+    stay: 'availability',
+    gst: 'ownership',
     terms: 'rules',
     review: 'preview',
   })[id] || id;

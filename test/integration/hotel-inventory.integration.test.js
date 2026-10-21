@@ -122,19 +122,27 @@ test('hotel inventory: schema, pricing, holds, overbooking and expiry', { skip }
     );
   });
 
-  await t.test('admins cannot switch Hotels on before its screens exist', async () => {
+  await t.test('admins can open Hotels to owners but not to guests yet', async () => {
     const [vertical] = await sql`SELECT version FROM vertical WHERE code='hotel'`;
+    const input = (status) => ({
+      version: vertical.version,
+      name: 'Hotels',
+      sortOrder: 30,
+      status,
+      reason: 'Hotel launch switch check',
+      preview: true,
+    });
     await rejectsWith(
-      verticalCommand(sql, { kind: 'admin', id: fixture.admin }, 'hotel', {
-        version: vertical.version,
-        name: 'Hotels',
-        sortOrder: 30,
-        status: 'partners',
-        reason: 'Opening hotels to owners early',
-        preview: true,
-      }),
+      verticalCommand(sql, { kind: 'admin', id: fixture.admin }, 'hotel', input('public')),
       'NOT_READY',
     );
+    const preview = await verticalCommand(
+      sql,
+      { kind: 'admin', id: fixture.admin },
+      'hotel',
+      input('partners'),
+    );
+    assert.equal(preview.preview, true);
   });
 
   await t.test('availability and quote price every night with the right slab', async () => {

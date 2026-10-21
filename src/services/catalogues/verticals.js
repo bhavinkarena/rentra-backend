@@ -44,8 +44,8 @@ export async function verticalCommand(database, actor, code, input) {
     if (!before) throw notFound();
     if (before.version !== value.version) throw conflict('STALE_PREVIEW', 'This vertical changed. Reload and preview again.');
     if (code === 'farmhouse' && value.status !== 'public') throw conflict('MIGRATION_REQUIRED', 'Farmhouse is the default vertical and stays public.');
-    // Hotel plan: lift with Phase 4 (partners) and Phase 9 (public), when owner and guest screens exist.
-    if (code === 'hotel' && value.status !== 'hidden') throw conflict('NOT_READY', 'Hotels stays hidden until owner and guest hotel screens ship.');
+    // Hotel plan: owners may list from Phase 4; guests only once booking ships (Phase 9 lifts this).
+    if (code === 'hotel' && value.status === 'public') throw conflict('NOT_READY', 'Hotels cannot go public until guest booking ships.');
     const [{ live }] = await tx`SELECT count(*)::int AS live FROM rentable r JOIN category c ON c.id=r.category_id WHERE c.vertical_code=${code} AND r.status='live'`;
     const after = { name: value.name, sortOrder: value.sortOrder, status: value.status };
     const summary = { code, before, after, reason: value.reason, actorId: actor.id, live };

@@ -28,7 +28,9 @@ export async function ownerDayVisits(database, ownerId, { date = propertyToday()
   const [counts] = await database`SELECT count(*)::int total ${joins} WHERE ${where}`;
   const rows = await database`SELECT b.*, r.booking_config,r.title, r.photos, c.vertical_code, o.listing_snapshot,
     o.reference order_reference,o.state order_state,o.amount_rent_minor order_rent,o.amount_fee_minor order_fee,o.amount_deposit_minor order_deposit,
-    (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments,rs.name resource_name,clock_timestamp() as_of ${joins} LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
+    (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments,
+    (SELECT string_agg(x.n||' × '||x.name, ', ' ORDER BY x.name) FROM (SELECT t.name, count(*) n FROM booking_room br JOIN room_type t ON t.id=br.room_type_id
+      WHERE br.booking_id=b.id AND br.state<>'released' GROUP BY t.name) x) room_summary,rs.name resource_name,clock_timestamp() as_of ${joins} LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
     WHERE ${where} ORDER BY ${event === 'leaving' ? database`b.ends_at` : database`b.starts_at`} ASC NULLS LAST,b.id
     LIMIT ${Math.min(50, limit)} OFFSET ${offset}`;
   return { total: counts.total, items: rows.map(row => ({
@@ -38,7 +40,7 @@ export async function ownerDayVisits(database, ownerId, { date = propertyToday()
     startsAt: row.hours_known ? new Date(row.starts_at).toISOString() : null,
     endsAt: row.hours_known ? new Date(row.ends_at).toISOString() : null,
     firstVisitStartsAt: row.hours_known ? new Date(row.starts_at).toISOString() : null,
-    firstVisitLabel: visitLabel(row), firstVisitSlot: row.slot, resourceName: row.resource_name,
+    firstVisitLabel: visitLabel(row), firstVisitSlot: row.slot, resourceName: row.resource_name, rooms: row.room_summary ?? null,
     contact: { name: row.listing_snapshot?.contact?.name?.trim().split(/\s+/)[0] ?? null, phone: row.listing_snapshot?.contact?.phone ?? null }, operation: visitOperation(row,row.as_of,row.booking_config?.earlyArrivalMinutes??120),
     rentMinor: Number(row.order_rent), feeMinor: Number(row.order_fee), depositMinor: Number(row.order_deposit),
     photo: normalizePublicPhotos(row.photos,{cloudName:process.env.CLOUDINARY_CLOUD_NAME})[0] ?? null,

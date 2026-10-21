@@ -39,7 +39,10 @@ const propertyIds = z
   .array(uuid, { invalid_type_error: 'Choose at least one property.' })
   .min(1, 'Choose at least one property.')
   .max(50);
-const accessInput = z.object({ propertyIds, evidence: flag,guestContact:flag.default(true) });
+/** Hotels (hotel plan, Phase 5): an optional hotel role. Manager edits rates and rooms; front desk opens and closes rooms. */
+const hotelRole = z.preprocess((value) => (Array.isArray(value) ? value.at(-1) : value) || null, z.enum(['manager', 'front_desk']).nullable());
+const accessInput = z.object({ propertyIds, evidence: flag,guestContact:flag.default(true), hotelRole: hotelRole.default(null) });
+const permissionsOf = (d) => JSON.stringify({ evidence: d.evidence, guestContact: d.guestContact, ...(d.hotelRole ? { hotelRole: d.hotelRole } : {}) });
 const inviteInput = accessInput.extend({
   name: z.string().trim().min(2, 'Enter the caretaker’s name.').max(80),
   phone: z.string().transform((value, ctx) => {
@@ -120,7 +123,7 @@ export async function listTeam(database, ownerId) {
       name: row.name,
       phone: row.phone,
       state: memberState(row),
-      permissions: { evidence: row.permissions?.evidence === true,guestContact:row.permissions?.guestContact!==false },
+      permissions: { evidence: row.permissions?.evidence === true,guestContact:row.permissions?.guestContact!==false, hotelRole: row.permissions?.hotelRole ?? null },
       properties: row.properties,
       acceptedAt: row.accepted_at,
       revokedAt: row.revoked_at,
@@ -152,7 +155,7 @@ export async function inviteStaff(database, ownerId, input) {
     const [existing] = await tx`SELECT * FROM client_staff WHERE client_id=${ownerId} AND phone=${d.phone} FOR UPDATE`;
     if (existing && !existing.revoked_at)
       throw conflict('STAFF_EXISTS', 'This number is already on your team. Issue a new link for it instead.');
-    const permissions = JSON.stringify({ evidence: d.evidence,guestContact:d.guestContact });
+    const permissions = permissionsOf(d);
     const [staff] = existing
       ? await tx`UPDATE client_staff SET name=${d.name}, permissions=${permissions}::text::jsonb, is_active=true,
           revoked_at=NULL, revoked_reason=NULL, accepted_at=NULL, version=version+1, updated_at=now()
@@ -166,7 +169,7 @@ export async function inviteStaff(database, ownerId, input) {
       actorId: ownerId,
       staffId: staff.id,
       action: 'staff_invited',
-      after: { name: d.name, properties: ids, evidence: d.evidence },
+      after: { name: d.name, properties: ids, evidence: d.evidence, hotelRole: d.hotelRole },
     });
     return { staffId: staff.id, version: staff.version, ...link };
   });
@@ -196,7 +199,7 @@ export async function updateStaffAccess(database, ownerId, staffId, input) {
     const ids = await ownedProperties(tx, ownerId, d.propertyIds);
     const before = (await tx`SELECT rentable_id FROM staff_property WHERE staff_id=${staff.id} ORDER BY rentable_id`).map((r) => r.rentable_id);
     await setProperties(tx, staff.id, ids);
-    const [row] = await tx`UPDATE client_staff SET permissions=${JSON.stringify({ evidence: d.evidence,guestContact:d.guestContact })}::text::jsonb,
+    const [row] = await tx`UPDATE client_staff SET permissions=${permissionsOf(d)}::text::jsonb,
         version=version+1, updated_at=now() WHERE id=${staff.id} RETURNING version`;
     await audit(tx, {
       actorType: 'client',
@@ -204,7 +207,7 @@ export async function updateStaffAccess(database, ownerId, staffId, input) {
       staffId: staff.id,
       action: 'staff_access_changed',
       before: { properties: before, evidence: staff.permissions?.evidence === true },
-      after: { properties: ids, evidence: d.evidence },
+      after: { properties: ids, evidence: d.evidence, hotelRole: d.hotelRole },
     });
     return { staffId: staff.id, version: row.version };
   });

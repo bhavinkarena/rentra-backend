@@ -23,6 +23,16 @@ const localDay = (date) => { const [y, m, d] = String(date).slice(0, 10).split('
 export function describeVisit(visit, { timeZone = 'Asia/Kolkata' } = {}) {
   const date = visit.date ?? visit.local_day ?? visit.day;
   const day = date ? localDay(date instanceof Date ? date.toISOString() : date) : 'Date not recorded';
+  // Hotel stays (hotel plan, Phase 5): "Wed 18 Nov – Fri 20 Nov · 2 nights".
+  if (visit.slot === 'stay') {
+    const stayEnd = visit.endsAt ?? visit.ends_at;
+    if (!stayEnd || !date) return `${day} · Stay`;
+    const { ymd } = zoned(stayEnd, timeZone);
+    const out = `${Math.floor(ymd / 10000)}-${String(Math.floor(ymd / 100) % 100).padStart(2, '0')}-${String(ymd % 100).padStart(2, '0')}`;
+    const start = String(date instanceof Date ? date.toISOString() : date).slice(0, 10);
+    const nights = Math.round((Date.parse(`${out}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000);
+    return `${day} – ${localDay(out)} · ${nights} night${nights === 1 ? '' : 's'}`;
+  }
   if (visit.slot !== 'hourly') return `${day} · ${SLOT_LABELS[visit.slot] ?? String(visit.slot ?? 'Visit').replaceAll('_', ' ')}`;
   const startsAt = visit.startsAt ?? visit.starts_at;
   const endsAt = visit.endsAt ?? visit.ends_at;

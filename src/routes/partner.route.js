@@ -1,4 +1,5 @@
 import { ownerSearch, ownerSearchQuery } from '@/services/auth/owner-search.js';
+import * as hotelOps from '@/controllers/hotel-ops.controller.js';
 import { z } from 'zod';
 import { ownerToday, todaySection } from '@/services/auth/owner-today.js';
 import { saveListingHours } from '@/services/booking/calendar-actions.js';
@@ -276,6 +277,19 @@ router.post('/listings/:id/arrival-guide', requireActiveClient, booking.saveArri
 router.post('/listings/:id/calendar/undo', requireActiveClient, booking.calendarUndo);
 router.post('/listings/:id/calendar/auto-open', requireActiveClient, booking.autoOpen);
 router.get('/calendar', requireActiveClient, booking.portfolioCalendar);
+// Hotel plan, Phase 5: the rates and rooms calendar of a hotel.
+router.get(
+  '/listings/:id/calendar/hotel',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  hotelOps.ariGrid,
+);
+router.post(
+  '/listings/:id/calendar/hotel',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  hotelOps.ariChange,
+);
 router.get(
   '/listings/:id/calendar',
   requireActiveClient,

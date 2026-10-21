@@ -34,7 +34,7 @@ async function needsYou(database, ownerId) {
   const [base, dates, reviews, disputes, support, incidents, autoOpen] = await Promise.all([
     clientTasks(database, ownerId),
     database`SELECT r.id,r.title,max(a.day)::text last_day FROM rentable r JOIN availability a ON a.rentable_id=r.id
-      WHERE r.client_id=${ownerId} AND r.status='live' AND r.rental_unit::text<>'hour' AND coalesce(r.booking_config->>'autoOpen','false')<>'true' AND a.units_available>0
+      WHERE r.client_id=${ownerId} AND r.status='live' AND r.rental_unit::text NOT IN ('hour','night') AND coalesce(r.booking_config->>'autoOpen','false')<>'true' AND a.units_available>0
         AND a.day>=(clock_timestamp() AT TIME ZONE 'Asia/Kolkata')::date
       GROUP BY r.id HAVING max(a.day)<=(clock_timestamp() AT TIME ZONE 'Asia/Kolkata')::date+14`,
     database`SELECT v.id,r.title FROM public_customer_review v JOIN rentable r ON r.id=v.rentable_id
@@ -43,7 +43,7 @@ async function needsYou(database, ownerId) {
     database`SELECT id,subject FROM support_request WHERE client_id=${ownerId} AND state='waiting_customer' ORDER BY updated_at,id LIMIT 20`,
     database`SELECT i.id,b.order_id,r.title FROM visit_incident i JOIN booking b ON b.id=i.booking_id JOIN rentable r ON r.id=b.rentable_id WHERE r.client_id=${ownerId} AND i.state='open' ORDER BY i.created_at DESC LIMIT 20`,
     // CAL-02: properties that predate auto-open have never recorded a choice; offer it once.
-    database`SELECT id,title FROM rentable WHERE client_id=${ownerId} AND status='live' AND rental_unit::text<>'hour'
+    database`SELECT id,title FROM rentable WHERE client_id=${ownerId} AND status='live' AND rental_unit::text NOT IN ('hour','night')
       AND (booking_config->>'inventoryReady')='true' AND NOT (booking_config ? 'autoOpen') ORDER BY title,id LIMIT 20`,
   ]);
   return {

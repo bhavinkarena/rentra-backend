@@ -456,6 +456,13 @@
       "when": 1790591500009,
       "tag": "0064_hotel_inventory",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1790591500010,
+      "tag": "0065_hotel_booking_sync",
+      "breakpoints": true
     }
   ]
 }
