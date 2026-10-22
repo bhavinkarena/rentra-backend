@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Rentra API server \u2014 Express + Drizzle over Postgres",
+  "description": "Rentra API server — Express + Drizzle over Postgres",
   "main": "src/index.js",
   "engines": {
     "node": ">=22"
@@ -35,7 +35,8 @@
     "db:check": "node src/scripts/checkMigrations.js",
     "release:entertainment": "node --import ./loader/register.mjs --env-file=.env src/scripts/entertainment-release-check.js",
     "payments:enable-test": "node --import ./loader/register.mjs --env-file=.env src/scripts/enableTestPayments.js",
-    "release:hotels": "node --import ./loader/register.mjs --env-file=.env src/scripts/hotel-release-check.js"
+    "release:hotels": "node --import ./loader/register.mjs --env-file=.env src/scripts/hotel-release-check.js",
+    "seed:photos": "node --import ./loader/register.mjs --env-file=.env src/scripts/seed-photos.js"
   },
   "dependencies": {
     "cloudinary": "^2.11.0",
