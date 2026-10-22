@@ -10,6 +10,7 @@ import { STAY_VERTICAL } from '../domain/discovery.js';
 import { getSearchTimeSlots } from '../booking/time-slots.js';
 import { hotelSearchOffers } from '../booking/hotel-stays.js';
 import { distanceKm, parsePoint } from '../domain/geo.js';
+import { betaVerticals, visibleVertical } from '../auth/beta-access.js';
 
 /** In-process registry cache (P5): it was 4 queries on every search request. */
 const REGISTRY_TTL_MS = 60_000;
@@ -25,26 +26,28 @@ export function clearDiscoveryRegistryCache(database = sql) {
  * verticals they belong to). Keys are additive, so older clients ignore them.
  */
 export async function getDiscoveryRegistry(database = sql) {
-  const cached = registryCache.get(database);
+  // A beta pass changes what is visible: never served from, or stored in, the shared cache.
+  const beta = betaVerticals().length > 0;
+  const cached = beta ? null : registryCache.get(database);
   if (cached && Date.now() - cached.at < REGISTRY_TTL_MS) return cached.value;
   const [cities, areas, categories, amenities, verticals, landmarks] = await Promise.all([
     database`SELECT id,slug,name FROM city WHERE is_active=true ORDER BY sort_order,name,id`,
     database`SELECT a.id,a.city_id AS "cityId",a.slug,a.name FROM area a JOIN city c ON c.id=a.city_id WHERE c.is_active=true AND a.is_active=true ORDER BY a.sort_order,a.name,a.id`,
     database`SELECT c.id,c.slug,c.name,c.vertical_code AS vertical,c.icon_key AS "iconKey",c.default_rental_unit::text AS "rentalUnit"
-      FROM category c JOIN vertical v ON v.code=c.vertical_code AND v.status='public'
+      FROM category c JOIN vertical v ON v.code=c.vertical_code AND ${visibleVertical(database)}
       WHERE c.is_active=true ORDER BY v.sort_order,c.sort_order,c.name,c.id`,
     database`SELECT a.slug,a.label_en AS name,
         COALESCE(json_agg(av.vertical_code ORDER BY av.vertical_code) FILTER (WHERE av.vertical_code IS NOT NULL), '[]'::json) AS verticals
       FROM amenity a LEFT JOIN amenity_vertical av ON av.amenity_id=a.id
       WHERE a.is_active=true AND a.is_filterable=true GROUP BY a.id ORDER BY a.sort_order,a.slug`,
-    database`SELECT code,slug,name,sort_order AS "sortOrder" FROM vertical WHERE status='public' ORDER BY sort_order,code`,
+    database`SELECT v.code,v.slug,v.name,v.sort_order AS "sortOrder",v.status='partners' AS beta FROM vertical v WHERE ${visibleVertical(database)} ORDER BY v.sort_order,v.code`,
     database`SELECT l.slug,l.name,l.kind,l.city_id AS "cityId",l.latitude::float8 AS latitude,l.longitude::float8 AS longitude
       FROM landmark l JOIN city c ON c.id=l.city_id AND c.is_active WHERE l.is_active ORDER BY l.sort_order,l.name`,
   ]);
   const value = { verticals, cities: cities.filter(r => validRouteSlug(r.slug)), areas: areas.filter(r => validRouteSlug(r.slug)), categories: categories.filter(r => validRouteSlug(r.slug)), amenities,
     // Landmarks belong to Hotels: nothing about them is public until that vertical is.
     landmarks: verticals.some(r => r.code === STAY_VERTICAL) ? landmarks.filter(r => validRouteSlug(r.slug)) : [] };
-  registryCache.set(database, { at: Date.now(), value });
+  if (!beta) registryCache.set(database, { at: Date.now(), value });
   return value;
 }
 
@@ -268,7 +271,7 @@ async function searchHotels({ filters, city, area, category, amenities, policy, 
     FROM rentable r JOIN hotel_profile hp ON hp.rentable_id=r.id
     JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id
     JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
-    JOIN vertical v ON v.code=cat.vertical_code AND v.status='public' AND v.code=${STAY_VERTICAL}
+    JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${STAY_VERTICAL}
     WHERE r.status='live' AND r.rental_unit::text='night' AND u.role='client' AND u.account_status='active'
       AND c.is_active=true AND a.is_active=true AND cat.is_active=true
       AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area}) AND (${!category} OR cat.id=${category?.id ?? null}::uuid)
@@ -409,7 +412,7 @@ export async function suggestDestinations(q, vertical = STAY_VERTICAL, database 
   const term = `%${text.replace(/[\\%_]/g, '\\$&')}%`;
   const hotels = await database`SELECT r.slug,r.public_code,r.title,a.name AS area_name,c.name AS city_name
     FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
-    JOIN vertical v ON v.code=cat.vertical_code AND v.status='public' AND v.code=${vertical}
+    JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${vertical}
     WHERE r.status='live' AND u.role='client' AND u.account_status='active' AND c.is_active AND a.is_active AND cat.is_active AND r.title ILIKE ${term}
     ORDER BY r.review_count DESC, r.title LIMIT 5`;
   return {

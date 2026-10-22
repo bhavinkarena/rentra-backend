@@ -12,6 +12,7 @@ import { amenityStates, normalizePublicPhotos, publicHouseRules, publicSlotSched
 import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
 import { minuteToHhmm } from '@/services/domain/hourly';
 import { distanceKm, parsePoint } from '@/services/domain/geo';
+import { betaVerticals } from '@/services/auth/beta-access';
 
 /**
  * Data access for public, indexable pages.
@@ -158,18 +159,20 @@ const nightPrice = and(
  * search applies. A suspended or blocked owner's listings leave every public
  * read (detail, availability, cards, similar, sitemap, area counts) at once.
  */
-const publiclyListed = and(
+const publiclyListed = () => and(
   eq(rentable.status, 'live'),
   raw`exists (select 1 from "user" o where o.id = ${rentable.clientId}
     and o.role = 'client' and o.account_status = 'active')`,
   // A vertical that is not public yet (hidden, or open to partners only) never
-  // reaches a public read: detail, availability, cards, similar or the sitemap.
+  // reaches a public read — except a partners vertical opened by this request's
+  // beta pass (hotel plan, Phase 9). Sitemap requests never carry one.
   raw`exists (select 1 from category pc join vertical pv on pv.code = pc.vertical_code
-    where pc.id = ${rentable.categoryId} and pv.status = 'public')`,
+    where pc.id = ${rentable.categoryId} and (pv.status = 'public'
+      or (pv.status = 'partners' and pv.code = any(string_to_array(${betaVerticals().join(',')}, ',')))))`,
 );
 
 export async function getLiveListings({ citySlug, areaSlug, limit = 24, vertical = DEFAULT_VERTICAL } = {}) {
-  const filters = [publiclyListed, inVertical(vertical)];
+  const filters = [publiclyListed(), inVertical(vertical)];
   if (citySlug) filters.push(eq(city.slug, citySlug));
   if (areaSlug) filters.push(eq(area.slug, areaSlug));
 
@@ -209,7 +212,7 @@ export async function getListingsNearby({ lng, lat, km = 25, limit = 24, vertica
     .innerJoin(city, eq(city.id, rentable.cityId))
     .leftJoin(rentablePrice, nightPrice)
     .where(and(
-      publiclyListed,
+      publiclyListed(),
       inVertical(vertical),
       raw`ST_DWithin(
         ${rentable.location}::geography,
@@ -263,7 +266,7 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
     .innerJoin(category, eq(category.id, rentable.categoryId))
     .leftJoin(rentablePrice, nightPrice)
     // Resolved by CODE, not slug — retitling must never 404.
-    .where(and(eq(rentable.publicCode, publicCode), previewOwnerId?eq(rentable.clientId,previewOwnerId):publiclyListed))
+    .where(and(eq(rentable.publicCode, publicCode), previewOwnerId?eq(rentable.clientId,previewOwnerId):publiclyListed()))
     .limit(1);
 
   if (!row) return null;
@@ -489,7 +492,7 @@ export async function getListingRefByCode(publicCode) {
   const [row] = await db
     .select({ id: rentable.id, rentalUnit: rentable.rentalUnit })
     .from(rentable)
-    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
+    .where(and(eq(rentable.publicCode, publicCode), publiclyListed()))
     .limit(1);
   return row ?? null;
 }
@@ -498,7 +501,7 @@ export async function getListingIdByCode(publicCode) {
   const [row] = await db
     .select({ id: rentable.id })
     .from(rentable)
-    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
+    .where(and(eq(rentable.publicCode, publicCode), publiclyListed()))
     .limit(1);
   return row?.id ?? null;
 }
@@ -553,7 +556,7 @@ export async function getSimilarListings({ rentableId, areaId, cityId, limit = 4
     .innerJoin(city, eq(city.id, rentable.cityId))
     .leftJoin(rentablePrice, nightPrice)
     .where(and(
-      publiclyListed,
+      publiclyListed(),
       ne(rentable.id, rentableId),
       eq(rentable.cityId, cityId),
       // Similar means the same vertical as the listing being viewed.
@@ -592,7 +595,7 @@ export async function getSitemapEntries() {
       updatedAt: rentable.updatedAt,
       photos: rentable.photos,
     })
-    .from(rentable).where(publiclyListed);
+    .from(rentable).where(publiclyListed());
 
   const cities = await db
     .select({ slug: city.slug }).from(city).where(eq(city.isActive, true));
@@ -625,7 +628,7 @@ export async function countLiveInArea({ citySlug, areaSlug }) {
     .innerJoin(area, eq(area.id, rentable.areaId))
     .innerJoin(city, eq(city.id, rentable.cityId))
     .where(and(
-      publiclyListed,
+      publiclyListed(),
       eq(city.slug, citySlug),
       eq(area.slug, areaSlug),
     ));

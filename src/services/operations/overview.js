@@ -24,7 +24,13 @@ export async function readOperations(database, adminId, env = process.env) {
         WHERE (a.state='committed' OR (a.state='held' AND a.hold_expires_at>clock_timestamp()))
           AND (b.state='committed' OR (b.state='held' AND b.hold_expires_at>clock_timestamp()))) AS overlapping_inventory,
       (SELECT count(*)::int FROM payment_transaction t WHERE t.kind='capture' AND t.outcome='succeeded'
-        AND t.captured_minor<>coalesce((SELECT sum(a.actual_minor) FROM payment_allocation a WHERE a.transaction_id=t.id),0)) AS unallocated_captures`;
+        AND t.captured_minor<>coalesce((SELECT sum(a.actual_minor) FROM payment_allocation a WHERE a.transaction_id=t.id),0)) AS unallocated_captures,
+      -- Hotels (hotel plan, Phase 9): overbooking, rooms stuck in an expired hold, a run of sold-out holds.
+      (SELECT count(*)::int FROM room_night WHERE sold+held>allotment) AS overbooked_room_nights,
+      (SELECT count(*)::int FROM booking_room br JOIN booking b ON b.id=br.booking_id JOIN booking_order o ON o.id=b.order_id
+        WHERE br.state='held' AND o.hold_expires_at<clock_timestamp()-interval '15 minutes') AS stuck_room_holds,
+      (SELECT CASE WHEN count(*)>=20 THEN count(*)::int ELSE 0 END FROM booking_order o
+        WHERE o.policy_snapshot->>'kind'='stay' AND o.state='expired' AND o.created_at>clock_timestamp()-interval '1 hour') AS stay_hold_expiry_spike`;
     const health = await tx`SELECT service,healthy,checked_at,last_success_at,
       checked_at<clock_timestamp()-interval '2 minutes' stale FROM service_health ORDER BY service`;
     const measurements = await tx`SELECT event,source,device,visits,sum(count)::text count FROM customer_measurement

@@ -4,6 +4,7 @@ import { withListingInventory, expireInventoryHolds } from '../booking/inventory
 import { CheckoutError, lifecycle } from '../booking/checkout.js';
 import { quoteDigest } from '../booking/quotes.js';
 import { assertPayment } from './razorpay-test.js';
+import { completeStayChange } from '../booking/hotel-checkout.js';
 
 export async function paymentScope(database, paymentId) {
   const [row] = await database`SELECT p.*,b.rentable_id,b.customer_id,e.snapshot,e.credential_key_id,e.config_version,e.state execution_state
@@ -99,6 +100,8 @@ export async function settleVerifiedPayment(database, paymentId, payment) {
       await tx`UPDATE booking SET state='confirmed',confirmed_at=${now},lifecycle_version=lifecycle_version+1,updated_at=${now} WHERE order_id=${order.id}`;
       await tx`UPDATE booking_order SET state='confirmed',confirmed_at=${now},updated_at=${now} WHERE id=${order.id}`;
       await lifecycle(tx, order.id, 'confirmed', { environment: 'test', testCapturedMinor: Number(po.expected_minor), actualCollectedMinor: 0 });
+      // Phase 10: a changed hotel stay cancels and refunds the stay it replaces.
+      await completeStayChange(tx, order);
     } else {
       // Conservative late-capture policy: never reacquire expired inventory.
       await tx`UPDATE inventory_reservation SET state='released',released_at=${now} WHERE booking_id IN ${tx(visits.map(v=>v.id))} AND state='held'`;

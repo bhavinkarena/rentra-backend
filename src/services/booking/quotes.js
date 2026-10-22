@@ -1,4 +1,5 @@
 import { currentPolicyReferences } from '../content/service.js';
+import { visibleVertical } from '../auth/beta-access.js';
 import 'server-only';
 import { createHash } from 'node:crypto';
 import { bookingSelectionSchema, localDateSchema } from '../schemas/zod/booking.js';
@@ -200,7 +201,7 @@ export function hourlyInputsQuery(tx, listing) {
 export async function requireBookableListing(tx, listing) {
   const [row] = await tx`SELECT
     EXISTS (SELECT 1 FROM "user" WHERE id=${listing.client_id} AND role='client' AND account_status='active') AS owner_active,
-    EXISTS (SELECT 1 FROM category c JOIN vertical v ON v.code=c.vertical_code WHERE c.id=${listing.category_id} AND v.status='public') AS vertical_public`;
+    EXISTS (SELECT 1 FROM category c JOIN vertical v ON v.code=c.vertical_code WHERE c.id=${listing.category_id} AND ${visibleVertical(tx)}) AS vertical_public`;
   if (!row.owner_active || !row.vertical_public) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
 }
 

@@ -73,6 +73,8 @@ router.post('/security/:id', operators.command);
 router.get('/content/:kind', content.detail);
 router.post('/content/:kind', content.command);
 
+router.get('/catalogues/verticals/:code/beta', catalogues.betaGuests);
+router.post('/catalogues/verticals/:code/beta', catalogues.betaGuestsCommand);
 router.get('/catalogues/:type', catalogues.list);
 router.get('/catalogues/:type/:id', catalogues.detail);
 router.post('/catalogues/:type/:id', catalogues.command);

@@ -29,6 +29,8 @@ export const staySelectionSchema = z.object({
   checkIn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   checkOut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   rooms: z.array(room).min(1).max(HOTEL_POLICY.maxRooms),
+  // Phase 10: this stay replaces a confirmed stay at the same hotel (change dates or rooms).
+  replacesOrderId: z.string().uuid().optional(),
 }).strict();
 
 /** Guest details collected at checkout. GSTIN is optional; when given, the business name is required. */
@@ -84,13 +86,35 @@ async function priceStay(tx, listing, selection, now) {
 }
 
 /** Stored, advisory stay quote for a signed-in customer; reserves nothing. */
+/**
+ * A confirmed stay can be changed (new dates or rooms) while every room in it can
+ * still be cancelled free, with an hour to spare for checkout. The new stay is
+ * booked and paid first; when it is confirmed the old one is cancelled and refunded
+ * in full (completeStayChange). Same hotel only.
+ */
+export async function checkChangeable(tx, { orderId, customerId, rentableId, now }) {
+  const [order] = await tx`SELECT o.id, o.reference, b.id AS visit_id, b.starts_at FROM booking_order o JOIN booking b ON b.order_id = o.id
+    WHERE o.id = ${orderId} AND o.customer_id = ${customerId} AND o.rentable_id = ${rentableId} AND o.state = 'confirmed'
+      AND b.slot = 'stay' AND b.state = 'confirmed'`;
+  if (!order) throw new BookingQuoteError('CHANGE_NOT_ALLOWED', 'Only a confirmed stay at this hotel can be changed.');
+  const rooms = await tx`SELECT plan_snapshot FROM booking_room WHERE booking_id = ${order.visit_id} AND state = 'booked'`;
+  const limit = new Date(new Date(now).getTime() + 3_600_000);
+  const free = rooms.length > 0 && rooms.every((room) => room.plan_snapshot.freeCancelHours != null
+    && new Date(new Date(order.starts_at).getTime() - room.plan_snapshot.freeCancelHours * 3_600_000) > limit);
+  if (!free) throw new BookingQuoteError('CHANGE_NOT_ALLOWED', 'This stay can no longer be changed for free. Cancel it under its rate rules instead.');
+  return { orderId: order.id, reference: order.reference };
+}
+
 export async function createStayQuote(database, input, { customerId }) {
   const selection = staySelectionSchema.parse({ kind: 'stay', ...input });
   const [customer] = await database`SELECT id FROM "user" WHERE id=${customerId} AND role='customer' AND account_status='active'`;
   if (!customer) throw new BookingQuoteError('CUSTOMER_REQUIRED', 'Log in to book.');
   const quote = await withListingSnapshot(database, selection.rentableId, async (tx, listing) => {
     const [{ now }] = await tx`SELECT clock_timestamp() AS now`;
-    return { ...(await priceStay(tx, listing, selection, now)), now };
+    const replaces = selection.replacesOrderId
+      ? await checkChangeable(tx, { orderId: selection.replacesOrderId, customerId, rentableId: listing.id, now })
+      : null;
+    return { ...(await priceStay(tx, listing, selection, now)), now, replaces };
   });
   if (!quote.payment.enabled) throw new BookingQuoteError('PAYMENTS_DISABLED', 'Online payment is not available right now.');
   const expiresAt = new Date(new Date(quote.now).getTime() + HOTEL_POLICY.holdMinutes * 60_000).toISOString();
@@ -101,7 +125,7 @@ export async function createStayQuote(database, input, { customerId }) {
     VALUES (${customerId},${quoteDigest(selection)},${selection.rentableId},'INR','Asia/Kolkata',${JSON.stringify(selection)}::text::jsonb,
       ${JSON.stringify(quote.visits)}::text::jsonb,${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(quote.payment)}::text::jsonb,
       ${HOTEL_POLICY.version},${HOTEL_POLICY.version},1,${quote.hash},${quote.totals.rentMinor},0,0,${new Date(quote.now).toISOString()},${expiresAt}) RETURNING id`;
-  return { id: saved.id, version: 1, hash: quote.hash, expiresAt, selection, visits: quote.visits, totals: quote.totals };
+  return { id: saved.id, version: 1, hash: quote.hash, expiresAt, selection, visits: quote.visits, totals: quote.totals, replaces: quote.replaces };
 }
 
 /**
@@ -122,6 +146,9 @@ export async function revalidateStayQuote(tx, listing, saved, { hash, version })
     throw error;
   }
   if (quote.hash !== saved.quote_hash) throw new BookingQuoteError('QUOTE_CHANGED', 'The price or rooms changed. Review the new price.');
+  if (saved.selection.replacesOrderId) {
+    await checkChangeable(tx, { orderId: saved.selection.replacesOrderId, customerId: saved.customer_id, rentableId: listing.id, now });
+  }
   return { ...quote, id: saved.id, version: saved.version, now, expiresAt: new Date(saved.expires_at).toISOString() };
 }
 
@@ -136,4 +163,24 @@ export async function revalidateHeldStayTerms(tx, order) {
   const [rooms] = await tx`SELECT count(*)::int AS held FROM booking_room br JOIN booking b ON b.id=br.booking_id
     WHERE b.order_id=${order.id} AND br.state='held'`;
   if (!rooms.held) throw new BookingQuoteError('HOLD_EXPIRED', 'These rooms are no longer held.');
+}
+
+/**
+ * After a changed stay is paid (inside settlement, under the hotel's lock): cancel
+ * the stay it replaces and refund it under its rules (free when checked at hold).
+ */
+export async function completeStayChange(tx, order) {
+  const [quote] = await tx`SELECT selection FROM booking_quote WHERE id = ${order.quote_id}`;
+  const oldOrderId = quote?.selection?.replacesOrderId;
+  if (!oldOrderId) return null;
+  const { estimateCancellation, applyCancellation } = await import('./cancellation.js');
+  const [old] = await tx`SELECT * FROM booking_order WHERE id = ${oldOrderId} AND state = 'confirmed'`;
+  if (!old) return null; // Already cancelled by the guest or Rentra: nothing more to undo.
+  const visits = await tx`SELECT id FROM booking WHERE order_id = ${old.id} AND state = 'confirmed'`;
+  const value = { orderId: old.id, visitIds: visits.map((v) => v.id).sort() };
+  const preview = await estimateCancellation(tx, old, value);
+  return applyCancellation(tx, old, preview, value, {
+    actorKind: 'customer', reason: `Changed to booking ${order.reference}`, idempotencyKey: order.id,
+    requestHash: quoteDigest({ change: order.id, from: old.id }), customerId: old.customer_id,
+  });
 }

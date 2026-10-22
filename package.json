@@ -34,7 +34,8 @@
     "prettier:check": "npm run format:check",
     "db:check": "node src/scripts/checkMigrations.js",
     "release:entertainment": "node --import ./loader/register.mjs --env-file=.env src/scripts/entertainment-release-check.js",
-    "payments:enable-test": "node --import ./loader/register.mjs --env-file=.env src/scripts/enableTestPayments.js"
+    "payments:enable-test": "node --import ./loader/register.mjs --env-file=.env src/scripts/enableTestPayments.js",
+    "release:hotels": "node --import ./loader/register.mjs --env-file=.env src/scripts/hotel-release-check.js"
   },
   "dependencies": {
     "cloudinary": "^2.11.0",

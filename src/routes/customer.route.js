@@ -1,6 +1,7 @@
 import * as disputes from '@/controllers/disputes.controller.js';
 import * as privacy from '@/controllers/privacy.controller.js';
 import { Router } from 'express';
+import * as catalogues from '@/controllers/catalogues.controller.js';
 import * as account from '@/controllers/account.controller.js';
 import * as records from '@/controllers/records.controller.js';
 import * as reviews from '@/controllers/reviews.controller.js';
@@ -21,6 +22,7 @@ const customer = requireRole('customer');
  * Account
  * ---------------------------------------------------------------- */
 router.get('/account', customer, account.read);
+router.post('/beta-access', customer, catalogues.betaPass);
 router.get('/account/onboarding', customer, account.onboarding);
 router.post('/account/profile', customer, formFields(), account.updateProfile);
 router.post('/account/photo', customer, authLimiter, singleFile('photo'), account.updatePhoto);

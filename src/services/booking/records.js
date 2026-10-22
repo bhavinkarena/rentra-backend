@@ -274,6 +274,8 @@ export async function readBookingRecord(database, actor, orderId, env = process.
         id: room.id, name: room.name, state: room.state, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
         plan: room.plan_snapshot, roomMinor: amount(room.amount_room_minor), taxMinor: amount(room.amount_tax_minor) })),
       details: order.guest_details ?? null,
+      // Phase 10: the hotel page, for "Change dates or rooms".
+      listingHref: (await tx`SELECT slug, public_code FROM rentable WHERE id=${order.rentable_id}`).map((r) => listingPath(r.slug, r.public_code))[0] ?? null,
     } : null;
     const rebookHref = actor.kind === 'customer' ? await hourlyRebookHref(tx, order.id) : null;
     const earningLines = actor.kind==='owner' ? await tx`SELECT l.id,l.booking_id FROM (${ledger(tx)}) l WHERE l.order_id=${order.id} AND l.owner_id=${actor.id} AND l.component='rent' ORDER BY l.created_at,l.id` : [];
