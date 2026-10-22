@@ -35,15 +35,17 @@ export async function submitCustomerReview(previous, form) {
   const actor = await bookingActor('customer');
   return run(() =>
     submitReview(sql, actor.session, {
-      visitId: form.get('visitId'),
+      visitId: form.get('visitId') || undefined,
+      ref: form.get('ref') || undefined,
       rating: Number(form.get('rating')),
       body: form.get('body'),
       ...Object.fromEntries(
-        ['cleanliness', 'accuracy', 'valueForMoney'].map((k) => [
+        ['cleanliness', 'accuracy', 'valueForMoney', 'staff', 'location', 'comfort', 'facilities'].map((k) => [
           k,
           form.get(k) ? Number(form.get(k)) : null,
         ]),
       ),
+      travellerType: form.get('travellerType') || null,
     }),
   );
 }
@@ -63,13 +65,14 @@ export async function moderateCustomerReview(previous, form) {
 }
 export async function ownerReviewReply(previous, form) {
   const actor = await bookingActor('owner');
+  const get = (k) => (form?.get ? form.get(k) : form?.[k]);
   return run(() =>
     replyToReview(sql, actor.id, {
-      id: form.get('id'),
-      version: Number(form.get('version')),
-      body: form.get('mode') === 'delete' ? null : form.get('body'),
-      preview: form.get('mode') === 'preview',
-      previewToken: form.get('previewToken') || undefined,
+      id: get('id'),
+      version: Number(get('version') ?? 0),
+      body: get('mode') === 'delete' ? null : get('body'),
+      preview: get('mode') === 'preview' || get('preview') === true,
+      previewToken: get('previewToken') || undefined,
     }),
   );
 }

@@ -1,4 +1,5 @@
 import 'server-only';
+import { hotelForEdit } from '../booking/hotel-setup.js';
 import { z } from 'zod';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { listingCompletion } from '../domain/listing-completion.js';
@@ -20,6 +21,11 @@ export const REVIEW_SECTIONS = [
   // Time-booked venues (entertainment plan): courts and opening hours.
   'venue',
   'hours',
+  // Hotels (hotel plan, Phase 4): room types, rates, check-in times and GST.
+  'rooms',
+  'rates',
+  'stay',
+  'gst',
 ];
 export const listingQueueQuery = z.object({
   submitted: z.enum(['1']).optional(),
@@ -88,9 +94,12 @@ async function snapshot(tx, row) {
       FROM rentable_rate rr JOIN category c ON c.id=rr.category_id WHERE rr.rentable_id=${row.id}
       ORDER BY c.slug,rr.day_kind,rr.start_minute`).map(camel),
   } : {};
+  // Hotels: profile, room types and rate plans are reviewed content too.
+  const hotel = row.rental_unit === 'night' ? await hotelForEdit(tx, row.id) : {};
   return {
     listing,
     ...venue,
+    ...hotel,
     prices: prices.map(camel),
     amenities: amenities.map(camel),
     documents: documents.map(camel),

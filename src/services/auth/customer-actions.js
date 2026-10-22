@@ -9,8 +9,7 @@ import { switchAccountRole } from './role-switch-actions.js';
 import { getCurrentAdmin, destroyAdminSession } from './admin.js';
 import { createSession, destroySession } from './session.js';
 import { customerPhone, customerRequestIp, requestCustomerCode, verifyCustomerCode } from './customer-identity.js';
-import { SELECTION_COOKIE, SELECTION_TTL, signCustomerSelection, readCustomerSelection } from './customer-selection.js';
-import { bookingSelectionSchema } from '../schemas/zod/booking.js';
+import { SELECTION_COOKIE, SELECTION_TTL, signCustomerSelection, readCustomerSelection, loginSelectionSchema } from './customer-selection.js';
 import { listingPath } from '../domain/listing-url.js';
 import { measure } from '../operations/measurement.js';
 
@@ -22,7 +21,7 @@ async function roleConflict() {
 }
 
 export async function beginCustomerLogin(input) {
-  const parsed = bookingSelectionSchema.safeParse(input);
+  const parsed = loginSelectionSchema.safeParse(input);
   if (!parsed.success) return { error: 'Choose valid dates, slot and guests before logging in.' };
   const [listing] = await sql`SELECT slug,public_code FROM rentable WHERE id=${parsed.data.rentableId} AND status='live'`;
   if (!listing) return { error: 'This listing is no longer available.' };

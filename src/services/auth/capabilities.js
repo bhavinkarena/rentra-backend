@@ -5,6 +5,8 @@ export const CLIENT_BASE_CAPABILITIES = Object.freeze(['client.search.read', 'cl
 export const CLIENT_ACTIVE_CAPABILITIES = Object.freeze([...CLIENT_BASE_CAPABILITIES, 'client.disputes.read', 'client.disputes.write', 'client.finance.read', 'client.listings.write', 'client.calendar.read', 'client.calendar.write', 'client.records.read', 'client.records.write', 'client.reviews.read', 'client.reviews.write', 'client.tasks.read', 'client.today.read', 'client.team.read', 'client.team.write']);
 // Contract only: staff authentication and property assignments ship in CP16.
 export const CARETAKER_CAPABILITIES = Object.freeze(['staff.assigned-visits.read', 'staff.assigned-visits.evidence']);
+/** Hotel staff (hotel plan, Phase 5); the service checks the role per hotel (front desk may only open and close rooms). */
+export const HOTEL_STAFF_CAPABILITIES = Object.freeze(['staff.hotel-rooms.read', 'staff.hotel-rooms.write']);
 
 export function capabilitiesFor(actor, kind) {
   if (!actor) return [];
@@ -15,7 +17,10 @@ export function capabilitiesFor(actor, kind) {
   if (kind === 'staff') {
     // Only the two caretaker capabilities exist; evidence is the owner's per-caretaker grant.
     if (!actor.active) return [];
-    return CARETAKER_CAPABILITIES.filter((capability) => capability.endsWith('.read') || actor.permissions?.evidence === true);
+    return [
+      ...CARETAKER_CAPABILITIES.filter((capability) => capability.endsWith('.read') || actor.permissions?.evidence === true),
+      ...(['manager', 'front_desk'].includes(actor.permissions?.hotelRole) ? HOTEL_STAFF_CAPABILITIES : []),
+    ];
   }
   if (actor.role !== 'client') return [];
   if (actor.accountStatus === 'active') return [...CLIENT_ACTIVE_CAPABILITIES];

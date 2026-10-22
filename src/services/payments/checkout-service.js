@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ownedCheckout, checkoutStatus, CheckoutError, readCheckoutStatus } from '../booking/checkout.js';
 import { withListingInventory } from '../booking/inventory.js';
 import { revalidateHeldQuoteTerms } from '../booking/quotes.js';
+import { revalidateHeldStayTerms } from '../booking/hotel-checkout.js';
 import { requireNewPaymentConfiguration, resolvePinnedPaymentConfiguration } from './gateway-settings.js';
 import { registeredPaymentProvider } from './provider-registry.js';
 import { razorpayTestAdapter, assertOrder, verifyCheckoutSignature } from './razorpay-test.js';
@@ -33,7 +34,8 @@ export async function startCheckoutPayment(database, session, orderId, options =
     await requireNewPaymentConfiguration(tx, { expectedVersion:scope.config_version }, env);
     const [current] = await tx`SELECT state,hold_expires_at>clock_timestamp() active FROM booking_order WHERE id=${orderId}`;
     if (current.state !== 'held' || !current.active) throw new CheckoutError('HOLD_EXPIRED');
-    await revalidateHeldQuoteTerms(tx, listing, order, env);
+    if (order.policy_snapshot?.kind === 'stay') await revalidateHeldStayTerms(tx, order);
+    else await revalidateHeldQuoteTerms(tx, listing, order, env);
     adapter(scope, options); // Validate pinned credentials before reserving the external dispatch.
     await tx`INSERT INTO payment_attempt(payment_order_id,provider,environment,mode,currency,attempt_number,expected_minor,state)
       VALUES(${scope.id},'razorpay','test','real','INR',1,${scope.expected_minor},'processing')`;

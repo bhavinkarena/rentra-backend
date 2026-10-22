@@ -1,4 +1,5 @@
 import { ownerSearch, ownerSearchQuery } from '@/services/auth/owner-search.js';
+import * as hotelOps from '@/controllers/hotel-ops.controller.js';
 import { z } from 'zod';
 import { ownerToday, todaySection } from '@/services/auth/owner-today.js';
 import { saveListingHours } from '@/services/booking/calendar-actions.js';
@@ -164,6 +165,10 @@ for (const [step, handler] of [
   ['location', listings.location],
   ['capacity', listings.capacity],
   ['venue', listings.venue],
+  ['rooms', listings.hotelRooms],
+  ['rates', listings.hotelRates],
+  ['stay', listings.hotelStay],
+  ['gst', listings.hotelGst],
   ['amenities', listings.amenitiesStep],
   ['rules', listings.rules],
   ['pricing', listings.pricing],
@@ -272,6 +277,19 @@ router.post('/listings/:id/arrival-guide', requireActiveClient, booking.saveArri
 router.post('/listings/:id/calendar/undo', requireActiveClient, booking.calendarUndo);
 router.post('/listings/:id/calendar/auto-open', requireActiveClient, booking.autoOpen);
 router.get('/calendar', requireActiveClient, booking.portfolioCalendar);
+// Hotel plan, Phase 5: the rates and rooms calendar of a hotel.
+router.get(
+  '/listings/:id/calendar/hotel',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  hotelOps.ariGrid,
+);
+router.post(
+  '/listings/:id/calendar/hotel',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  hotelOps.ariChange,
+);
 router.get(
   '/listings/:id/calendar',
   requireActiveClient,
@@ -411,6 +429,10 @@ router.get('/finance/statement.csv', requireActiveClient, finance.csv);
 router.get('/finance/allocations/:id', requireActiveClient, finance.allocation);
 router.get('/finance/payouts/:id', requireActiveClient, finance.payout);
 router.get('/finance/payouts', requireActiveClient, finance.payouts);
+router.get('/finance/hotel-earnings', requireActiveClient, finance.hotelEarnings);
+router.get('/finance/hotel-payouts/:id', requireActiveClient, finance.hotelPayoutStatement);
+router.get('/finance/hotel-payouts/:id/invoice', requireActiveClient, finance.commissionInvoice);
+router.get('/finance/hotel-analytics', requireActiveClient, finance.hotelAnalytics);
 router.get('/finance', requireActiveClient, finance.statement);
 router.get('/earnings', requireActiveClient, finance.earnings);
 router.get('/earnings/print', requireActiveClient, finance.earningsPrint);

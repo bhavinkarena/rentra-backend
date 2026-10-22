@@ -43,3 +43,16 @@ export const searchQuery = z
   .passthrough();
 
 export const routePathQuery = z.object({ path: z.string().min(1).max(200) });
+
+const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/** Shape only; dates, nights, occupancy and inventory are the quote's to judge. */
+export const stayQuoteBody = z.object({
+  checkIn: isoDay,
+  checkOut: isoDay,
+  rooms: z.array(z.object({
+    roomTypeId: z.string().uuid(),
+    ratePlanId: z.string().uuid(),
+    adults: z.number().int().min(1).max(12),
+    childAges: z.array(z.number().int().min(0).max(17)).max(12).default([]),
+  }).strict()).min(1).max(8),
+}).strict();

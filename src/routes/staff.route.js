@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as staff from '@/controllers/staff.controller.js';
+import * as hotelOps from '@/controllers/hotel-ops.controller.js';
 import { authLimiter, uploadLimiter } from '@/middlewares/rateLimit.middleware.js';
 import { evidencePhotos, formFields } from '@/middlewares/upload.middleware.js';
 import { validate } from '@/middlewares/validate.middleware.js';
@@ -28,6 +29,17 @@ router.post(
   staff.incident,
 );
 router.get('/me', staff.requireStaff(), staff.me);
+// Hotel plan, Phase 5: rates and rooms for hotel staff (role checked per hotel by the service).
+router.get(
+  '/hotels/:id/rooms',
+  staff.requireStaff('staff.hotel-rooms.read'),
+  hotelOps.staffAriGrid,
+);
+router.post(
+  '/hotels/:id/rooms',
+  staff.requireStaff('staff.hotel-rooms.write'),
+  hotelOps.staffAriChange,
+);
 router.get('/visits', staff.requireStaff(), staff.visits);
 router.get('/visits/:id', staff.requireStaff(), validate({ params: recordIdParam }), staff.visit);
 router.get(

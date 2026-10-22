@@ -5,6 +5,7 @@ import * as operators from '@/controllers/operators.controller.js';
 import * as catalogues from '@/controllers/catalogues.controller.js';
 import * as disputes from '@/controllers/disputes.controller.js';
 import * as finance from '@/controllers/finance.controller.js';
+import * as hotelFinance from '@/controllers/hotel-finance.controller.js';
 import { Router } from 'express';
 import * as admin from '@/controllers/admin.controller.js';
 import { dashboard, decisionHistory } from '@/controllers/dashboard.controller.js';
@@ -72,6 +73,8 @@ router.post('/security/:id', operators.command);
 router.get('/content/:kind', content.detail);
 router.post('/content/:kind', content.command);
 
+router.get('/catalogues/verticals/:code/beta', catalogues.betaGuests);
+router.post('/catalogues/verticals/:code/beta', catalogues.betaGuestsCommand);
 router.get('/catalogues/:type', catalogues.list);
 router.get('/catalogues/:type/:id', catalogues.detail);
 router.post('/catalogues/:type/:id', catalogues.command);
@@ -331,6 +334,17 @@ router.get('/payments/finance/allocations/:id', finance.allocation);
 router.get('/payments/finance/payouts/:id', finance.payout);
 router.get('/payments/finance/payouts', finance.payouts);
 router.get('/payments/finance', finance.statement);
+// Hotel plan, Phase 4: commission rules and tax slabs.
+router.get('/payments/hotel-commission', hotelFinance.commission);
+router.post('/payments/hotel-commission', formFields(), hotelFinance.commissionSave);
+router.get('/payments/hotel-tax-slabs', hotelFinance.taxSlabs);
+router.post('/payments/hotel-tax-slabs', formFields(), hotelFinance.taxSlabsSave);
+// Hotel plan, Phase 8: weekly payout runs and hotel analytics.
+router.get('/payments/hotel-payout-runs/preview', hotelFinance.payoutRunPreview);
+router.post('/payments/hotel-payout-runs', hotelFinance.payoutRunExecute);
+router.post('/payments/hotel-payout-runs/:id/settle', hotelFinance.payoutRunSettle);
+router.get('/payments/hotel-payout-runs', hotelFinance.payoutRunsList);
+router.get('/payments/hotel-analytics', hotelFinance.hotelAnalytics);
 router.use('/payments/disputes', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   next();

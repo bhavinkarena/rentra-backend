@@ -7,6 +7,9 @@ import { quoteDigest, revalidateBookingQuote } from './quotes.js';
 import { requireNewPaymentConfiguration } from '../payments/gateway-settings.js';
 import { requirePaymentCredentials } from '../payments/provider-credentials.js';
 import { BOOKING_POLICY } from '../domain/booking-policy.js';
+import { HOTEL_POLICY } from '../domain/hotel.js';
+import { revalidateStayQuote, stayDetailsSchema } from './hotel-checkout.js';
+import { holdHotelRooms } from './hotel-stays.js';
 
 const MAX_LIVE_HOLDS = 3;
 
@@ -15,7 +18,8 @@ export class CheckoutError extends Error {
 }
 const inputSchema = z.object({ rentableId: z.string().uuid(), quoteId: z.string().uuid(),
   hash: z.string().regex(/^[a-f0-9]{64}$/), version: z.number().int().positive(),
-  idempotencyKey: z.string().uuid(), accepted: z.literal(true), purpose: z.string().trim().min(3).max(160).optional() }).strict();
+  idempotencyKey: z.string().uuid(), accepted: z.literal(true), purpose: z.string().trim().min(3).max(160).optional(),
+  stay: stayDetailsSchema.optional() }).strict();
 
 export async function lifecycle(tx, orderId, kind, payload = {}) {
   await tx`INSERT INTO booking_lifecycle_event(order_id,kind,payload) VALUES(${orderId},${kind},${JSON.stringify(payload)}::text::jsonb)
@@ -36,8 +40,8 @@ export async function checkoutStatus(tx, orderId) {
 }
 
 /** Shared deadline for either booking model; checkout can never reserve past arrival. */
-export function checkoutHoldDeadline(now, startsAt) {
-  const expires = new Date(Math.min(+new Date(now) + BOOKING_POLICY.holdMinutes * 60000, +new Date(startsAt)));
+export function checkoutHoldDeadline(now, startsAt, minutes = BOOKING_POLICY.holdMinutes) {
+  const expires = new Date(Math.min(+new Date(now) + minutes * 60000, +new Date(startsAt)));
   if (expires <= new Date(now)) throw new CheckoutError('VISIT_ALREADY_STARTED');
   return expires;
 }
@@ -60,6 +64,8 @@ export async function createCheckoutHold(database, session, input, env = process
     const [{ held }] = await tx`SELECT count(*)::int AS held FROM booking_order
       WHERE customer_id=${customer.id} AND state='held' AND hold_expires_at > clock_timestamp()`;
     if (held >= MAX_LIVE_HOLDS) throw new CheckoutError('TOO_MANY_HOLDS', 'Finish or release one of your open checkouts first.');
+    const [savedQuote] = await tx`SELECT * FROM booking_quote WHERE id=${value.quoteId} AND rentable_id=${listing.id} AND customer_id=${customer.id}`;
+    if (savedQuote?.selection?.kind === 'stay') return holdStay(tx, listing, customer, value, savedQuote, requestHash, env);
     const quote = await revalidateBookingQuote(tx, listing, { ...value, customerId: customer.id }, env);
     // A time-booked visit gets its court now, under the listing mutex: the requested court, else the first free one.
     let court = null;
@@ -104,6 +110,48 @@ export async function createCheckoutHold(database, session, input, env = process
     await lifecycle(tx, orderId, 'held', { environment: 'test', actualCollectedMinor: 0, acceptedPublicPolicies: quote.policy.publications, accepted: true });
     return checkoutStatus(tx, orderId);
   });
+}
+
+/**
+ * Hotel stay (hotel plan, Phase 7): one 'stay' booking whose rooms are held as
+ * booking_room rows; the payment is the full total, allocated as room + tax.
+ */
+async function holdStay(tx, listing, customer, value, saved, requestHash, env) {
+  if (!value.stay) throw new CheckoutError('GUEST_DETAILS_REQUIRED', 'Add the guest details for each room.');
+  const quote = await revalidateStayQuote(tx, listing, saved, value);
+  if (value.stay.guestNames.length !== quote.stay.lines.length) throw new CheckoutError('GUEST_DETAILS_REQUIRED', 'Add a guest name for each room.');
+  await requireNewPaymentConfiguration(tx, { expectedVersion: quote.payment.version }, env);
+  const credentials = requirePaymentCredentials(quote.payment.provider, quote.payment.environment, env);
+  if (quote.payment.provider !== 'razorpay' || quote.payment.environment !== 'test' || quote.payment.expectedMinor < 100) throw new CheckoutError('INVALID_COLLECTION');
+  const nowDate = new Date(quote.now);
+  const expires = checkoutHoldDeadline(nowDate, quote.visits[0].startsAt, HOTEL_POLICY.holdMinutes);
+  const orderId = randomUUID(), paymentId = randomUUID(), bookingId = randomUUID();
+  const visit = quote.visits[0];
+  const guests = quote.stay.lines.reduce((sum, line) => sum + line.adults + line.childAges.length, 0);
+  const listingSnapshot = { ownerId: listing.client_id, photos: listing.photos ?? [], title: listing.title, publicCode: listing.public_code,
+    rentableId: listing.id, purpose: null, contact: { name: customer.name, phone: customer.phone } };
+  const details = { ...value.stay, gstin: value.stay.gstin || null, businessName: value.stay.businessName || null,
+    arrivalTime: value.stay.arrivalTime || null, requests: value.stay.requests || null };
+  await tx`INSERT INTO booking_order(id,reference,customer_id,rentable_id,state,currency,time_zone,quote_id,quote_version,quote_hash,
+    quote_expires_at,pricing_version,policy_version,policy_snapshot,listing_snapshot,guest_details,amount_rent_minor,amount_fee_minor,
+    amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,idempotency_key,request_hash,hold_expires_at)
+    VALUES(${orderId},${'TEST_' + orderId},${customer.id},${listing.id},'held','INR','Asia/Kolkata',${quote.id},${quote.version},${quote.hash},
+    ${quote.expiresAt},${HOTEL_POLICY.version},${HOTEL_POLICY.version},${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(listingSnapshot)}::text::jsonb,
+    ${JSON.stringify(details)}::text::jsonb,${quote.totals.rentMinor},0,0,${quote.totals.totalMinor},'real','test',${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
+  await tx`INSERT INTO booking(id,reference,rentable_id,customer_id,order_id,item_position,local_day,slot,guests,
+    starts_at,ends_at,blocked_start_at,blocked_end_at,hours_known,currency,time_zone,
+    amount_rent_minor,amount_fee_minor,amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,slot_snapshot)
+    VALUES(${bookingId},${'T' + bookingId.replaceAll('-', '').slice(0, 15)},${listing.id},${customer.id},${orderId},1,${visit.date},'stay',${guests},
+    ${visit.startsAt},${visit.endsAt},${visit.blockedStartAt},${visit.blockedEndAt},true,'INR','Asia/Kolkata',
+    ${visit.rentMinor},0,0,${visit.rentMinor},'real','test',${JSON.stringify(visit)}::text::jsonb)`;
+  // The same rooms, plans and money as the quote, or QUOTE_CHANGED / SOLD_OUT (checked again under this lock).
+  await holdHotelRooms(tx, listing, { bookingId, quote: quote.stay, guestNames: value.stay.guestNames, now: nowDate });
+  await tx`INSERT INTO payment_order(id,booking_order_id,provider,environment,mode,currency,purpose,expected_minor,idempotency_key,request_hash,due_at)
+    VALUES(${paymentId},${orderId},'razorpay','test','real','INR','full',${quote.payment.expectedMinor},${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
+  await tx`INSERT INTO payment_execution(payment_order_id,config_version,credential_key_id,snapshot)
+    VALUES(${paymentId},${quote.payment.version},${credentials.keyId},${JSON.stringify(quote.payment)}::text::jsonb)`;
+  await lifecycle(tx, orderId, 'held', { environment: 'test', actualCollectedMinor: 0, acceptedPublicPolicies: quote.policy.publications, accepted: true });
+  return checkoutStatus(tx, orderId);
 }
 
 export async function ownedCheckout(database, session, orderId, run, env = process.env) {

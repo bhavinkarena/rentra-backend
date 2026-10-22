@@ -4,9 +4,38 @@ import { z } from 'zod';
 import { ownedCheckout, CheckoutError, lifecycle } from './checkout.js';
 import { quoteDigest } from './quotes.js';
 import { cancellationEntitlement } from '../domain/cancellation.js';
+import { previewHotelCancellation } from './hotel-stays.js';
 
-const selection = z.object({ orderId:z.string().uuid(), visitIds:z.array(z.string().uuid()).min(1).max(10) }).strict();
-const normalize = input => { const value=selection.parse(input); value.visitIds=[...new Set(value.visitIds)].sort(); return value; };
+/**
+ * Hotel stay (Phase 7): each room's own rate rule (free until a deadline, then
+ * first night or whole stay), from the booked room snapshots. The refund is
+ * split over room and tax in the same proportion as they were paid.
+ */
+async function stayEntitlement(tx, visit, now, roomIds = null) {
+  let preview;
+  try { preview = await previewHotelCancellation(tx, visit.id, now); } catch (error) { throw new CheckoutError(error.code ?? error.message); }
+  // Phase 10: cancel some rooms of a multi-room stay. Each room keeps its own rule.
+  const lines = roomIds ? preview.lines.filter((line) => roomIds.includes(line.id)) : preview.lines;
+  if (roomIds && lines.length !== roomIds.length) throw new CheckoutError('ROOM_NOT_CANCELLABLE');
+  const rooms = await tx`SELECT id, amount_room_minor::bigint AS room, amount_tax_minor::bigint AS tax FROM booking_room WHERE id IN ${tx(lines.map((line) => line.id))}`;
+  let rent = 0, tax = 0;
+  for (const line of lines) {
+    const row = rooms.find((room) => room.id === line.id);
+    const lineTax = Math.round(line.refundMinor * Number(row.tax) / Math.max(1, Number(row.room) + Number(row.tax)));
+    tax += lineTax;
+    rent += line.refundMinor - lineTax;
+  }
+  return { rent, tax, fee: 0, deposit: 0, chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
+    rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.lines.length };
+}
+
+const selection = z.object({ orderId:z.string().uuid(), visitIds:z.array(z.string().uuid()).min(1).max(10),
+  roomIds:z.array(z.string().uuid()).min(1).max(8).optional() }).strict();
+const normalize = input => {
+  const value=selection.parse(input); value.visitIds=[...new Set(value.visitIds)].sort();
+  if (value.roomIds) { value.roomIds=[...new Set(value.roomIds)].sort(); if (value.visitIds.length!==1) throw new CheckoutError('ROOMS_NEED_ONE_STAY'); }
+  return value;
+};
 /** Verified capture allocations for these visits, with what earlier refunds already reserved. */
 export async function capturedAllocations(tx, visitIds) {
   return tx`SELECT a.*,t.provider,t.environment,t.mode,t.currency,t.provider_payment_id,
@@ -16,14 +45,17 @@ export async function capturedAllocations(tx, visitIds) {
     WHERE a.booking_id IN ${tx(visitIds)} AND t.kind='capture' AND t.outcome='succeeded' AND t.verified_at IS NOT NULL ORDER BY a.id`;
 }
 /** Split an entitlement over captured allocations, never past what earlier refunds left. */
-export function allocateRefund(sources, entitlement) {
-  const remaining={rent:entitlement.rent,fee:entitlement.fee,deposit:entitlement.deposit};
+export function allocateRefund(sources, entitlement, { remainingOnly = false } = {}) {
+  const remaining={rent:entitlement.rent,fee:entitlement.fee,deposit:entitlement.deposit,tax:entitlement.tax??0};
   return sources.map(a=>{
     if(!(a.component in remaining)) throw new CheckoutError('PAYMENT_UNSUPPORTED');
     const entitled=Math.min(Number(a.actual_minor),remaining[a.component]);
     remaining[a.component]-=entitled;
+    // Visit entitlements count the whole payment, so earlier refunds come off them. A stay's
+    // entitlement covers only rooms still booked (Phase 10), so earlier refunds only cap it.
+    const left=Number(a.actual_minor)-Number(a.reserved);
     return {allocationId:a.id,transactionId:a.transaction_id,component:a.component,
-      amount:Math.max(0,entitled-Number(a.reserved))};
+      amount:Math.max(0,remainingOnly?Math.min(entitlement[a.component]??0,left,entitled):entitled-Number(a.reserved))};
   }).filter(a=>a.amount>0);
 }
 export const testSourcesOnly = sources => sources.every(a=>a.provider==='razorpay'&&a.environment==='test'&&a.mode==='real');
@@ -54,10 +86,12 @@ async function estimate(tx, order, value) {
   for(const visit of visits) {
     if(visit.state!=='confirmed') throw new CheckoutError('VISIT_NOT_CANCELLABLE');
     let entitlement;
-    try { entitlement=cancellationEntitlement(visit,now); } catch(error) { throw new CheckoutError(error.message); }
+    if(visit.slot==='stay') entitlement=await stayEntitlement(tx,visit,now,value.roomIds ?? null);
+    else if (value.roomIds) throw new CheckoutError('ROOMS_NEED_ONE_STAY');
+    else try { entitlement=cancellationEntitlement(visit,now); } catch(error) { throw new CheckoutError(error.message); }
     const sources=allocations.filter(a=>a.booking_id===visit.id);
     if(!sources.length || !testSourcesOnly(sources)) throw new CheckoutError('PAYMENT_UNSUPPORTED');
-    const refunds=allocateRefund(sources, entitlement);
+    const refunds=allocateRefund(sources, entitlement, { remainingOnly: visit.slot==='stay' });
     plans.push({id:visit.id,reference:visit.reference,date:String(visit.local_day instanceof Date?visit.local_day.toISOString():visit.local_day).slice(0,10),
       state:visit.state,version:visit.lifecycle_version,...entitlement,refundMinor:refunds.reduce((sum,a)=>sum+a.amount,0),refunds});
   }
@@ -71,29 +105,51 @@ export async function previewCancellation(database,session,input,env=process.env
   const value=normalize(input);
   return ownedCheckout(database,session,value.orderId,async(tx,order)=>publicPreview(await estimate(tx,order,value)),env);
 }
-export async function commitCancellation(database,session,input,env=process.env) {
-  const parsed=z.object({orderId:z.string().uuid(),visitIds:z.array(z.string().uuid()).min(1).max(10),
-    hash:z.string().regex(/^[a-f0-9]{64}$/),idempotencyKey:z.string().uuid(),accepted:z.literal(true),reason:z.string().trim().max(160).default('')}).strict().parse(input);
-  const value=normalize({orderId:parsed.orderId,visitIds:parsed.visitIds});
-  const requestHash=quoteDigest({...parsed,visitIds:value.visitIds});
-  return ownedCheckout(database,session,value.orderId,async(tx,order)=>{
-    const [previous]=await tx`SELECT snapshot,request_hash FROM booking_cancellation WHERE customer_id=${session.userId} AND idempotency_key=${parsed.idempotencyKey}`;
-    if(previous) {if(previous.request_hash!==requestHash) throw new CheckoutError('IDEMPOTENCY_CONFLICT');return previous.snapshot;}
-    const preview=await estimate(tx,order,value);
-    if(preview.hash!==parsed.hash) throw new CheckoutError('CANCELLATION_CHANGED');
-    const id=randomUUID();
-    const refundIds=await createRefundObligations(tx, preview.visits, { reason:'Customer visit cancellation', idempotencyKey:id, requestHash });
-    const changed=await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by_kind='customer',
-      cancellation_reason=${parsed.reason||'Customer cancellation'},lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp()
+/**
+ * Cancel visits (or, for one stay, some of its rooms) inside the caller's
+ * transaction: refund obligations, state changes, rooms back on sale, the
+ * cancellation record and its lifecycle event. Shared by the guest's own
+ * cancellation and by a booking change (Phase 10).
+ */
+export async function applyCancellation(tx, order, preview, value, { actorKind, reason, idempotencyKey, requestHash, customerId }) {
+  const id=randomUUID();
+  // The refund reason is a category key for finance; the visit keeps the guest's own words.
+  const refundIds=await createRefundObligations(tx, preview.visits, { reason:'Customer visit cancellation', idempotencyKey:id, requestHash });
+  const partial=preview.visits.some(v=>v.partial);
+  if (partial) {
+    const released=await tx`UPDATE booking_room SET state='released',updated_at=clock_timestamp()
+      WHERE booking_id=${value.visitIds[0]} AND id IN ${tx(value.roomIds)} AND state='booked' RETURNING id`;
+    if(released.length!==value.roomIds.length) throw new CheckoutError('CANCELLATION_CHANGED');
+  } else {
+    const changed=await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by_kind=${actorKind},
+      cancellation_reason=${reason},lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp()
       WHERE order_id=${order.id} AND id IN ${tx(value.visitIds)} AND state='confirmed' AND starts_at>clock_timestamp() RETURNING id`;
     if(changed.length!==value.visitIds.length) throw new CheckoutError('CANCELLATION_CHANGED');
     await tx`UPDATE inventory_reservation SET state='released',released_at=clock_timestamp() WHERE booking_id IN ${tx(value.visitIds)} AND state='committed'`;
     await tx`UPDATE booking_order SET state='cancelled',updated_at=clock_timestamp() WHERE id=${order.id}
       AND NOT EXISTS(SELECT 1 FROM booking WHERE order_id=${order.id} AND state<>'cancelled')`;
-    const snapshot={...publicPreview(preview),id,refundIds,cancelledAt:new Date().toISOString()};
-    await tx`INSERT INTO booking_cancellation(id,order_id,customer_id,idempotency_key,request_hash,snapshot)
-      VALUES(${id},${order.id},${session.userId},${parsed.idempotencyKey},${requestHash},${JSON.stringify(snapshot)}::text::jsonb)`;
-    await lifecycle(tx,order.id,'cancel_'+id.replaceAll('-',''),{cancellationId:id,visitIds:value.visitIds,refundIds,environment:'test',actualBankRefundMinor:0});
-    return snapshot;
+  }
+  const snapshot={...publicPreview(preview),id,refundIds,cancelledAt:new Date().toISOString(),...(partial?{roomIds:value.roomIds}:{})};
+  await tx`INSERT INTO booking_cancellation(id,order_id,customer_id,idempotency_key,request_hash,snapshot)
+    VALUES(${id},${order.id},${customerId},${idempotencyKey},${requestHash},${JSON.stringify(snapshot)}::text::jsonb)`;
+  await lifecycle(tx,order.id,'cancel_'+id.replaceAll('-',''),{cancellationId:id,visitIds:value.visitIds,...(partial?{roomIds:value.roomIds}:{}),refundIds,environment:'test',actualBankRefundMinor:0});
+  return snapshot;
+}
+
+export async function commitCancellation(database,session,input,env=process.env) {
+  const parsed=z.object({orderId:z.string().uuid(),visitIds:z.array(z.string().uuid()).min(1).max(10),roomIds:z.array(z.string().uuid()).min(1).max(8).optional(),
+    hash:z.string().regex(/^[a-f0-9]{64}$/),idempotencyKey:z.string().uuid(),accepted:z.literal(true),reason:z.string().trim().max(160).default('')}).strict().parse(input);
+  const value=normalize({orderId:parsed.orderId,visitIds:parsed.visitIds,...(parsed.roomIds?{roomIds:parsed.roomIds}:{})});
+  const requestHash=quoteDigest({...parsed,visitIds:value.visitIds,roomIds:value.roomIds});
+  return ownedCheckout(database,session,value.orderId,async(tx,order)=>{
+    const [previous]=await tx`SELECT snapshot,request_hash FROM booking_cancellation WHERE customer_id=${session.userId} AND idempotency_key=${parsed.idempotencyKey}`;
+    if(previous) {if(previous.request_hash!==requestHash) throw new CheckoutError('IDEMPOTENCY_CONFLICT');return previous.snapshot;}
+    const preview=await estimate(tx,order,value);
+    if(preview.hash!==parsed.hash) throw new CheckoutError('CANCELLATION_CHANGED');
+    return applyCancellation(tx, order, preview, value, { actorKind:'customer', reason:parsed.reason||'Customer cancellation',
+      idempotencyKey:parsed.idempotencyKey, requestHash, customerId:session.userId });
   },env);
 }
+
+/** Preview inside an existing transaction (booking changes, Phase 10). */
+export const estimateCancellation = estimate;

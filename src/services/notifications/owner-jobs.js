@@ -18,7 +18,7 @@ export async function scheduleOwnerNotifications(database) {
         await tx`SELECT client_update_insert(${b.client_id},${event+':'+b.id},'booking',${event==='checkout_overdue'?'action':'info'},${event},${b.rentable_id},${b.order_id},${detail}::text::jsonb,now())`;
       }
     }
-    const properties=await tx`SELECT r.id,r.client_id FROM rentable r WHERE r.status='live' AND r.rental_unit<>'hour' AND coalesce((r.booking_config->>'autoOpen')::boolean,false)=false
+    const properties=await tx`SELECT r.id,r.client_id FROM rentable r WHERE r.status='live' AND r.rental_unit::text NOT IN ('hour','night') AND coalesce((r.booking_config->>'autoOpen')::boolean,false)=false
       AND NOT EXISTS(SELECT 1 FROM availability a WHERE a.rentable_id=r.id AND a.day>(now() AT TIME ZONE 'Asia/Kolkata')::date+7 AND a.units_available>0)`;
     for(const p of properties) await tx`SELECT client_update_insert(${p.client_id},${'dates:'+p.id+':'+new Date(Date.now()+330*60000).toISOString().slice(0,7)},'property','action','dates_running_out',${p.id},NULL,'{}'::jsonb,now())`;
     return visits.length;
@@ -52,8 +52,11 @@ export async function processOwnerNotification(database,id,options={}) {
         row.sender=config.sender;row.channel=config.channel;
       }
       if(!polling && ['booking_confirmed','visits_cancelled'].includes(row.event) && row.order_id){
-        const [visit]=await tx`SELECT local_day::text AS visit_date,slot,guests,amount_rent_minor::text rent_minor,(SELECT count(*)::int FROM booking WHERE order_id=${row.order_id}) visit_count FROM booking WHERE order_id=${row.order_id} ORDER BY item_position,id LIMIT 1`;
-        if(visit)row.detail={...row.detail,visitDate:visit.visit_date,slot:visit.slot,guests:visit.guests,rentMinor:visit.rent_minor,visitCount:visit.visit_count};
+        const [visit]=await tx`SELECT b.local_day::text AS visit_date,b.slot,b.guests,b.amount_rent_minor::text rent_minor,(SELECT count(*)::int FROM booking WHERE order_id=${row.order_id}) visit_count,
+            (SELECT count(*)::int FROM booking_room br WHERE br.booking_id=b.id) AS rooms,(SELECT max(br.check_out)::text FROM booking_room br WHERE br.booking_id=b.id) AS check_out
+          FROM booking b WHERE b.order_id=${row.order_id} ORDER BY b.item_position,b.id LIMIT 1`;
+        if(visit)row.detail={...row.detail,visitDate:visit.visit_date,slot:visit.slot,guests:visit.guests,rentMinor:visit.rent_minor,visitCount:visit.visit_count,
+          ...(visit.rooms?{rooms:visit.rooms,checkOut:visit.check_out}:{})};
       }
       let origin;try{origin=new URL(env.NEXT_PUBLIC_SITE_URL).origin;}catch{throw {code:'SITE_URL_REQUIRED'};}
       body=ownerNotificationMessage(row,origin);row.title=ownerEventTitles[row.event] || 'Rentra update';if(!polling)row.body_hash=bodyHash(body);

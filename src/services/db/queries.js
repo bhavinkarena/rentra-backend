@@ -11,6 +11,8 @@ import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { amenityStates, normalizePublicPhotos, publicHouseRules, publicSlotSchedules } from '@/services/domain/listing-content';
 import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
 import { minuteToHhmm } from '@/services/domain/hourly';
+import { distanceKm, parsePoint } from '@/services/domain/geo';
+import { betaVerticals } from '@/services/auth/beta-access';
 
 /**
  * Data access for public, indexable pages.
@@ -36,6 +38,29 @@ function hourlyCardFields(row) {
     priceNote: 'Per hour; platform fee added at checkout. Choose a date and time for a total.',
   };
 }
+
+/**
+ * Hotel card facts (hotel plan, Phase 6) without dates: the lowest nightly room
+ * rate of any active plan, before taxes and per-guest extras, so "from" is a floor.
+ */
+function hotelCardFields(row) {
+  return {
+    vertical: 'hotel',
+    rentalUnit: 'night',
+    price: row.hotelFromMinor == null ? null : Number(row.hotelFromMinor) / 100,
+    priceWeekend: null,
+    unit: 'night',
+    priceNote: 'Per room per night, before taxes. Add dates for the total.',
+    starRating: row.starRating ?? null,
+    couples: Boolean(row.hotelPolicies?.couples),
+    localId: Boolean(row.hotelPolicies?.localId),
+  };
+}
+
+/** Lowest nightly rate over active plans of active room types; a derived plan is its base rate ± its percentage. */
+const HOTEL_FROM_MINOR = (id) => raw`(select min(case when rp.derived_from is null then least(rp.weekday_minor, rp.weekend_minor)
+    else (select least(b.weekday_minor, b.weekend_minor) from rate_plan b where b.id = rp.derived_from) * (10000 + rp.derived_pct_bps) / 10000 end)
+  from rate_plan rp join room_type rt on rt.id = rp.room_type_id and rt.is_active where rp.rentable_id = ${id} and rp.is_active)`;
 
 const photoContext = (row) => ({
   cloudName: process.env.CLOUDINARY_CLOUD_NAME,
@@ -79,6 +104,7 @@ function toCard(row) {
     vertical: row.vertical ?? DEFAULT_VERTICAL,
     rentalUnit: row.rentalUnit ?? 'slot',
   };
+  if (row.vertical === 'hotel') return { ...card, ...hotelCardFields(row) };
   return row.rentalUnit === 'hour' ? { ...card, ...hourlyCardFields(row) } : card;
 }
 
@@ -107,6 +133,9 @@ const cardColumns = {
   vertical: raw`(select vc.vertical_code from category vc where vc.id=${rentable.categoryId})`.as('vertical'),
   // Time-booked venues only (NULL / empty for farmhouses): one subquery each, all index-backed.
   hourFromMinor: raw`(select min(rr.hourly_rate_minor) from rentable_rate rr where rr.rentable_id=${rentable.id})`.as('hour_from_minor'),
+  hotelFromMinor: HOTEL_FROM_MINOR(rentable.id).as('hotel_from_minor'),
+  starRating: raw`(select hp.star_rating from hotel_profile hp where hp.rentable_id=${rentable.id})`.as('star_rating'),
+  hotelPolicies: raw`(select hp.policies from hotel_profile hp where hp.rentable_id=${rentable.id})`.as('hotel_policies'),
   resourceCount: raw`(select count(*)::int from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('resource_count'),
   maxPlayers: raw`(select max(rs.capacity) from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('max_players'),
   indoorKinds: raw`(select case when bool_and(rs.is_indoor) then 'indoor' when not bool_or(rs.is_indoor) then 'outdoor' when count(rs.is_indoor)>0 then 'mixed' end
@@ -130,18 +159,20 @@ const nightPrice = and(
  * search applies. A suspended or blocked owner's listings leave every public
  * read (detail, availability, cards, similar, sitemap, area counts) at once.
  */
-const publiclyListed = and(
+const publiclyListed = () => and(
   eq(rentable.status, 'live'),
   raw`exists (select 1 from "user" o where o.id = ${rentable.clientId}
     and o.role = 'client' and o.account_status = 'active')`,
   // A vertical that is not public yet (hidden, or open to partners only) never
-  // reaches a public read: detail, availability, cards, similar or the sitemap.
+  // reaches a public read — except a partners vertical opened by this request's
+  // beta pass (hotel plan, Phase 9). Sitemap requests never carry one.
   raw`exists (select 1 from category pc join vertical pv on pv.code = pc.vertical_code
-    where pc.id = ${rentable.categoryId} and pv.status = 'public')`,
+    where pc.id = ${rentable.categoryId} and (pv.status = 'public'
+      or (pv.status = 'partners' and pv.code = any(string_to_array(${betaVerticals().join(',')}, ',')))))`,
 );
 
 export async function getLiveListings({ citySlug, areaSlug, limit = 24, vertical = DEFAULT_VERTICAL } = {}) {
-  const filters = [publiclyListed, inVertical(vertical)];
+  const filters = [publiclyListed(), inVertical(vertical)];
   if (citySlug) filters.push(eq(city.slug, citySlug));
   if (areaSlug) filters.push(eq(area.slug, areaSlug));
 
@@ -181,7 +212,7 @@ export async function getListingsNearby({ lng, lat, km = 25, limit = 24, vertica
     .innerJoin(city, eq(city.id, rentable.cityId))
     .leftJoin(rentablePrice, nightPrice)
     .where(and(
-      publiclyListed,
+      publiclyListed(),
       inVertical(vertical),
       raw`ST_DWithin(
         ${rentable.location}::geography,
@@ -235,7 +266,7 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
     .innerJoin(category, eq(category.id, rentable.categoryId))
     .leftJoin(rentablePrice, nightPrice)
     // Resolved by CODE, not slug — retitling must never 404.
-    .where(and(eq(rentable.publicCode, publicCode), previewOwnerId?eq(rentable.clientId,previewOwnerId):publiclyListed))
+    .where(and(eq(rentable.publicCode, publicCode), previewOwnerId?eq(rentable.clientId,previewOwnerId):publiclyListed()))
     .limit(1);
 
   if (!row) return null;
@@ -278,6 +309,11 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
       cleanliness: review.cleanliness,
       accuracy: review.accuracy,
       valueForMoney: review.valueForMoney,
+      staff: review.staff,
+      location: review.location,
+      comfort: review.comfort,
+      facilities: review.facilities,
+      travellerType: review.travellerType,
       publishedAt: review.publishedAt, authorName: users.name,
     })
       .from(review)
@@ -293,11 +329,15 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
       cleanliness: raw`round(avg(${review.cleanliness})::numeric, 1)::float8`.as('cleanliness'),
       accuracy: raw`round(avg(${review.accuracy})::numeric, 1)::float8`.as('accuracy'),
       valueForMoney: raw`round(avg(${review.valueForMoney})::numeric, 1)::float8`.as('value_for_money'),
+      staff: raw`round(avg(${review.staff})::numeric, 1)::float8`.as('staff'),
+      location: raw`round(avg(${review.location})::numeric, 1)::float8`.as('location'),
+      comfort: raw`round(avg(${review.comfort})::numeric, 1)::float8`.as('comfort'),
+      facilities: raw`round(avg(${review.facilities})::numeric, 1)::float8`.as('facilities'),
     }).from(review).where(published),
   ]);
 
   const agg = subScoreRows[0] ?? {};
-  const venue = row.rentalUnit === 'hour' ? await venueDetail(row) : {};
+  const venue = row.vertical === 'hotel' ? await hotelDetail(row) : row.rentalUnit === 'hour' ? await venueDetail(row) : {};
   const amenities = amenityStates({
     selected: selectedAmenities,
     catalogue: amenityCatalogue,
@@ -349,6 +389,10 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
         cleanliness: agg.cleanliness,
         accuracy: agg.accuracy,
         valueForMoney: agg.valueForMoney,
+        staff: agg.staff,
+        location: agg.location,
+        comfort: agg.comfort,
+        facilities: agg.facilities,
       }
       : null,
     // Both rates per slot — a Saturday and a Tuesday are different prices,
@@ -395,6 +439,49 @@ async function venueDetail(row) {
   };
 }
 
+/** Public policy answers only: never the wizard's bookkeeping flags. */
+const HOTEL_PUBLIC_POLICIES = ['couples', 'localId', 'idTypes', 'pets', 'smoking', 'parties', 'notes'];
+
+/**
+ * Public facts of a hotel (hotel plan, Phase 6): profile, room types with their
+ * plans (no prices: those come from /rooms for the guest's dates and party),
+ * and the nearest landmarks. The exact pin only when the owner chose to show it.
+ */
+async function hotelDetail(row) {
+  const [[profile], roomTypes, plans, landmarks] = await Promise.all([
+    sql`SELECT p.star_rating, p.check_in_minute, p.check_out_minute, p.child_free_age, p.policies, p.show_exact_address,
+        r.location, CASE WHEN p.show_exact_address THEN r.exact_address END AS address
+      FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id WHERE p.rentable_id = ${row.id}`,
+    sql`SELECT id, name, beds, size_sqm AS "sizeSqm", view, max_adults AS "maxAdults", max_children AS "maxChildren",
+        max_occupancy AS "maxOccupancy", room_count AS "roomCount", amenities, photos
+      FROM room_type WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
+    sql`SELECT id, room_type_id AS "roomTypeId", name, meal_plan AS "mealPlan", free_cancel_hours AS "freeCancelHours", min_nights AS "minNights"
+      FROM rate_plan WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
+    sql`SELECT slug, name, kind, latitude::float8 AS latitude, longitude::float8 AS longitude
+      FROM landmark WHERE city_id = ${row.cityId} AND is_active`,
+  ]);
+  const pin = parsePoint(profile?.location);
+  const policies = Object.fromEntries(HOTEL_PUBLIC_POLICIES.filter((key) => profile?.policies?.[key] != null).map((key) => [key, profile.policies[key]]));
+  return {
+    slotSchedules: [],
+    prices: {},
+    hotel: profile ? {
+      starRating: profile.star_rating, checkIn: minuteToHhmm(profile.check_in_minute), checkOut: minuteToHhmm(profile.check_out_minute),
+      childFreeAge: profile.child_free_age, policies,
+      exactLocation: profile.show_exact_address && pin ? { ...pin, address: profile.address } : null,
+    } : null,
+    roomTypes: roomTypes.map((room) => ({
+      ...room,
+      photos: normalizePublicPhotos(room.photos, { ...photoContext(row), title: `${row.title} · ${room.name}` }),
+      plans: plans.filter((plan) => plan.roomTypeId === room.id).map(({ roomTypeId: _roomTypeId, ...plan }) => plan),
+    })),
+    // Nearest six within 25 km, measured from the real pin even when the pin itself is not shown.
+    landmarks: pin ? landmarks.map(({ latitude, longitude, ...landmark }) => ({ ...landmark, km: Math.round(distanceKm(pin, { latitude, longitude }) * 10) / 10 }))
+      .filter((landmark) => landmark.km <= 25).sort((a, b) => a.km - b.km).slice(0, 6) : [],
+    bookable: roomTypes.length > 0 && plans.length > 0,
+  };
+}
+
 /**
  * Resolve a public code to an id, for callers that need nothing else —
  * the availability endpoint, which must not pay for a full listing join on
@@ -405,7 +492,7 @@ export async function getListingRefByCode(publicCode) {
   const [row] = await db
     .select({ id: rentable.id, rentalUnit: rentable.rentalUnit })
     .from(rentable)
-    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
+    .where(and(eq(rentable.publicCode, publicCode), publiclyListed()))
     .limit(1);
   return row ?? null;
 }
@@ -414,7 +501,7 @@ export async function getListingIdByCode(publicCode) {
   const [row] = await db
     .select({ id: rentable.id })
     .from(rentable)
-    .where(and(eq(rentable.publicCode, publicCode), publiclyListed))
+    .where(and(eq(rentable.publicCode, publicCode), publiclyListed()))
     .limit(1);
   return row?.id ?? null;
 }
@@ -469,7 +556,7 @@ export async function getSimilarListings({ rentableId, areaId, cityId, limit = 4
     .innerJoin(city, eq(city.id, rentable.cityId))
     .leftJoin(rentablePrice, nightPrice)
     .where(and(
-      publiclyListed,
+      publiclyListed(),
       ne(rentable.id, rentableId),
       eq(rentable.cityId, cityId),
       // Similar means the same vertical as the listing being viewed.
@@ -508,7 +595,7 @@ export async function getSitemapEntries() {
       updatedAt: rentable.updatedAt,
       photos: rentable.photos,
     })
-    .from(rentable).where(publiclyListed);
+    .from(rentable).where(publiclyListed());
 
   const cities = await db
     .select({ slug: city.slug }).from(city).where(eq(city.isActive, true));
@@ -541,7 +628,7 @@ export async function countLiveInArea({ citySlug, areaSlug }) {
     .innerJoin(area, eq(area.id, rentable.areaId))
     .innerJoin(city, eq(city.id, rentable.cityId))
     .where(and(
-      publiclyListed,
+      publiclyListed(),
       eq(city.slug, citySlug),
       eq(area.slug, areaSlug),
     ));

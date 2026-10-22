@@ -449,6 +449,48 @@
       "when": 1790591500008,
       "tag": "0063_owner_bookings_finish",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1790591500009,
+      "tag": "0064_hotel_inventory",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1790591500010,
+      "tag": "0065_hotel_booking_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1790591500011,
+      "tag": "0066_landmarks",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1790591500012,
+      "tag": "0067_hotel_checkout",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1790591500013,
+      "tag": "0068_hotel_post_stay",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1790591500014,
+      "tag": "0069_vertical_beta",
+      "breakpoints": true
     }
   ]
 }

@@ -13,6 +13,12 @@ import {
   financePayout,
   financeCsv,
 } from '@/services/finance/statements.js';
+import {
+  getOwnerHotelEarnings,
+  getOwnerPayoutStatement,
+  getCommissionInvoice,
+} from '@/services/finance/hotel-payouts.js';
+import { getOwnerHotelAnalytics } from '@/services/analytics/hotel-analytics.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 const actor = (req) => bookingActor(req.baseUrl.includes('/admin') ? 'admin' : 'owner');
@@ -47,4 +53,22 @@ export const earnings = asyncHandler(async (req, res) => {
 export const earningsPrint = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'private, no-store');
   ok(res, await ownerEarnings(sql, await actor(req), req.query, { all: true }));
+});
+
+/** Hotel plan, Phase 8: hotel earnings, payout statements, commission invoices, analytics (owner only). */
+export const hotelEarnings = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  ok(res, await getOwnerHotelEarnings(sql, (await bookingActor('owner')).id, req.query));
+});
+export const hotelPayoutStatement = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  ok(res, await getOwnerPayoutStatement(sql, (await bookingActor('owner')).id, req.params.id));
+});
+export const commissionInvoice = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  ok(res, await getCommissionInvoice(sql, (await bookingActor('owner')).id, req.params.id));
+});
+export const hotelAnalytics = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  ok(res, await getOwnerHotelAnalytics(sql, (await bookingActor('owner')).id, req.query));
 });

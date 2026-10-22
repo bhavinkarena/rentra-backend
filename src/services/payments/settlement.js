@@ -4,6 +4,7 @@ import { withListingInventory, expireInventoryHolds } from '../booking/inventory
 import { CheckoutError, lifecycle } from '../booking/checkout.js';
 import { quoteDigest } from '../booking/quotes.js';
 import { assertPayment } from './razorpay-test.js';
+import { completeStayChange } from '../booking/hotel-checkout.js';
 
 export async function paymentScope(database, paymentId) {
   const [row] = await database`SELECT p.*,b.rentable_id,b.customer_id,e.snapshot,e.credential_key_id,e.config_version,e.state execution_state
@@ -70,7 +71,9 @@ export async function settleVerifiedPayment(database, paymentId, payment) {
       const date = visit.local_day instanceof Date ? visit.local_day.toISOString().slice(0,10) : visit.local_day;
       const plan = planned.find(p => p.date === date);
       if (!plan) throw new CheckoutError('ALLOCATION_PLAN_MISMATCH');
-      for (const [component, amount] of [['rent',plan.rentMinor],['fee',plan.feeMinor]]) {
+      // Hotel stays (Phase 7) also carry the room tax as its own component.
+      const components = plan.taxMinor != null ? [['rent',plan.rentMinor],['tax',plan.taxMinor]] : [['rent',plan.rentMinor],['fee',plan.feeMinor]];
+      for (const [component, amount] of components) {
         if (!Number.isSafeInteger(amount) || amount < 0) throw new CheckoutError('ALLOCATION_PLAN_MISMATCH');
         const [allocation] = await tx`INSERT INTO payment_allocation(transaction_id,booking_id,component,actual_minor)
           VALUES(${transactionId},${visit.id},${component},${amount}) RETURNING *`;
@@ -84,7 +87,11 @@ export async function settleVerifiedPayment(database, paymentId, payment) {
     const [order] = await tx`SELECT * FROM booking_order WHERE id=${po.booking_order_id}`;
     const [active] = await tx`SELECT id FROM "user" WHERE id=${order.customer_id} AND role='customer' AND account_status='active' FOR SHARE`;
     const [owner] = await tx`SELECT id FROM "user" WHERE id=${listing.client_id} AND role='client' AND account_status='active' FOR SHARE`;
-    const [{ n }] = await tx`SELECT count(*)::int n FROM inventory_reservation WHERE booking_id IN ${tx(visits.map(v=>v.id))} AND state='held'`;
+    // A visit is held by its inventory reservation, or (hotel stay) by its held rooms.
+    const [{ n }] = await tx`SELECT count(*)::int n FROM booking b WHERE b.id IN ${tx(visits.map(v=>v.id))} AND (
+      EXISTS(SELECT 1 FROM inventory_reservation r WHERE r.booking_id=b.id AND r.state='held')
+      OR (b.slot='stay' AND EXISTS(SELECT 1 FROM booking_room br WHERE br.booking_id=b.id AND br.state='held')
+        AND NOT EXISTS(SELECT 1 FROM booking_room br WHERE br.booking_id=b.id AND br.state<>'held')))`;
     const [{ now }] = await tx`SELECT clock_timestamp() now`;
     const canConfirm = order.state === 'held' && new Date(order.hold_expires_at) > new Date(now) && listing.status === 'live'
       && active && owner && n === visits.length && visits.every(v=>v.state==='requested');
@@ -93,6 +100,8 @@ export async function settleVerifiedPayment(database, paymentId, payment) {
       await tx`UPDATE booking SET state='confirmed',confirmed_at=${now},lifecycle_version=lifecycle_version+1,updated_at=${now} WHERE order_id=${order.id}`;
       await tx`UPDATE booking_order SET state='confirmed',confirmed_at=${now},updated_at=${now} WHERE id=${order.id}`;
       await lifecycle(tx, order.id, 'confirmed', { environment: 'test', testCapturedMinor: Number(po.expected_minor), actualCollectedMinor: 0 });
+      // Phase 10: a changed hotel stay cancels and refunds the stay it replaces.
+      await completeStayChange(tx, order);
     } else {
       // Conservative late-capture policy: never reacquire expired inventory.
       await tx`UPDATE inventory_reservation SET state='released',released_at=${now} WHERE booking_id IN ${tx(visits.map(v=>v.id))} AND state='held'`;

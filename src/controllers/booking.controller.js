@@ -9,7 +9,7 @@ import {
 } from '../services/booking/owner-experience.js';
 import { changeCalendarCells, undoCalendarCells } from '../services/booking/calendar-bulk.js';
 import { sql } from '@/config/database.js';
-import { requestBookingQuote } from '@/services/booking/actions.js';
+import { requestBookingQuote, requestStayQuote } from '@/services/booking/actions.js';
 import {
   saveSchedule,
   saveOverride,
@@ -34,6 +34,7 @@ import { notFound, badRequest } from '@/utils/apiError.js';
  * controller.
  */
 export const quote = runAction(requestBookingQuote, { style: 'input' });
+export const stayQuote = runAction(requestStayQuote, { style: 'input' });
 
 /** Owner booking calendar. All behind requireActiveClient. */
 function calendarAction(action) {

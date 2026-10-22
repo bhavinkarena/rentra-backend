@@ -69,6 +69,10 @@ export function uncancellableReason(visit, now) {
  * Both are later capped by what was actually captured and not yet refunded.
  */
 export function caseEntitlement(visit, basis, now) {
+  if (basis === 'full' && visit.slot === 'stay') {
+    // Hotel stay: the room and its tax were captured as separate components.
+    return { rent: Number(visit.slot_snapshot.roomMinor), tax: Number(visit.slot_snapshot.taxMinor), fee: 0, deposit: 0, rate: 1, tier: null };
+  }
   if (basis === 'full') {
     return {
       rent: Number(visit.amount_rent_minor),

@@ -1113,6 +1113,8 @@ export const bookingOrder = pgTable('booking_order', {
   policyVersion: varchar('policy_version', { length: 32 }).notNull(),
   policySnapshot: jsonb('policy_snapshot').notNull(),
   listingSnapshot: jsonb('listing_snapshot').notNull(),
+  /** Hotel stays (0067): room guest names, arrival time, requests, GST invoice details. */
+  guestDetails: jsonb('guest_details'),
   amountRentMinor: minor('amount_rent_minor').notNull(),
   amountFeeMinor: minor('amount_fee_minor').notNull(),
   amountDepositMinor: minor('amount_deposit_minor').notNull(),
@@ -1358,10 +1360,41 @@ export const payoutDestination = pgTable('payout_destination', {
     AND ((${t.requestKey} IS NULL) = (${t.requestHash} IS NULL))
     AND (${t.requestHash} IS NULL OR ${t.requestHash} ~ '^[a-f0-9]{64}$')`)]);
 
+export const payoutRun = pgTable(
+  'payout_run',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    runNumber: varchar('run_number', { length: 16 }).notNull().unique(),
+    periodStart: date('period_start').notNull(),
+    periodEnd: date('period_end').notNull(),
+    payoutDate: date('payout_date').notNull(),
+    totalBookings: integer('total_bookings').notNull().default(0),
+    roomRevenueMinor: minor('room_revenue_minor').notNull().default(0),
+    gstCollectedMinor: minor('gst_collected_minor').notNull().default(0),
+    commissionMinor: minor('commission_minor').notNull().default(0),
+    commissionGstMinor: minor('commission_gst_minor').notNull().default(0),
+    tcsMinor: minor('tcs_minor').notNull().default(0),
+    tdsMinor: minor('tds_minor').notNull().default(0),
+    netMinor: minor('net_minor').notNull().default(0),
+    status: varchar('status', { length: 16 }).notNull().default('scheduled'),
+    environment: varchar('environment', { length: 8 }).notNull().default('live'),
+    /** The statement as executed: one line per stay (hotel plan, Phase 8). */
+    snapshot: jsonb('snapshot').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    executedAt: timestamp('executed_at', { withTimezone: true }),
+    executedBy: uuid('executed_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
+  },
+  (t) => [
+    check('payout_run_status_chk', sql`${t.status} IN ('scheduled','processing','completed','failed')`),
+    index('payout_run_date_idx').on(t.payoutDate),
+  ],
+);
+
 export const payout = pgTable(
   'payout',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    payoutRunId: uuid('payout_run_id').references(() => payoutRun.id, { onDelete: 'restrict' }),
     bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'restrict' }),
     clientId: uuid('client_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
     fundingAllocationId: uuid('funding_allocation_id').references(() => paymentAllocation.id, { onDelete: 'restrict' }),
@@ -1387,6 +1420,7 @@ export const payout = pgTable(
     index('payout_client_status_idx').on(t.clientId, t.status),
     index('payout_booking_idx').on(t.bookingId),
     index('payout_destination_fk_idx').on(t.destinationId).where(sql`${t.destinationId} IS NOT NULL`),
+    index('payout_run_idx').on(t.payoutRunId).where(sql`${t.payoutRunId} IS NOT NULL`),
     uniqueIndex('payout_funding_allocation_idx').on(t.fundingAllocationId),
     check('payout_actual_funding_chk', sql`${t.actualNetMinor} BETWEEN 0 AND 9007199254740991 AND (${t.actualNetMinor} = 0 OR ${t.fundingAllocationId} IS NOT NULL)`),
   ],
@@ -1406,6 +1440,11 @@ export const review = pgTable(
     accuracy: integer('accuracy'),
     valueForMoney: integer('value_for_money'),
     behaviour: integer('behaviour'),
+    staff: integer('staff'),
+    location: integer('location'),
+    comfort: integer('comfort'),
+    facilities: integer('facilities'),
+    travellerType: text('traveller_type'),
     moderationState: varchar('moderation_state', { length: 16 }).notNull().default('pending'),
     moderationReason: text('moderation_reason'),
     moderatedBy: uuid('moderated_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
@@ -1424,7 +1463,8 @@ export const review = pgTable(
     index('review_author_idx').on(t.authorId),
     foreignKey({ name: 'review_author_user_role_fk', columns: [t.authorId, t.authorRole], foreignColumns: [users.id, users.role] }).onDelete('restrict'),
     foreignKey({ name: 'review_booking_rentable_fk', columns: [t.bookingId, t.rentableId], foreignColumns: [booking.id, booking.rentableId] }).onDelete('restrict'),
-    check('review_scores_chk', sql`${t.rating} BETWEEN 1 AND 5 AND (${t.cleanliness} IS NULL OR ${t.cleanliness} BETWEEN 1 AND 5) AND (${t.accuracy} IS NULL OR ${t.accuracy} BETWEEN 1 AND 5) AND (${t.valueForMoney} IS NULL OR ${t.valueForMoney} BETWEEN 1 AND 5)`),
+    check('review_scores_chk', sql`${t.rating} BETWEEN 1 AND 5 AND (${t.cleanliness} IS NULL OR ${t.cleanliness} BETWEEN 1 AND 5) AND (${t.accuracy} IS NULL OR ${t.accuracy} BETWEEN 1 AND 5) AND (${t.valueForMoney} IS NULL OR ${t.valueForMoney} BETWEEN 1 AND 5) AND (${t.staff} IS NULL OR ${t.staff} BETWEEN 1 AND 5) AND (${t.location} IS NULL OR ${t.location} BETWEEN 1 AND 5) AND (${t.comfort} IS NULL OR ${t.comfort} BETWEEN 1 AND 5) AND (${t.facilities} IS NULL OR ${t.facilities} BETWEEN 1 AND 5)`),
+    check('review_traveller_type_chk', sql`${t.travellerType} IS NULL OR ${t.travellerType} IN ('business','couple','family','friends','solo')`),
     check('review_moderation_chk', sql`${t.moderationState} IN ('pending','published','rejected','hidden') AND (${t.moderationState}='published') = (${t.publishedAt} IS NOT NULL) AND ${t.version}>=0`),
   ],
 );

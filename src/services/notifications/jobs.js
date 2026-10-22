@@ -37,7 +37,7 @@ export async function processNotification(database, id, options = {}) {
   const [scope] = await database`SELECT o.rentable_id FROM notification_outbox n JOIN booking_order o ON o.id=n.order_id WHERE n.id=${id}`;
   if (!scope) return false;
   const prepared = await withListingInventory(database, scope.rentable_id, async tx => {
-    const [row] = await tx`SELECT n.*,o.reference,o.visit_provenance,
+    const [row] = await tx`SELECT n.*,o.reference,o.visit_provenance,o.policy_snapshot->>'kind'='stay' AS is_stay,
       EXISTS(SELECT 1 FROM payment_order p WHERE p.booking_order_id=o.id AND p.environment='test') is_test_payment
       FROM notification_outbox n JOIN booking_order o ON o.id=n.order_id WHERE n.id=${id} FOR UPDATE OF n`;
     if (!row || !['pending','retry','blocked','accepted','sending'].includes(row.state)) return null;

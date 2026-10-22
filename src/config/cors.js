@@ -22,7 +22,7 @@ export function corsOptions(env = process.env) {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Razorpay-Signature'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Razorpay-Signature', 'X-Rentra-Beta'],
     exposedHeaders: ['X-Request-Id'],
     maxAge: 600,
   };

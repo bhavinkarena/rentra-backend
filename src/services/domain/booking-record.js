@@ -23,6 +23,16 @@ const localDay = (date) => { const [y, m, d] = String(date).slice(0, 10).split('
 export function describeVisit(visit, { timeZone = 'Asia/Kolkata' } = {}) {
   const date = visit.date ?? visit.local_day ?? visit.day;
   const day = date ? localDay(date instanceof Date ? date.toISOString() : date) : 'Date not recorded';
+  // Hotel stays (hotel plan, Phase 5): "Wed 18 Nov – Fri 20 Nov · 2 nights".
+  if (visit.slot === 'stay') {
+    const stayEnd = visit.endsAt ?? visit.ends_at;
+    if (!stayEnd || !date) return `${day} · Stay`;
+    const { ymd } = zoned(stayEnd, timeZone);
+    const out = `${Math.floor(ymd / 10000)}-${String(Math.floor(ymd / 100) % 100).padStart(2, '0')}-${String(ymd % 100).padStart(2, '0')}`;
+    const start = String(date instanceof Date ? date.toISOString() : date).slice(0, 10);
+    const nights = Math.round((Date.parse(`${out}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000);
+    return `${day} – ${localDay(out)} · ${nights} night${nights === 1 ? '' : 's'}`;
+  }
   if (visit.slot !== 'hourly') return `${day} · ${SLOT_LABELS[visit.slot] ?? String(visit.slot ?? 'Visit').replaceAll('_', ' ')}`;
   const startsAt = visit.startsAt ?? visit.starts_at;
   const endsAt = visit.endsAt ?? visit.ends_at;
@@ -49,6 +59,14 @@ export function bookingSummary(record) {
   for (const v of record.visits) lines.push(`${v.reference} | ${describeVisit(v, { timeZone: record.timeZone })} | ${v.state} | ${v.guests} ${v.slot === 'hourly' ? 'players' : 'guests'}`,
     `${bookingTime(v.startsAt, record.timeZone)} to ${bookingTime(v.endsAt, record.timeZone)}`,
     `Rent ${bookingMoney(v.rentMinor)}; fee ${bookingMoney(v.feeMinor)}; separate deposit ${bookingMoney(v.depositMinor)}`);
+  if (record.stay) {
+    // Hotel stay: rooms, plans and the GST invoice details (the hotel issues the tax invoice).
+    lines.push('', 'ROOMS', ...record.stay.rooms.map(room => `${room.name} · ${room.plan?.name ?? ''} | ${room.guestName || 'Guest'} | ${room.adults} adult(s)${room.childAges?.length ? `, ${room.childAges.length} child(ren)` : ''} | room ${bookingMoney(room.roomMinor)} + tax ${bookingMoney(room.taxMinor)} | ${room.state}`));
+    const d = record.stay.details;
+    if (d?.arrivalTime) lines.push(`Expected arrival: ${d.arrivalTime}`);
+    if (d?.requests) lines.push(`Requests: ${d.requests}`);
+    if (d?.gstin) lines.push(`GST invoice to: ${d.businessName} (GSTIN ${d.gstin})`);
+  }
   lines.push('', `Accepted rent: ${bookingMoney(record.rentMinor)}; fee: ${bookingMoney(record.feeMinor)}; separate deposit: ${bookingMoney(record.depositMinor)}`, '', 'PAYMENT RECORDS');
   for (const p of record.payments) lines.push(`${p.provider} ${p.environment} | ${p.state} | ${p.providerOrderId || 'Provider reference pending'}`,
     `Verified ${p.environment} capture: ${bookingMoney(p.capturedMinor)}; ${p.environment} refunded: ${bookingMoney(p.refundedMinor)}; actual bank collection: ${bookingMoney(p.actualBankMinor)}`);

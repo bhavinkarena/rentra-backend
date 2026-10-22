@@ -69,7 +69,7 @@ export const basicsSchema = z.object({
  * both foreign keys are required by the database. Asking for them is honest;
  * silently borrowing seeded values would store a place the owner never chose.
  */
-export const listingStartSchema = z.object({vertical:z.enum(['farmhouse','entertainment']), categoryId:z.string().uuid('Choose a category')});
+export const listingStartSchema = z.object({vertical:z.enum(['farmhouse','entertainment','hotel']), categoryId:z.string().uuid('Choose a category')});
 
 export const locationSchema = z.object({
   cityId: z.string().uuid('Choose a city'),
@@ -198,3 +198,110 @@ export const hourlyRateSchema = z.object({
 export const hourlyRatesSchema = z.object({
   rates: z.array(hourlyRateSchema).min(1, 'Add at least one price').max(100),
 }).strict();
+
+/* --------------------------- hotels (hotel plan, Phase 3) --------------------------- */
+const roomName = z.string().trim().min(1, 'Name each room type').max(60);
+const wholeRupees = (min, max, label) => z.number({ error: `Enter ${label} in rupees` }).int(`Enter ${label} in whole rupees`).min(min, `${label} must be at least ₹${min}`).max(max, `${label} must be at most ₹${max.toLocaleString('en-IN')}`);
+export const BED_TYPES = ['king', 'queen', 'double', 'single', 'sofa_bed', 'bunk'];
+export const ROOM_VIEWS = ['city', 'garden', 'river', 'sea', 'pool', 'hill', 'courtyard'];
+
+/** One room type. `id` present = an existing room type. Charges are whole rupees. */
+export const hotelRoomSchema = z.object({
+  id: z.string().uuid().optional(),
+  name: roomName,
+  beds: z.array(z.object({ type: z.enum(BED_TYPES), count: z.number().int().min(1).max(6) }).strict()).min(1, 'Add the beds').max(4),
+  sizeSqm: z.number().int().min(4).max(2000).nullable().default(null),
+  view: z.enum(ROOM_VIEWS).nullable().default(null),
+  maxAdults: z.number().int().min(1).max(12),
+  maxChildren: z.number().int().min(0).max(12),
+  maxOccupancy: z.number().int().min(1).max(16),
+  baseOccupancy: z.number().int().min(1).max(16),
+  roomCount: z.number().int().min(1, 'At least 1 room').max(500),
+  extraAdult: wholeRupees(0, 50000, 'Extra adult charge'),
+  extraChild: wholeRupees(0, 50000, 'Extra child charge'),
+  amenities: z.array(z.string().max(60).regex(/^[a-z0-9_]+$/)).max(40).default([]),
+  sortOrder: z.number().int().min(0).max(1000),
+  isActive: z.boolean().default(true),
+}).strict().superRefine((row, ctx) => {
+  if (row.maxAdults > row.maxOccupancy) ctx.addIssue({ code: 'custom', path: ['maxAdults'], message: 'More adults than the room takes in total' });
+  if (row.baseOccupancy > row.maxOccupancy) ctx.addIssue({ code: 'custom', path: ['baseOccupancy'], message: 'The price cannot include more guests than the room takes' });
+});
+
+export const hotelRoomsSchema = z.object({
+  rooms: z.array(hotelRoomSchema).min(1, 'Add at least one room type').max(30),
+}).strict().superRefine((value, ctx) => {
+  const names = value.rooms.map((row) => row.name.toLowerCase());
+  names.forEach((name, index) => {
+    if (names.indexOf(name) !== index) ctx.addIssue({ code: 'custom', path: ['rooms', index, 'name'], message: 'Each room type needs a different name' });
+  });
+});
+
+/** Guest-facing cancellation templates; the plan columns are derived from these. */
+export const HOTEL_CANCELLATION = {
+  flexible: { freeCancelHours: 24, lateCharge: 'first_night', noShow: 'first_night' },
+  moderate: { freeCancelHours: 72, lateCharge: 'first_night', noShow: 'first_night' },
+  strict: { freeCancelHours: 168, lateCharge: 'full_stay', noShow: 'full_stay' },
+  non_refundable: { freeCancelHours: null, lateCharge: 'full_stay', noShow: 'full_stay' },
+};
+
+/**
+ * One rate plan. A base plan has weekday/weekend prices; a derived plan follows
+ * a base plan of the same room (± %, + ₹ per guest). `key` names a new plan so a
+ * derived plan in the same save can point at it before it has an id.
+ */
+export const hotelPlanSchema = z.object({
+  id: z.string().uuid().optional(),
+  key: z.string().max(60).optional(),
+  roomTypeId: z.string().uuid(),
+  name: z.string().trim().min(1, 'Name the plan').max(60),
+  mealPlan: z.enum(['EP', 'CP', 'MP', 'AP']).default('EP'),
+  derivedFrom: z.string().max(60).nullable().default(null),
+  weekday: wholeRupees(300, 200000, 'Weekday price').nullable().default(null),
+  weekend: wholeRupees(300, 200000, 'Weekend price').nullable().default(null),
+  adjustPct: z.number().int().min(-50).max(50).default(0),
+  perGuest: wholeRupees(0, 10000, 'Per-guest charge').default(0),
+  cancellation: z.enum(Object.keys(HOTEL_CANCELLATION)),
+  minNights: z.number().int().min(1).max(30).default(1),
+  sortOrder: z.number().int().min(0).max(1000),
+  isActive: z.boolean().default(true),
+}).strict().superRefine((row, ctx) => {
+  if (row.derivedFrom == null) {
+    if (row.weekday == null) ctx.addIssue({ code: 'custom', path: ['weekday'], message: 'Enter the weekday price' });
+    if (row.weekend == null) ctx.addIssue({ code: 'custom', path: ['weekend'], message: 'Enter the weekend price' });
+  } else if (row.adjustPct === 0 && row.perGuest === 0 && row.cancellation !== 'non_refundable') {
+    ctx.addIssue({ code: 'custom', path: ['adjustPct'], message: 'A plan that follows another needs a different price or terms' });
+  }
+});
+
+export const hotelPlansSchema = z.object({
+  plans: z.array(hotelPlanSchema).min(1, 'Add at least one rate').max(120),
+}).strict();
+
+const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
+export const hotelStaySchema = z.object({
+  checkInTime: clockTime,
+  checkOutTime: clockTime,
+  childFreeAge: z.coerce.number().int().min(0).max(17),
+  weekendNights: z.array(z.coerce.number().int().min(0).max(6)).max(7),
+  starRating: z.union([z.literal(''), z.coerce.number().int().min(1).max(5)]).default(''),
+});
+
+export const ID_TYPES = ['aadhaar', 'passport', 'driving_licence', 'voter_id'];
+export const hotelRulesSchema = z.object({
+  couples: z.enum(['yes', 'no'], { error: 'Say whether couples can stay' }),
+  localId: z.enum(['yes', 'no'], { error: 'Say whether local ID is accepted' }),
+  idTypes: z.array(z.enum(ID_TYPES)).min(1, 'Choose at least one ID you accept'),
+  pets: z.enum(['yes', 'no']).default('no'),
+  smoking: z.enum(['yes', 'no']).default('no'),
+  parties: z.enum(['yes', 'no']).default('no'),
+  extraRules: z.string().trim().max(500).default(''),
+});
+
+export const hotelGstSchema = z.object({
+  gstRegistered: z.enum(['yes', 'no'], { error: 'Say whether the hotel is GST registered' }),
+  gstin: z.string().trim().toUpperCase().default(''),
+}).superRefine((value, ctx) => {
+  if (value.gstRegistered === 'yes' && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(value.gstin)) {
+    ctx.addIssue({ code: 'custom', path: ['gstin'], message: 'Enter the 15-character GSTIN, like 24ABCDE1234F1Z5' });
+  }
+});

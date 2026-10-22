@@ -26,55 +26,77 @@
  *                is pure navigation. Forcing a redundant submit on the photo
  *                step would be a lie about what is happening.
  */
-const chapters = (venue = false) => [
-  {
-    id: 'place',
-    label: 'Your place',
-    steps: [
-      { id: 'type', label: 'Type', advance: 'submit' },
-      { id: 'location', label: 'Location', advance: 'submit' },
-      { id: 'space', label: venue ? 'Courts' : 'Space', advance: 'submit' },
-      { id: 'amenities', label: 'Amenities', advance: 'submit' },
-    ],
-  },
-  {
-    id: 'shine',
-    label: 'Make it shine',
-    steps: [
-      { id: 'photos', label: 'Photos', advance: 'navigate' },
-      { id: 'story', label: 'Title and description', advance: 'submit' },
-    ],
-  },
-  {
-    id: 'publish',
-    label: 'Price, rules and submit',
-    steps: [
-      { id: 'pricing', label: venue ? 'Hourly prices' : 'Pricing', advance: 'submit' },
-      { id: 'availability', label: 'Availability', advance: 'submit' },
-      { id: 'rules', label: 'Rules and cancellation', advance: 'submit' },
-      { id: 'ownership', label: 'Ownership proof', advance: 'navigate' },
-      { id: 'preview', label: 'Preview and submit', advance: 'none' },
-    ],
-  },
-];
+const chapters = (model = 'slot') => {
+  const venue = model === 'hour';
+  const hotel = model === 'night';
+  return [
+    {
+      id: 'place',
+      label: hotel ? 'Your hotel' : 'Your place',
+      steps: [
+        { id: 'type', label: 'Type', advance: 'submit' },
+        { id: 'location', label: 'Location', advance: 'submit' },
+        { id: 'space', label: hotel ? 'Rooms' : venue ? 'Courts' : 'Space', advance: 'submit' },
+        { id: 'amenities', label: 'Amenities', advance: 'submit' },
+      ],
+    },
+    {
+      id: 'shine',
+      label: 'Make it shine',
+      steps: [
+        { id: 'photos', label: 'Photos', advance: 'navigate' },
+        { id: 'story', label: 'Title and description', advance: 'submit' },
+      ],
+    },
+    {
+      id: 'publish',
+      label: hotel ? 'Rates, rules and submit' : 'Price, rules and submit',
+      steps: [
+        {
+          id: 'pricing',
+          label: hotel ? 'Rates' : venue ? 'Hourly prices' : 'Pricing',
+          advance: 'submit',
+        },
+        {
+          id: 'availability',
+          label: hotel ? 'Check-in and check-out' : 'Availability',
+          advance: 'submit',
+        },
+        { id: 'rules', label: hotel ? 'House rules' : 'Rules and cancellation', advance: 'submit' },
+        {
+          id: 'ownership',
+          label: hotel ? 'Proof and GST' : 'Ownership proof',
+          advance: 'navigate',
+        },
+        { id: 'preview', label: 'Preview and submit', advance: 'none' },
+      ],
+    },
+  ];
+};
 export const LISTING_CHAPTERS = chapters();
-export const VENUE_CHAPTERS = chapters(true);
+export const VENUE_CHAPTERS = chapters('hour');
+export const HOTEL_CHAPTERS = chapters('night');
 export const legacyStep = (id) =>
   ({
     basics: 'story',
     capacity: 'space',
     venue: 'space',
     hours: 'availability',
+    rooms: 'space',
+    rates: 'pricing',
+    stay: 'availability',
+    gst: 'ownership',
     terms: 'rules',
     review: 'preview',
   })[id] || id;
 
-/** The booking model of a listing: 'hour' (venue) or 'slot' (farmhouse, the default). */
-export const listingModel = (listing) => (listing?.rentalUnit === 'hour' ? 'hour' : 'slot');
+/** The booking model of a listing: 'hour' (venue), 'night' (hotel) or 'slot' (farmhouse, the default). */
+export const listingModel = (listing) =>
+  listing?.rentalUnit === 'hour' ? 'hour' : listing?.rentalUnit === 'night' ? 'night' : 'slot';
 
 /** Chapters for a booking model. Every helper below takes the same optional `model`. */
 export const chaptersFor = (model = 'slot') =>
-  model === 'hour' ? VENUE_CHAPTERS : LISTING_CHAPTERS;
+  model === 'hour' ? VENUE_CHAPTERS : model === 'night' ? HOTEL_CHAPTERS : LISTING_CHAPTERS;
 
 const stepsOf = (model) =>
   chaptersFor(model).flatMap((c) =>

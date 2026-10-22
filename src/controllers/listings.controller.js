@@ -16,6 +16,10 @@ import {
   saveRules,
   savePricing,
   saveVenue,
+  saveHotelRoomsStep,
+  saveHotelRatesStep,
+  saveHotelStayStep,
+  saveHotelGstStep,
   saveTerms,
   uploadListingPhotos,
   removeListingPhoto,
@@ -111,6 +115,10 @@ export const capacity = runAction(saveCapacity);
 export const amenitiesStep = runAction(saveAmenities);
 export const rules = runAction(saveRules);
 export const venue = policyAction(saveVenue);
+export const hotelRooms = policyAction(saveHotelRoomsStep);
+export const hotelRates = policyAction(saveHotelRatesStep);
+export const hotelStay = policyAction(saveHotelStayStep);
+export const hotelGst = policyAction(saveHotelGstStep);
 function policyAction(action) {
   const handler = runAction(action);
   return (req, res, next) => {

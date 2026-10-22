@@ -23,7 +23,8 @@ async function failure(error) {
 }
 export async function holdCustomerCheckout(input) {
   const session=await actor();
-  if (!z.string().trim().min(3).max(160).safeParse(input?.purpose).success) return { error:'Enter a visit purpose between 3 and 160 characters.', code:'INVALID_PURPOSE' };
+  // Hotel stays send guest details instead of a visit purpose.
+  if (!input?.stay && !z.string().trim().min(3).max(160).safeParse(input?.purpose).success) return { error:'Enter a visit purpose between 3 and 160 characters.', code:'INVALID_PURPOSE' };
   try {
     const checkout = await createCheckoutHold(sql,session,input);
     await measure(sql, 'checkout_started');

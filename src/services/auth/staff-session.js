@@ -77,7 +77,7 @@ export const getCurrentStaff = cache(async () => {
   const [row] = await sql`SELECT s.id, s.name, s.phone, s.client_id, s.permissions, o.name AS owner_name, o.phone AS owner_phone
     FROM client_staff s JOIN "user" o ON o.id=s.client_id WHERE s.id=${payload.staffId}`;
   if (!row) return null;
-  const properties = await sql`SELECT r.id, r.title FROM staff_property sp JOIN rentable r ON r.id=sp.rentable_id
+  const properties = await sql`SELECT r.id, r.title, r.rental_unit::text AS rental_unit FROM staff_property sp JOIN rentable r ON r.id=sp.rentable_id
     WHERE sp.staff_id=${row.id} AND r.client_id=${row.client_id} ORDER BY r.title`;
   const actor = { active: true, permissions: row.permissions };
   return {
@@ -86,8 +86,8 @@ export const getCurrentStaff = cache(async () => {
     ownerId: row.client_id,
     ownerName: row.owner_name,
     ownerPhone: row.owner_phone,
-    permissions: { evidence: row.permissions?.evidence === true,guestContact:row.permissions?.guestContact!==false },
-    properties: properties.map((p) => ({ id: p.id, title: p.title })),
+    permissions: { evidence: row.permissions?.evidence === true,guestContact:row.permissions?.guestContact!==false, hotelRole: row.permissions?.hotelRole ?? null },
+    properties: properties.map((p) => ({ id: p.id, title: p.title, hotel: p.rental_unit === 'night' })),
     capabilities: capabilitiesFor(actor, 'staff'),
   };
 });

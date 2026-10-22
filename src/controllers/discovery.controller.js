@@ -17,7 +17,10 @@ import {
   countDiscoveryRoute,
   getDiscoveryRegistry,
   getLandingRoutes,
+  suggestDestinations,
 } from '@/services/db/discovery.js';
+import { getHotelAvailability, quoteHotelStay } from '@/services/booking/hotel-stays.js';
+import { HotelError } from '@/services/domain/hotel.js';
 import { parseDiscoveryQuery, resolveDiscoveryRoute } from '@/services/domain/discovery.js';
 import { getBookingAvailability } from '@/services/booking/quotes.js';
 import { getHourlyAvailability, getTimeSlots } from '@/services/booking/time-slots.js';
@@ -281,5 +284,56 @@ export const availability = asyncHandler(async (req, res) => {
       days: {},
       message: 'The owner needs to confirm the booking calendar.',
     });
+  }
+});
+
+/** GET /discovery/suggest?q=&vertical= — "Where" autocomplete groups. */
+export const suggest = asyncHandler(async (req, res) =>
+  ok(res, await suggestDestinations(req.query.q, req.query.vertical, sql)),
+);
+
+/** Inventory and party problems a guest can fix by changing dates, rooms or guests. */
+const STAY_CHOICE_CODES = ['ROOMS_INVALID', 'SOLD_OUT', 'ROOM_UNAVAILABLE', 'MIN_NIGHTS', 'CLOSED', 'OCCUPANCY', 'DATES_INVALID', 'OUTSIDE_BOOKING_WINDOW', 'NOT_BOOKABLE'];
+
+async function hotelRef(code) {
+  const ref = await getListingRefByCode(code);
+  if (!ref) throw notFound('LISTING_NOT_FOUND', 'Not found.');
+  if (ref.rentalUnit !== 'night') throw badRequest('UNSUPPORTED_INVENTORY', 'This listing is not a hotel.');
+  return ref;
+}
+
+function stayError(error) {
+  if (error instanceof HotelError && error.code === 'NOT_FOUND') return notFound('LISTING_NOT_FOUND', 'Not found.');
+  if (error instanceof HotelError) return conflict(STAY_CHOICE_CODES.includes(error.code) ? error.code : 'STAY_UNAVAILABLE', error.message);
+  return unavailable('AVAILABILITY_UNAVAILABLE', 'Rooms are temporarily unavailable.');
+}
+
+/**
+ * GET /discovery/listings/:code/rooms?checkin=&checkout=&rooms=&adults=&children=
+ * Room types with rooms left and every plan priced for the party (no-store).
+ */
+export const rooms = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const { filters, errors } = parseDiscoveryQuery({ ...req.query, vertical: 'hotel' });
+  if (errors.length || !filters.checkin) throw badRequest('BAD_STAY', errors[0] ?? 'Choose check-in and check-out dates.');
+  const ref = await hotelRef(req.params.code);
+  try {
+    return ok(res, await getHotelAvailability(sql, {
+      rentableId: ref.id, checkIn: filters.checkin, checkOut: filters.checkout,
+      rooms: filters.rooms, adults: filters.adults, childAges: filters.children,
+    }));
+  } catch (error) {
+    throw stayError(error);
+  }
+});
+
+/** POST /discovery/listings/:code/stay-quote { checkIn, checkOut, rooms: [{ roomTypeId, ratePlanId, adults, childAges }] } */
+export const stayQuote = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const ref = await hotelRef(req.params.code);
+  try {
+    return ok(res, await quoteHotelStay(sql, { rentableId: ref.id, ...req.body }));
+  } catch (error) {
+    throw stayError(error);
   }
 });
