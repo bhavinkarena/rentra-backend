@@ -2,7 +2,7 @@
  * Hotels vertical catalogue and demo hotels (hotel plan, Phase 2).
  *
  *   npm run seed:hotels            # hotel categories and amenities
- *   npm run seed:hotels -- --demo  # plus 10 live demo hotels in Surat (local/dev data)
+ *   npm run seed:hotels -- --demo  # plus 25 live demo hotels in Surat (local/dev data)
  *
  * Run after `npm run db:migrate` has committed 0064. Categories use rental_unit
  * 'night'. Idempotent: categories and amenities are upserted, demo hotels are
@@ -140,6 +140,126 @@ const DEMO = [
     ],
   ],
   ['Dumas Beach Retreat', 'dumas', 'resort', 3, [['Sea Breeze Room', 12, 3, 3900, 4900]]],
+  [
+    'Hotel Royal Orchid',
+    'adajan',
+    'hotel',
+    3,
+    [
+      ['Deluxe Room', 14, 2, 2300, 2600],
+      ['Premium Room', 6, 3, 3100, 3500],
+    ],
+  ],
+  [
+    'Vesu Grand Suites',
+    'vesu',
+    'business-hotel',
+    4,
+    [
+      ['Executive Suite', 10, 2, 4500, 4500],
+      ['Club Room', 12, 2, 3600, 3600],
+    ],
+  ],
+  ['Hazira Seaside Inn', 'hazira', 'hotel', 2, [['Standard Room', 16, 2, 1500, 1700]]],
+  [
+    'Kamrej Highway Hotel',
+    'kamrej',
+    'hotel',
+    2,
+    [
+      ['Standard Double', 18, 2, 1400, 1500],
+      ['Family Room', 6, 4, 2400, 2700],
+    ],
+  ],
+  [
+    'Olpad Lake Resort',
+    'olpad',
+    'resort',
+    4,
+    [
+      ['Lake Cottage', 8, 3, 5600, 6900],
+      ['Lake Villa', 3, 5, 9200, 11200],
+    ],
+  ],
+  [
+    'The Silk Route Hotel',
+    'ring-road',
+    'business-hotel',
+    3,
+    [['Superior Room', 20, 2, 2500, 2400]],
+  ],
+  [
+    'Hotel Mangalam',
+    'varachha',
+    'hotel',
+    2,
+    [
+      ['Standard Room', 14, 2, 1350, 1500],
+      ['Deluxe Room', 8, 3, 1800, 2000],
+    ],
+  ],
+  [
+    'Athwa Heritage House',
+    'athwa',
+    'boutique-hotel',
+    4,
+    [
+      ['Courtyard Room', 6, 2, 4900, 5600],
+      ['Haveli Suite', 2, 4, 8800, 9900],
+    ],
+  ],
+  ['Piplod Park Inn', 'piplod', 'hotel', 3, [['Deluxe Double', 12, 2, 2200, 2500]]],
+  [
+    'Udhna Business Lodge',
+    'udhna',
+    'business-hotel',
+    2,
+    [
+      ['Single Room', 10, 1, 1100, 1100],
+      ['Twin Room', 12, 2, 1500, 1500],
+    ],
+  ],
+  [
+    'Dumas Palm Resort',
+    'dumas',
+    'resort',
+    4,
+    [
+      ['Palm Cottage', 12, 3, 5800, 7200],
+      ['Beach Suite', 4, 4, 8600, 10400],
+    ],
+  ],
+  [
+    'Pal Lakeview Hotel',
+    'pal',
+    'hotel',
+    3,
+    [
+      ['Lake View Room', 10, 2, 2700, 3100],
+      ['Family Suite', 4, 4, 4300, 4900],
+    ],
+  ],
+  ['Sayan Countryside Retreat', 'sayan', 'resort', 3, [['Garden Room', 10, 3, 3200, 3900]]],
+  [
+    'Bardoli Comfort Stay',
+    'bardoli',
+    'hotel',
+    2,
+    [
+      ['Standard Room', 12, 2, 1200, 1400],
+      ['Deluxe Room', 6, 3, 1700, 1900],
+    ],
+  ],
+  [
+    'The Diamond Boutique',
+    'vesu',
+    'boutique-hotel',
+    5,
+    [
+      ['Signature Room', 8, 2, 7400, 8400],
+      ['Penthouse Suite', 2, 4, 14800, 16800],
+    ],
+  ],
 ];
 
 /** Demo map pins [latitude, longitude] by hotel name (approximate, inside each area). */
@@ -154,6 +274,21 @@ const PINS = {
   'Citrus Business Hotel': [21.155, 72.775],
   'Sunrise Family Hotel': [21.195, 72.765],
   'Dumas Beach Retreat': [21.079, 72.716],
+  'Hotel Royal Orchid': [21.199, 72.797],
+  'Vesu Grand Suites': [21.139, 72.777],
+  'Hazira Seaside Inn': [21.109, 72.64],
+  'Kamrej Highway Hotel': [21.268, 72.958],
+  'Olpad Lake Resort': [21.336, 72.752],
+  'The Silk Route Hotel': [21.193, 72.832],
+  'Hotel Mangalam': [21.214, 72.87],
+  'Athwa Heritage House': [21.177, 72.807],
+  'Piplod Park Inn': [21.158, 72.772],
+  'Udhna Business Lodge': [21.168, 72.843],
+  'Dumas Palm Resort': [21.082, 72.719],
+  'Pal Lakeview Hotel': [21.198, 72.762],
+  'Sayan Countryside Retreat': [21.322, 72.866],
+  'Bardoli Comfort Stay': [21.123, 73.112],
+  'The Diamond Boutique': [21.136, 72.783],
 };
 
 /** Starter Surat landmarks [slug, name, kind, latitude, longitude]; admins correct and extend them in Catalogues. */
