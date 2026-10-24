@@ -4,7 +4,7 @@ export function ownerPreferences(value = {}) {
   return Object.fromEntries(OWNER_CATEGORIES.map(c => [c,{mobile:value[c]?.mobile !== false,email:value[c]?.email !== false}]));
 }
 export const ownerEventTitles = {
-  booking_confirmed:'New booking',visits_cancelled:'Booking cancelled',arrival_tomorrow:'Arrival tomorrow',arrival_today:'Arrival today',checkout_overdue:'Check-out not recorded',
+  booking_confirmed:'New booking',booking_requested:'New booking request — accept or decline',visits_cancelled:'Booking cancelled',arrival_tomorrow:'Arrival tomorrow',arrival_today:'Arrival today',checkout_overdue:'Check-out not recorded',
   application_approved:'Your verification is approved',application_more_info:'Your verification needs changes',application_rejected:'Your verification was not approved',
   listing_published:'Your property is live',listing_review_decided:'Property review updated',listing_hidden:'Your property needs attention',
   verification_scheduled:'Property verification scheduled',verification_rescheduled:'Property verification moved',verification_recorded:'Property verification updated',
@@ -19,6 +19,7 @@ export function ownerUpdateHref(update) {
   if (uuid.test(d.disputeId || '')) return `/partner/disputes/${d.disputeId}`;
   if (uuid.test(d.reviewId || '')) return '/partner/reviews';
   if (action.startsWith('application_')) return '/partner';
+  if (action==='booking_requested') return '/partner/bookings#requests';
   if (action==='payout_destination_failed') return '/partner/settings/payout';
   if (action.startsWith('caretaker_revoked')) return '/partner/team';
   const property=update.rentable_id || update.payload?.propertyId,order=update.order_id || update.payload?.orderId;

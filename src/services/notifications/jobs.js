@@ -25,6 +25,11 @@ async function obsolete(tx, row) {
       WHERE b.id=${row.booking_id} AND b.state='completed' AND b.visit_provenance='real' AND NOT EXISTS(SELECT 1 FROM review WHERE booking_id=b.id)`;
     if (!valid) return { reason: 'REVIEW_INELIGIBLE' };
   }
+  if (row.template === 'request_approved') {
+    // Paid, expired or released since: the payment prompt would mislead.
+    const [valid] = await tx`SELECT id FROM booking_order WHERE id=${row.order_id} AND state='held' AND hold_expires_at>clock_timestamp()`;
+    if (!valid) return { reason: 'REQUEST_OBSOLETE' };
+  }
   if (row.template === 'confirmation') {
     const [valid] = await tx`SELECT id FROM booking WHERE order_id=${row.order_id} AND state IN ('confirmed','handed_over','returned','completed','disputed') LIMIT 1`;
     if (!valid) return { reason: 'CONFIRMATION_OBSOLETE' };

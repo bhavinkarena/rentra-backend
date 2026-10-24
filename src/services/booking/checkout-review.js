@@ -25,11 +25,13 @@ function review(row) {
 }
 // Public listing facts only (photo, locality, rating): the same allowlist a browsing guest sees.
 async function details(tx, quote, customer, snapshot = null) {
-  const [listing] = await tx`SELECT r.title,r.slug,r.public_code,r.photos,r.rating_avg,r.review_count,a.name area,c.name city
+  const [listing] = await tx`SELECT r.title,r.slug,r.public_code,r.photos,r.rating_avg,r.review_count,r.instant_book,a.name area,c.name city
     FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id WHERE r.id=${quote.selection.rentableId}`;
   const [photo] = normalizePublicPhotos(snapshot?.photos ?? listing.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME });
   return { quote, title: snapshot?.title ?? listing.title,
     photo: photo ? { url: photo.url, alt: photo.alt } : null, area: `${listing.area}, ${listing.city}`,
+    // False: the owner confirms the request before the guest can pay.
+    instantBook: listing.instant_book !== false,
     rating: Number(listing.rating_avg) || 0, reviewCount: listing.review_count ?? 0,
     contact: { name: snapshot?.contact?.name ?? customer.name ?? '', phone: snapshot?.contact?.phone ?? customer.phone ?? '' }, purpose: snapshot?.purpose ?? '',
     listingHref: quote.selection.kind === 'stay'

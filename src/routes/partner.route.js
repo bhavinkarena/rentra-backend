@@ -276,6 +276,9 @@ router.get('/listings/:id/arrival-guide', requireActiveClient, booking.arrivalGu
 router.post('/listings/:id/arrival-guide', requireActiveClient, booking.saveArrivalGuide);
 router.post('/listings/:id/calendar/undo', requireActiveClient, booking.calendarUndo);
 router.post('/listings/:id/calendar/auto-open', requireActiveClient, booking.autoOpen);
+router.post('/listings/:id/instant-book', requireActiveClient, booking.instantBook);
+router.get('/booking-requests', requireActiveClient, booking.bookingRequests);
+router.post('/booking-requests/:id/decision', requireActiveClient, booking.decideRequest);
 router.get('/calendar', requireActiveClient, booking.portfolioCalendar);
 // Hotel plan, Phase 5: the rates and rooms calendar of a hotel.
 router.get(

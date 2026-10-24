@@ -776,6 +776,8 @@ export const rentable = pgTable(
     bookingConfig: jsonb('booking_config'),
     arrivalGuide:jsonb('arrival_guide').notNull().default({}),
     bookingConfigVersion: integer('booking_config_version').notNull().default(0),
+    /** False: the owner confirms each booking request before the guest pays. */
+    instantBook: boolean('instant_book').notNull().default(true),
     extraGuestChargeMinor: minor('extra_guest_charge_minor').notNull().default(0),
 
     // Denormalised so a listing card is one query, not N.

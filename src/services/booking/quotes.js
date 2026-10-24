@@ -296,7 +296,10 @@ export async function revalidateHeldQuoteTerms(tx, listing, order, variables = p
   const [saved] = await tx`SELECT * FROM booking_quote WHERE id=${order.quote_id} AND customer_id=${order.customer_id}`;
   if (!saved) throw new BookingQuoteError('QUOTE_NOT_FOUND', 'Request a fresh quote.');
   const inputs = await currentInputs(tx, listing, bookingSelectionSchema.parse(saved.selection), variables);
-  if (new Date(saved.expires_at) <= new Date(inputs.now)) throw new BookingQuoteError('QUOTE_EXPIRED', 'Request and accept a fresh quote.');
+  // An owner-approved request is paid long after its quote: its terms are judged as at the request (lead time
+  // included), and the hash below still refuses any change in price or rules since then.
+  if (order.approved) inputs.now = order.created_at;
+  else if (new Date(saved.expires_at) <= new Date(inputs.now)) throw new BookingQuoteError('QUOTE_EXPIRED', 'Request and accept a fresh quote.');
   const quote = quoteFor(bookingSelectionSchema.parse(saved.selection), listing, inputs, order.policy_snapshot?.publications);
   if (quote.hash !== order.quote_hash || saved.version !== order.quote_version) throw new BookingQuoteError('QUOTE_CHANGED', 'Review the changed terms.');
   return quote;

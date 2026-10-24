@@ -39,7 +39,7 @@ export async function ownerCalendarPage(database, ownerId, rentableId, { blocksP
     return {
       // Stored in paise; the calendar form keeps its whole-rupee default.
       listing: { id, title, capacity, extra_guest_charge: Number(current.extra_guest_charge_minor) / 100, booking_config, booking_config_version,
-        rental_unit: listing.rental_unit, calendar_version: (await calendarSnapshot(tx, current)).version },
+        rental_unit: listing.rental_unit, instant_book: current.instant_book !== false, calendar_version: (await calendarSnapshot(tx, current)).version },
       resources,
       blocksPage: page,
       blocksHasMore: rows.length > BLOCKS_PER_PAGE,

@@ -6,6 +6,9 @@ export const BOOKING_POLICY = Object.freeze({
   maxVisits: 10,
   holdMinutes: 10,
   quoteMinutes: 10,
+  /** Request to book: the owner answers within this, then the guest pays within payHoursAfterApproval. */
+  requestHours: 24,
+  payHoursAfterApproval: 12,
   platformFeeBps: 800,
   illustrativeAdvanceBps: 2500,
 });

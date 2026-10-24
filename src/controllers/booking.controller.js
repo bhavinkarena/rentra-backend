@@ -8,6 +8,11 @@ import {
   saveOwnerBookingNote,
 } from '../services/booking/owner-experience.js';
 import { changeCalendarCells, undoCalendarCells } from '../services/booking/calendar-bulk.js';
+import {
+  listBookingRequests,
+  decideBookingRequest,
+  setInstantBook,
+} from '../services/booking/booking-requests.js';
 import { sql } from '@/config/database.js';
 import { requestBookingQuote, requestStayQuote } from '@/services/booking/actions.js';
 import {
@@ -140,6 +145,30 @@ export const autoOpen = asyncHandler(async (req, res) =>
     await setAutoOpen(sql, req.user.id, {
       rentableId: req.params.id,
       enabled: req.body.enabled === true,
+    }),
+  ),
+);
+
+export const instantBook = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await setInstantBook(sql, req.user.id, {
+      rentableId: req.params.id,
+      enabled: req.body.enabled === true,
+    }),
+  ),
+);
+
+export const bookingRequests = asyncHandler(async (req, res) =>
+  ok(res, { requests: await listBookingRequests(sql, req.user.id) }),
+);
+
+export const decideRequest = asyncHandler(async (req, res) =>
+  ok(
+    res,
+    await decideBookingRequest(sql, req.user.id, {
+      orderId: req.params.id,
+      approve: req.body.approve === true,
     }),
   ),
 );

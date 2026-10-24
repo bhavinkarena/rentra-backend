@@ -27,7 +27,9 @@ async function linkOrder(database, scope, remote) {
 export async function startCheckoutPayment(database, session, orderId, options = {}) {
   const env = options.env ?? process.env;
   const prepared = await ownedCheckout(database, session, orderId, async (tx, order, listing) => {
-    const scope = await paymentScope(tx, (await checkoutStatus(tx, orderId)).paymentOrderId);
+    const status = await checkoutStatus(tx, orderId);
+    if (status.approval === 'pending') throw new CheckoutError('AWAITING_OWNER', 'The owner has not confirmed this request yet.');
+    const scope = await paymentScope(tx, status.paymentOrderId);
     await resolvePinnedPaymentConfiguration(tx, scope.snapshot);
     if (scope.execution_state !== 'ready') return { scope, send:false };
     await tx`SELECT pg_advisory_xact_lock(73420,1)`;
@@ -35,7 +37,7 @@ export async function startCheckoutPayment(database, session, orderId, options =
     const [current] = await tx`SELECT state,hold_expires_at>clock_timestamp() active FROM booking_order WHERE id=${orderId}`;
     if (current.state !== 'held' || !current.active) throw new CheckoutError('HOLD_EXPIRED');
     if (order.policy_snapshot?.kind === 'stay') await revalidateHeldStayTerms(tx, order);
-    else await revalidateHeldQuoteTerms(tx, listing, order, env);
+    else await revalidateHeldQuoteTerms(tx, listing, { ...order, approved: status.approval === 'approved' }, env);
     adapter(scope, options); // Validate pinned credentials before reserving the external dispatch.
     await tx`INSERT INTO payment_attempt(payment_order_id,provider,environment,mode,currency,attempt_number,expected_minor,state)
       VALUES(${scope.id},'razorpay','test','real','INR',1,${scope.expected_minor},'processing')`;

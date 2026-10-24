@@ -28,7 +28,10 @@ export async function lifecycle(tx, orderId, kind, payload = {}) {
 export async function checkoutStatus(tx, orderId) {
   const [row] = await tx`SELECT b.id,b.reference,b.state,b.hold_expires_at,p.id payment_order_id,p.state payment_state,
     p.provider_order_id,p.expected_minor,e.credential_key_id,e.state execution_state,
-    EXISTS(SELECT 1 FROM booking_lifecycle_event WHERE order_id=b.id AND kind='refund_required') needs_resolution
+    EXISTS(SELECT 1 FROM booking_lifecycle_event WHERE order_id=b.id AND kind='refund_required') needs_resolution,
+    (SELECT CASE WHEN bool_or(kind='owner_declined') THEN 'declined' WHEN bool_or(kind='owner_approved') THEN 'approved' ELSE 'pending' END
+      FROM booking_lifecycle_event WHERE order_id=b.id AND kind IN ('approval_requested','owner_approved','owner_declined')
+      HAVING bool_or(kind='approval_requested')) approval
     FROM booking_order b JOIN payment_order p ON p.booking_order_id=b.id
     JOIN payment_execution e ON e.payment_order_id=p.id WHERE b.id=${orderId}`;
   if (!row) throw new CheckoutError('CHECKOUT_NOT_FOUND');
@@ -36,8 +39,21 @@ export async function checkoutStatus(tx, orderId) {
     paymentState: row.payment_state, executionState: row.execution_state, providerOrderId: row.provider_order_id,
     keyId: row.credential_key_id, expectedMinor: Number(row.expected_minor), currency: 'INR', environment: 'test',
     serverNow: new Date().toISOString(), actualCollectedMinor: 0, needsResolution: row.needs_resolution,
+    // null: instant book; else the owner's answer to this request ('pending' | 'approved' | 'declined').
+    approval: row.approval ?? null,
     holdExpiresAt: row.hold_expires_at ? new Date(row.hold_expires_at).toISOString() : null };
 }
+
+/**
+ * Request to book (rentable.instant_book = false): the dates are held while the owner decides, and no
+ * payment can start until they approve. The owner hears about it on their updates feed.
+ */
+async function requestApproval(tx, listing, orderId, expires) {
+  await lifecycle(tx, orderId, 'approval_requested', { respondBy: expires.toISOString() });
+  await tx`SELECT client_update_insert(${listing.client_id},${'request:' + orderId},'booking','action','booking_requested',${listing.id},${orderId},
+    ${JSON.stringify({ respondBy: expires.toISOString() })}::text::jsonb,now())`;
+}
+const requestMinutes = (listing, minutes) => (listing.instant_book === false ? BOOKING_POLICY.requestHours * 60 : minutes);
 
 /** Shared deadline for either booking model; checkout can never reserve past arrival. */
 export function checkoutHoldDeadline(now, startsAt, minutes = BOOKING_POLICY.holdMinutes) {
@@ -79,7 +95,7 @@ export async function createCheckoutHold(database, session, input, env = process
     const [{ now }] = await tx`SELECT clock_timestamp() AS now`;
     const nowDate = new Date(now);
     if (new Date(quote.expiresAt) <= nowDate) throw new CheckoutError('QUOTE_EXPIRED');
-    const expires = checkoutHoldDeadline(nowDate, quote.visits[0].startsAt);
+    const expires = checkoutHoldDeadline(nowDate, quote.visits[0].startsAt, requestMinutes(listing, BOOKING_POLICY.holdMinutes));
     const orderId = randomUUID(), paymentId = randomUUID();
     const listingSnapshot = { ownerId: listing.client_id, photos: listing.photos ?? [], title: listing.title, publicCode: listing.public_code, rentableId: listing.id, purpose: value.purpose ?? null, contact: { name: customer.name, phone: customer.phone } };
     await tx`INSERT INTO booking_order(id,reference,customer_id,rentable_id,state,currency,time_zone,quote_id,quote_version,quote_hash,
@@ -108,6 +124,7 @@ export async function createCheckoutHold(database, session, input, env = process
     await tx`INSERT INTO payment_execution(payment_order_id,config_version,credential_key_id,snapshot)
       VALUES(${paymentId},${quote.payment.version},${credentials.keyId},${JSON.stringify(quote.payment)}::text::jsonb)`;
     await lifecycle(tx, orderId, 'held', { environment: 'test', actualCollectedMinor: 0, acceptedPublicPolicies: quote.policy.publications, accepted: true });
+    if (listing.instant_book === false) await requestApproval(tx, listing, orderId, expires);
     return checkoutStatus(tx, orderId);
   });
 }
@@ -124,7 +141,7 @@ async function holdStay(tx, listing, customer, value, saved, requestHash, env) {
   const credentials = requirePaymentCredentials(quote.payment.provider, quote.payment.environment, env);
   if (quote.payment.provider !== 'razorpay' || quote.payment.environment !== 'test' || quote.payment.expectedMinor < 100) throw new CheckoutError('INVALID_COLLECTION');
   const nowDate = new Date(quote.now);
-  const expires = checkoutHoldDeadline(nowDate, quote.visits[0].startsAt, HOTEL_POLICY.holdMinutes);
+  const expires = checkoutHoldDeadline(nowDate, quote.visits[0].startsAt, requestMinutes(listing, HOTEL_POLICY.holdMinutes));
   const orderId = randomUUID(), paymentId = randomUUID(), bookingId = randomUUID();
   const visit = quote.visits[0];
   const guests = quote.stay.lines.reduce((sum, line) => sum + line.adults + line.childAges.length, 0);
@@ -151,6 +168,7 @@ async function holdStay(tx, listing, customer, value, saved, requestHash, env) {
   await tx`INSERT INTO payment_execution(payment_order_id,config_version,credential_key_id,snapshot)
     VALUES(${paymentId},${quote.payment.version},${credentials.keyId},${JSON.stringify(quote.payment)}::text::jsonb)`;
   await lifecycle(tx, orderId, 'held', { environment: 'test', actualCollectedMinor: 0, acceptedPublicPolicies: quote.policy.publications, accepted: true });
+  if (listing.instant_book === false) await requestApproval(tx, listing, orderId, expires);
   return checkoutStatus(tx, orderId);
 }
 

@@ -43,6 +43,9 @@ const DOMAIN_ERRORS = {
   CUSTOMER_SESSION_INVALID: [401, 'Sign in again to continue.'],
   STALE_REQUEST: [409, 'This changed while you were looking at it. Reload and try again.'],
   RATE_LIMIT: [429, 'Too many requests. Please try again later.'],
+  AWAITING_OWNER: [409, 'The owner has not confirmed this request yet.'],
+  BOOKING_REQUEST_NOT_FOUND: [404, 'That booking request is not available.'],
+  REQUEST_CLOSED: [409, 'This request was already answered or has expired.'],
 };
 
 /** Infrastructure errors that arrive with a code but no HTTP status. */
