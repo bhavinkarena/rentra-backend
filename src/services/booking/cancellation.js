@@ -14,9 +14,9 @@ import { allocateByWeights, refundOfPaid } from '../domain/booking-money.js';
  */
 async function stayEntitlement(tx, visit, now, roomIds = null) {
   let preview;
-  try { preview = await previewHotelCancellation(tx, visit.id, now); } catch (error) { throw new CheckoutError(error.code ?? error.message); }
+  try { preview = await previewHotelCancellation(tx, visit.id, now, roomIds); } catch (error) { throw new CheckoutError(error.code ?? error.message); }
   // Phase 10: cancel some rooms of a multi-room stay. Each room keeps its own rule.
-  const lines = roomIds ? preview.lines.filter((line) => roomIds.includes(line.id)) : preview.lines;
+  const lines = preview.lines;
   if (roomIds && lines.length !== roomIds.length) throw new CheckoutError('ROOM_NOT_CANCELLABLE');
   const rooms = await tx`SELECT id, amount_room_minor::bigint AS room, amount_tax_minor::bigint AS tax FROM booking_room WHERE id IN ${tx(lines.map((line) => line.id))}`;
   let rent = 0, tax = 0;
@@ -38,7 +38,8 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
       r += share.rent; t += share.tax; f += share.fee;
     }
     return { rent: r, tax: t, fee: f, deposit: 0, basis: 'full_paid', chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
-      rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.lines.length };
+      roomDetails: lines.map((line) => ({ id: line.id, pct: line.pct })),
+      rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.bookedRoomCount };
   }
   // Story 2.2: the guest service fee is refunded in the same share as the stay money refunded.
   const [stay] = await tx`SELECT coalesce(sum(amount_room_minor + amount_tax_minor), 0)::bigint AS paid FROM booking_room WHERE booking_id=${visit.id}`;
@@ -47,10 +48,12 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
   // rounding never strands paise; otherwise the fee follows the share of stay money refunded.
   const paidFee = Number(visit.amount_fee_minor ?? 0);
   const linesPaid = rooms.reduce((sum, row) => sum + Number(row.room) + Number(row.tax), 0);
-  const fee = lines.length === preview.lines.length && refunded >= linesPaid ? paidFee
+  const fee = lines.length === preview.bookedRoomCount && refunded >= linesPaid ? paidFee
     : Number(stay.paid) > 0 ? Math.floor(paidFee * refunded / Number(stay.paid)) : 0;
-  return { rent, tax, fee, deposit: 0, chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
-    rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.lines.length };
+  return { rent, tax, fee, deposit: 0,
+    roomDetails: lines.map(line => ({ id: line.id, rule: line.free ? 'free' : line.legacy.lateCharge, freeCancelHours: line.legacy.freeCancelHours, refundMinor: line.refundMinor, chargeMinor: line.chargeMinor })),
+    chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
+    rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.bookedRoomCount };
 }
 
 const selection = z.object({ orderId:z.string().uuid(), visitIds:z.array(z.string().uuid()).min(1).max(10),
@@ -73,13 +76,13 @@ export function allocateRefund(sources, entitlement, { remainingOnly = false } =
   const remaining={rent:entitlement.rent,fee:entitlement.fee,deposit:entitlement.deposit,tax:entitlement.tax??0};
   return sources.map(a=>{
     if(!(a.component in remaining)) throw new CheckoutError('PAYMENT_UNSUPPORTED');
-    const entitled=Math.min(Number(a.actual_minor),remaining[a.component]);
+    const capacity = remainingOnly ? Math.max(0, Number(a.actual_minor) - Number(a.reserved)) : Number(a.actual_minor);
+    const entitled=Math.min(capacity,remaining[a.component]);
     remaining[a.component]-=entitled;
     // Visit entitlements count the whole payment, so earlier refunds come off them. A stay's
     // entitlement covers only rooms still booked (Phase 10), so earlier refunds only cap it.
-    const left=Number(a.actual_minor)-Number(a.reserved);
     return {allocationId:a.id,transactionId:a.transaction_id,component:a.component,
-      amount:Math.max(0,remainingOnly?Math.min(entitlement[a.component]??0,left,entitled):entitled-Number(a.reserved))};
+      amount:Math.max(0,remainingOnly?entitled:entitled-Number(a.reserved))};
   }).filter(a=>a.amount>0);
 }
 export const testSourcesOnly = sources => sources.every(a=>a.provider==='razorpay'&&a.environment==='test'&&a.mode==='real');
@@ -108,16 +111,29 @@ async function estimate(tx, order, value) {
   const allocations=await capturedAllocations(tx, value.visitIds);
   const plans=[];
   for(const visit of visits) {
-    if(visit.state!=='confirmed') throw new CheckoutError('VISIT_NOT_CANCELLABLE');
+    if(visit.state!=='confirmed') throw new CheckoutError(value.roomIds && visit.slot==='stay' ? 'ROOM_NOT_CANCELLABLE' : 'VISIT_NOT_CANCELLABLE');
     let entitlement;
     if(visit.slot==='stay') entitlement=await stayEntitlement(tx,visit,now,value.roomIds ?? null);
     else if (value.roomIds) throw new CheckoutError('ROOMS_NEED_ONE_STAY');
     else try { entitlement=cancellationEntitlement(visit,now); } catch(error) { throw new CheckoutError(error.message); }
     const sources=allocations.filter(a=>a.booking_id===visit.id);
     if(!sources.length || !testSourcesOnly(sources)) throw new CheckoutError('PAYMENT_UNSUPPORTED');
+    // Earlier stay refunds must name the rooms whose entitlement they consumed.
+    if (visit.slot === 'stay' && sources.some((source) => Number(source.reserved) > 0)) {
+      const [unattributed] = await tx`SELECT ra.refund_id FROM refund_allocation ra JOIN refund r ON r.id=ra.refund_id
+        WHERE ra.booking_id=${visit.id} AND r.state<>'failed' AND NOT EXISTS (
+          SELECT 1 FROM booking_cancellation c, jsonb_array_elements(c.snapshot->'visits') v
+          WHERE c.order_id=${order.id} AND c.snapshot->'refundIds' ? r.id::text
+            AND v->>'id'=${visit.id}::text AND jsonb_typeof(v->'roomIds')='array'
+            AND jsonb_array_length(v->'roomIds')>0
+        ) LIMIT 1`;
+      if (unattributed) throw new CheckoutError('REFUND_ATTRIBUTION_REQUIRED');
+    }
     const refunds=allocateRefund(sources, entitlement, { remainingOnly: visit.slot==='stay' });
     plans.push({id:visit.id,reference:visit.reference,date:String(visit.local_day instanceof Date?visit.local_day.toISOString():visit.local_day).slice(0,10),
-      state:visit.state,version:visit.lifecycle_version,...entitlement,refundMinor:refunds.reduce((sum,a)=>sum+a.amount,0),refunds});
+      state:visit.state,version:visit.lifecycle_version,...entitlement,
+      startedAtEstimate: visit.slot==='stay' && entitlement.basis==='full_paid' && new Date(visit.starts_at)<=new Date(now),
+      refundMinor:refunds.reduce((sum,a)=>sum+a.amount,0),refunds});
   }
   const result={orderId:order.id,visits:plans,refundMinor:plans.reduce((sum,v)=>sum+v.refundMinor,0),actualBankRefundMinor:0};
   // Story 2.7: the preview binds who asked, the scope and the booked policy versions, not just the amounts.
@@ -145,12 +161,15 @@ export async function applyCancellation(tx, order, preview, value, { actorKind, 
   const partial=preview.visits.some(v=>v.partial);
   if (partial) {
     const released=await tx`UPDATE booking_room SET state='released',updated_at=clock_timestamp()
-      WHERE booking_id=${value.visitIds[0]} AND id IN ${tx(value.roomIds)} AND state='booked' RETURNING id`;
+      WHERE booking_id=${value.visitIds[0]} AND id IN ${tx(value.roomIds)} AND state='booked'
+        AND EXISTS (SELECT 1 FROM booking b WHERE b.id=booking_room.booking_id AND b.state='confirmed'
+          AND (b.starts_at>clock_timestamp() OR ${preview.visits[0].startedAtEstimate})) RETURNING id`;
     if(released.length!==value.roomIds.length) throw new CheckoutError('CANCELLATION_CHANGED');
   } else {
     const changed=await tx`UPDATE booking SET state='cancelled',cancelled_at=clock_timestamp(),cancelled_by_kind=${actorKind},
       cancellation_reason=${reason},lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp()
-      WHERE order_id=${order.id} AND id IN ${tx(value.visitIds)} AND state='confirmed' AND starts_at>clock_timestamp() RETURNING id`;
+      WHERE order_id=${order.id} AND id IN ${tx(value.visitIds)} AND state='confirmed' AND (starts_at>clock_timestamp() OR
+        ${JSON.stringify(preview.visits.filter(v=>v.startedAtEstimate).map(v=>v.id))}::text::jsonb ? id::text) RETURNING id`;
     if(changed.length!==value.visitIds.length) throw new CheckoutError('CANCELLATION_CHANGED');
     await tx`UPDATE inventory_reservation SET state='released',released_at=clock_timestamp() WHERE booking_id IN ${tx(value.visitIds)} AND state='committed'`;
     await tx`UPDATE booking_order SET state='cancelled',updated_at=clock_timestamp() WHERE id=${order.id}

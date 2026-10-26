@@ -65,3 +65,44 @@ test('Story 2.7 refund basis: the booked percentage of everything paid, owner an
   const early = cancellationEntitlement(visit, new Date('2030-01-03T00:00:00Z'));
   assert.deepEqual([early.rent, early.fee], [100_000, 5_000]);
 });
+
+test('Story 2.10 remaining-room allocation skips reserved capacity without consuming entitlement', async () => {
+  const { allocateRefund } = await import('../../src/services/booking/cancellation.js');
+  const source = (id, actual, reserved) => ({
+    id,
+    transaction_id: id,
+    component: 'rent',
+    actual_minor: actual,
+    reserved,
+  });
+  const sources = [
+    source('reserved', 100, 100),
+    source('available', 150, 25),
+    source('last', 90, 0),
+  ];
+  const entitlement = { rent: 160, fee: 0, deposit: 0, tax: 0 };
+  const allocated = allocateRefund(sources, entitlement, { remainingOnly: true });
+  assert.deepEqual(
+    allocated.map((a) => [a.allocationId, a.amount]),
+    [
+      ['available', 125],
+      ['last', 35],
+    ],
+  );
+  assert.equal(
+    allocateRefund(sources, { ...entitlement, rent: 999 }, { remainingOnly: true }).reduce(
+      (sum, a) => sum + a.amount,
+      0,
+    ),
+    215,
+  );
+  assert.deepEqual(
+    allocateRefund(sources, { ...entitlement, rent: 0 }, { remainingOnly: true }),
+    [],
+  );
+  assert.deepEqual(
+    allocateRefund(sources, entitlement).map((a) => [a.allocationId, a.amount]),
+    [['available', 35]],
+    'whole-visit entitlement still deducts previous reservations',
+  );
+});

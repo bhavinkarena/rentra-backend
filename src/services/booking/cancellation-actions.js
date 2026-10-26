@@ -5,6 +5,9 @@ import { previewCancellation, commitCancellation } from './cancellation.js';
 
 function failure(error) {
   const messages={CANCELLATION_CHANGED:'The cancellation estimate changed. Preview it again before confirming.',
+    REFUND_ATTRIBUTION_REQUIRED:'Earlier refunds do not identify their rooms. Contact support for admin resolution before cancelling rooms.',
+    STAY_STARTED:'This stay has started. Contact the host using your booking record for help.',
+    ROOM_NOT_CANCELLABLE:'A selected room is no longer cancellable. Reload the booking record.',
     VISIT_STARTED:'This visit has started. Contact the host using your booking record for help.',
     VISIT_NOT_CANCELLABLE:'A selected visit is no longer cancellable. Reload the booking record.',
     POLICY_UNSUPPORTED:'This booking needs an operator to review its original policy. Contact the host from your booking record.',

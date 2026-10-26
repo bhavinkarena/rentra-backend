@@ -287,19 +287,22 @@ export async function finishHotelRooms(tx, bookingId, outcome) {
 }
 
 /** Refund if the guest cancels now, per room line and in total, from the booked snapshots. */
-export async function previewHotelCancellation(sql, bookingId, now = new Date()) {
+export async function previewHotelCancellation(sql, bookingId, now = new Date(), roomIds = null) {
   const rows = await sql`SELECT br.*, b.starts_at FROM booking_room br JOIN booking b ON b.id = br.booking_id
     WHERE br.booking_id = ${bookingId} AND br.state = 'booked' ORDER BY br.id`;
-  if (!rows.length) throw new HotelError('NOT_CANCELLABLE', 'There is nothing to cancel on this booking.');
-  const lines = rows.map((row) => ({
+  if (!rows.length) throw new HotelError(roomIds ? 'ROOM_NOT_CANCELLABLE' : 'NOT_CANCELLABLE', 'There is nothing to cancel on this booking.');
+  const selected = roomIds ? rows.filter((row) => roomIds.includes(row.id)) : rows;
+  if (roomIds && selected.length !== roomIds.length) throw new HotelError('ROOM_NOT_CANCELLABLE', 'A selected room is no longer booked on this stay.');
+  const lines = selected.map((row) => ({
     id: row.id,
+    ...(!row.plan_snapshot.cancellationPolicy ? { legacy: { freeCancelHours: row.plan_snapshot.freeCancelHours, lateCharge: row.plan_snapshot.lateCharge } } : {}),
     ...hotelRefund({
       totalMinor: int(row.amount_room_minor) + int(row.amount_tax_minor), nights: row.nights,
       plan: { freeCancelHours: row.plan_snapshot.freeCancelHours, lateCharge: row.plan_snapshot.lateCharge,
         cancellationPolicy: row.plan_snapshot.cancellationPolicy },
     }, row.starts_at, now),
   }));
-  return { lines, refundMinor: lines.reduce((sum, line) => sum + line.refundMinor, 0), chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0) };
+  return { lines, bookedRoomCount: rows.length, refundMinor: lines.reduce((sum, line) => sum + line.refundMinor, 0), chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0) };
 }
 
 /** Commission for a hotel on a date: property rule, else city rule, else vertical rule. */
