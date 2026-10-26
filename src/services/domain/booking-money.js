@@ -80,6 +80,44 @@ export function allocateOrderFee(baseMinors, feeBps) {
   return parts.map(safeNumber);
 }
 
+/**
+ * Story 2.7: split `totalMinor` over parts in proportion to their weights, by
+ * stable largest remainder (ties to the earlier part). Zero-weight parts get
+ * zero; a positive total over all-zero weights is an error, never a guess.
+ */
+export function allocateByWeights(totalMinor, weights) {
+  integer(totalMinor);
+  weights.forEach((value) => integer(value, 'Weight'));
+  const sum = weights.reduce((acc, value) => acc + BigInt(value), 0n);
+  if (sum === 0n) {
+    if (totalMinor > 0) throw new RangeError('ALLOCATION_WEIGHTS_ZERO');
+    return weights.map(() => 0);
+  }
+  const exact = weights.map((value) => BigInt(value) * BigInt(totalMinor));
+  const parts = exact.map((value) => value / sum);
+  let left = BigInt(totalMinor) - parts.reduce((acc, value) => acc + value, 0n);
+  const order = exact
+    .map((value, index) => ({ index, rest: value % sum, weight: weights[index] }))
+    .filter((row) => row.weight > 0)
+    .sort((a, b) => (b.rest > a.rest ? 1 : b.rest < a.rest ? -1 : a.index - b.index));
+  for (const { index } of order) {
+    if (left <= 0n) break;
+    parts[index] += 1n;
+    left -= 1n;
+  }
+  return parts.map(safeNumber);
+}
+
+/** Story 2.7: a policy percentage of the whole paid amount, rounded down to the paisa, split like the payment. */
+export function refundOfPaid(paidParts, pct) {
+  const keys = Object.keys(paidParts);
+  const paid = keys.reduce((acc, key) => acc + BigInt(integer(paidParts[key])), 0n);
+  if (!Number.isInteger(pct) || pct < 0 || pct > 100) throw new RangeError('Refund percentage must be 0-100');
+  const total = safeNumber((paid * BigInt(pct)) / 100n);
+  const parts = allocateByWeights(total, keys.map((key) => paidParts[key]));
+  return Object.fromEntries(keys.map((key, index) => [key, parts[index]]));
+}
+
 /** Re-prices visits with the order-level fee; everything else about each visit is unchanged. */
 export function withOrderFee(visits, feeBps) {
   const fees = allocateOrderFee(visits.map((visit) => visit.rentMinor), feeBps);

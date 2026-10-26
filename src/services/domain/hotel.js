@@ -141,7 +141,7 @@ export function hotelRefund(line, checkInAt, now) {
     if (remaining <= 0 && pct === 0) throw new HotelError('STAY_STARTED', 'The stay has started. Contact support to change it.');
     const total = money(line.totalMinor, 'Total');
     const refundMinor = Math.floor((total * pct) / 100);
-    return { refundMinor, chargeMinor: total - refundMinor, free: pct === 100 };
+    return { refundMinor, chargeMinor: total - refundMinor, free: pct === 100, pct };
   }
   if (remaining <= 0) throw new HotelError('STAY_STARTED', 'The stay has started. Contact support to change it.');
   const total = money(line.totalMinor, 'Total');

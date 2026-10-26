@@ -401,11 +401,11 @@ test(
         assert.equal(visit.rate, rate, `${hoursAhead}h ahead`);
         assert.equal(
           visit.refundMinor,
-          // Story 2.6: under booked windows a full refund also returns the service fee.
-          Math.floor(Number(rentMinor) * rate) + (rate === 1 ? Number(feeMinor) : 0),
+          // Story 2.7: the booked percentage of everything paid (rent and fee), rounded down once.
+          Math.floor(((Number(rentMinor) + Number(feeMinor)) * Math.round(rate * 100)) / 100),
           `${hoursAhead}h refund`,
         );
-        assert.equal(visit.fee, rate === 1 ? Number(feeMinor) : 0);
+        assert.equal(visit.rent + visit.fee, visit.refundMinor, 'split over what was paid');
       }
     } finally {
       await fixture.drop();

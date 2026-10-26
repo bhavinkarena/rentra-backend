@@ -5,6 +5,7 @@ import { ownedCheckout, CheckoutError, lifecycle } from './checkout.js';
 import { quoteDigest } from './quotes.js';
 import { cancellationEntitlement } from '../domain/cancellation.js';
 import { previewHotelCancellation } from './hotel-stays.js';
+import { allocateByWeights, refundOfPaid } from '../domain/booking-money.js';
 
 /**
  * Hotel stay (Phase 7): each room's own rate rule (free until a deadline, then
@@ -24,6 +25,20 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
     const lineTax = Math.round(line.refundMinor * Number(row.tax) / Math.max(1, Number(row.room) + Number(row.tax)));
     tax += lineTax;
     rent += line.refundMinor - lineTax;
+  }
+  // Story 2.7: rooms booked with percentage windows refund that percentage of everything paid for
+  // the room (room, tax and its share of the stay fee), split by stable largest remainder.
+  if (lines.every((line) => Number.isInteger(line.pct))) {
+    const all = await tx`SELECT id, amount_room_minor::bigint AS room FROM booking_room WHERE booking_id=${visit.id} ORDER BY id`;
+    const roomFees = allocateByWeights(Number(visit.amount_fee_minor ?? 0), all.map((row) => Number(row.room)));
+    let r = 0, t = 0, f = 0;
+    for (const line of lines) {
+      const row = rooms.find((room) => room.id === line.id);
+      const share = refundOfPaid({ rent: Number(row.room), tax: Number(row.tax), fee: roomFees[all.findIndex((x) => x.id === line.id)] }, line.pct);
+      r += share.rent; t += share.tax; f += share.fee;
+    }
+    return { rent: r, tax: t, fee: f, deposit: 0, basis: 'full_paid', chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
+      rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.lines.length };
   }
   // Story 2.2: the guest service fee is refunded in the same share as the stay money refunded.
   const [stay] = await tx`SELECT coalesce(sum(amount_room_minor + amount_tax_minor), 0)::bigint AS paid FROM booking_room WHERE booking_id=${visit.id}`;
@@ -105,7 +120,10 @@ async function estimate(tx, order, value) {
       state:visit.state,version:visit.lifecycle_version,...entitlement,refundMinor:refunds.reduce((sum,a)=>sum+a.amount,0),refunds});
   }
   const result={orderId:order.id,visits:plans,refundMinor:plans.reduce((sum,v)=>sum+v.refundMinor,0),actualBankRefundMinor:0};
-  return {...result,hash:quoteDigest(result)};
+  // Story 2.7: the preview binds who asked, the scope and the booked policy versions, not just the amounts.
+  const binding={customer:order.customer_id,roomIds:value.roomIds??null,
+    policies:visits.map(v=>[v.id,v.lifecycle_version,v.policy_snapshot?.version??null,Boolean(v.policy_snapshot?.cancellationPolicy)])};
+  return {...result,hash:quoteDigest({...result,binding})};
 }
 function publicPreview(preview) {
   return {...preview,visits:preview.visits.map(({refunds: _refunds,...visit})=>visit)};
