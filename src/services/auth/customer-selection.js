@@ -19,6 +19,11 @@ export const SELECTION_TTL = 15 * 60;
 export function safeCustomerReturnPath(value) {
   return typeof value === 'string' && /^\/listing\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) && value.length <= 240 ? value : '/';
 }
+/** Story 2.3: a signed-in customer page to return to after login. Same-origin paths only, no query. */
+export function safeCustomerAreaPath(value) {
+  return typeof value === 'string' && value.length <= 240
+    && /^\/(checkout|bookings|account|support|disputes|reviews)(\/[A-Za-z0-9_-]+)*$/.test(value) ? value : null;
+}
 function key(env) {
   if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32) throw new Error('Session secret is not configured.');
   return new TextEncoder().encode(env.SESSION_SECRET);

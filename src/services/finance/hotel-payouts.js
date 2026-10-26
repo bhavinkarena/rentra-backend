@@ -81,7 +81,8 @@ async function payableStays(tx, { environment, ownerId = null, asOf }) {
         WHERE ra.payment_allocation_id = rent.id AND f.state <> 'failed')::text AS room_refunded,
       (SELECT coalesce(sum(ra.expected_minor), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
         WHERE ra.payment_allocation_id = tax.id AND f.state <> 'failed')::text AS tax_refunded,
-      d.id AS destination_id, d.method, d.account_last4, d.ifsc, d.upi_id, d.state AS destination_state, d.version AS destination_version
+      d.id AS destination_id, d.method, d.account_last4, d.ifsc, d.upi_id, d.state AS destination_state, d.version AS destination_version,
+      (SELECT o.policy_snapshot->'pricing'->>'feeModel' FROM booking_order o WHERE o.id = b.order_id) AS fee_model
     FROM booking b
     JOIN rentable r ON r.id = b.rentable_id
     JOIN category c ON c.id = r.category_id AND c.vertical_code = 'hotel'
@@ -109,7 +110,10 @@ async function buildRun(tx, { environment, ownerId = null, now = null }) {
   for (const row of rows) {
     let rule;
     try {
-      rule = await resolveCommission(tx, { rentableId: row.rentable_id, date: row.local_day });
+      // Story 2.2: stays booked with the guest-paid service fee carry no owner commission.
+      rule = row.fee_model === 'guest_service_fee'
+        ? { rateBps: 0, ruleId: null }
+        : await resolveCommission(tx, { rentableId: row.rentable_id, date: row.local_day });
     } catch (error) {
       if (error.code !== 'COMMISSION_UNCONFIGURED') throw error;
       // No rule for the stay date: never guess a rate. Finance adds the rule; the stay waits.
@@ -271,7 +275,8 @@ export async function getOwnerHotelEarnings(database, ownerId, { month } = {}) {
       FROM payment_allocation pa JOIN booking b ON b.id = pa.booking_id AND b.slot = 'stay'
       JOIN rentable r ON r.id = b.rentable_id AND r.client_id = ${ownerId}
       JOIN payment_transaction t ON t.id = pa.transaction_id AND t.environment::text = ${environment}
-      WHERE to_char(b.local_day, 'YYYY-MM') = ${period}`;
+      -- Story 2.2: the guest service fee is Rentra's money, not the owner's revenue or refunds.
+      WHERE to_char(b.local_day, 'YYYY-MM') = ${period} AND pa.component IN ('rent', 'tax')`;
     const next = await buildRun(tx, { environment, ownerId });
     const runs = await tx`SELECT pr.*, pr.payout_date::text AS payout_date, (SELECT max(p.utr) FROM payout p WHERE p.payout_run_id = pr.id AND p.client_id = ${ownerId}) AS utr
       FROM payout_run pr WHERE EXISTS (SELECT 1 FROM payout p WHERE p.payout_run_id = pr.id AND p.client_id = ${ownerId})

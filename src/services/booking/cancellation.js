@@ -25,7 +25,16 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
     tax += lineTax;
     rent += line.refundMinor - lineTax;
   }
-  return { rent, tax, fee: 0, deposit: 0, chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
+  // Story 2.2: the guest service fee is refunded in the same share as the stay money refunded.
+  const [stay] = await tx`SELECT coalesce(sum(amount_room_minor + amount_tax_minor), 0)::bigint AS paid FROM booking_room WHERE booking_id=${visit.id}`;
+  const refunded = lines.reduce((sum, line) => sum + line.refundMinor, 0);
+  // Fully refunding the last rooms returns the whole remaining fee (earlier refunds cap it), so
+  // rounding never strands paise; otherwise the fee follows the share of stay money refunded.
+  const paidFee = Number(visit.amount_fee_minor ?? 0);
+  const linesPaid = rooms.reduce((sum, row) => sum + Number(row.room) + Number(row.tax), 0);
+  const fee = lines.length === preview.lines.length && refunded >= linesPaid ? paidFee
+    : Number(stay.paid) > 0 ? Math.floor(paidFee * refunded / Number(stay.paid)) : 0;
+  return { rent, tax, fee, deposit: 0, chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
     rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.lines.length };
 }
 

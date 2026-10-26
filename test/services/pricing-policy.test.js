@@ -57,12 +57,14 @@ test('CP11 quotes use India-local weekend boundaries, explicit overrides and exa
     ['weekday', 'weekend'],
   );
   assert.equal(q.totals.rentMinor, 320000);
-  assert.equal(q.totals.feeMinor, 25600);
-  assert.equal(q.totals.totalMinor, 345600);
+  // Story 2.2: the 5% launch service fee, rounded once for the order.
+  assert.equal(q.totals.feeMinor, 16000);
+  assert.equal(q.totals.totalMinor, 336000);
   const override = quote(['2030-01-05'], [{ day: '2030-01-05', slot: 'day', rent_minor: 175050 }]);
   assert.equal(override.totals.rentMinor, 185050);
   assert.equal(override.visits[0].priceSource, 'override');
-  assert.equal(override.policy.pricing.platformFeeBps, 800);
+  assert.equal(override.policy.pricing.platformFeeBps, 500);
+  assert.equal(override.policy.pricing.feeModel, 'guest_service_fee');
   assert.equal(override.policy.pricing.depositCollectedOnline, false);
   assert.equal(override.policy.listingConfigVersion, 3);
   assert.notEqual(q.hash, override.hash);

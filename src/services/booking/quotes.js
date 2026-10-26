@@ -8,12 +8,16 @@ import { CANCELLATION_TIERS, CANCELLATION_TIERS_HOURLY } from '../domain/pricing
 import { bookingModel } from '../domain/verticals.js';
 import { HourlyError, buildHourlyVisit, priceHourlyVisit } from '../domain/hourly.js';
 import { BOOKING_POLICY } from '../domain/booking-policy.js';
+import { resolveServiceFee } from '../finance/service-fee.js';
 import { addLocalDays, buildVisitIntervals, propertyToday } from '../domain/booking-dates.js';
 import { priceVisitsMinor, sumVisitTotals, visitMoneyMinor } from '../domain/booking-money.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
 import { withListingSnapshot, expireInventoryHolds, findInventoryConflicts, prepareInventoryCheck,
   prepareHourlyInventoryCheck, inventoryWindow, isReadOnlyInventory } from './inventory.js';
 
+
+/** Launch default when no fee setting is passed (pure callers and tests). */
+const DEFAULT_FEE = Object.freeze({ bps: BOOKING_POLICY.platformFeeBps, source: 'default', settingId: null });
 export class BookingQuoteError extends Error {
   constructor(code, message, conflicts = []) { super(message); this.code = code; this.conflicts = conflicts; }
 }
@@ -99,7 +103,8 @@ export function prepareHourlyQuote(selection, listing, inputs, now, publications
     if (error instanceof HourlyError) throw new BookingQuoteError(error.code, error.message);
     throw error;
   }
-  const money = visitMoneyMinor({ baseRentMinor: price.rentMinor, depositMinor: Number(listing.deposit_minor) });
+  const fee = inputs.fee ?? DEFAULT_FEE;
+  const money = visitMoneyMinor({ baseRentMinor: price.rentMinor, depositMinor: Number(listing.deposit_minor), feeBps: fee.bps });
   const priced = { date: selection.date, slot: 'hourly', guests: selection.guests, priceSource: price.dayKind, ...money };
   const totals = sumVisitTotals([priced]);
   const tier = CANCELLATION_TIERS_HOURLY[listing.cancellation_tier];
@@ -108,7 +113,7 @@ export function prepareHourlyQuote(selection, listing, inputs, now, publications
     version: BOOKING_POLICY.version, listingConfigVersion: listing.booking_config_version,
     cancellationTier: listing.cancellation_tier, houseRules: listing.house_rules,
     cancellation: { bandUnit: 'hours', bands: tier.bands.map((band) => [...band]), noShow: tier.noShow, feeOnFullRefund: listing.cancellation_tier === 'flexible' },
-    pricing: { platformFeeBps: BOOKING_POLICY.platformFeeBps, illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
+    pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee', illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
     depositScope: 'per_visit', taxPolicy: 'not_configured', timeZone: config.timeZone,
   };
   const paymentSnapshot = paymentSnapshotFor(inputs.payment, [priced], totals);
@@ -130,11 +135,11 @@ export function prepareHourlyQuote(selection, listing, inputs, now, publications
 function quoteFor(selection, listing, inputs, publications) {
   return selection.kind === 'hourly'
     ? prepareHourlyQuote(selection, listing, inputs, inputs.now, publications)
-    : prepareQuote(selection, listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now, publications);
+    : prepareQuote(selection, listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now, publications, inputs.fee);
 }
 
 /** The same immutable inputs drive a persisted quote and each calendar price. */
-export function prepareQuote(selection, listing, rates, overrides, payment, now, publications) {
+export function prepareQuote(selection, listing, rates, overrides, payment, now, publications, fee = DEFAULT_FEE) {
   if (listing.status !== 'live' || listing.total_units !== 1) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   if (bookingModel(listing) === 'hourly') throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This venue is booked by time, not by slot.');
   const config = listingConfiguration(listing);
@@ -153,6 +158,7 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
     rate: { ...schedule, weekdayMinor: Number(rate.weekday_minor), weekendMinor: Number(rate.weekend_minor), depositMinor: Number(listing.deposit_minor) },
     overridesByDate: byDate,
     weekendDays: config.weekendDays,
+    feeBps: fee.bps,
   });
   // Older pricing saved one day type as 0; never sell those visits for nothing.
   if (price.visits.some((visit) => visit.baseRentMinor <= 0)) throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This slot is not offered on that day.');
@@ -161,7 +167,7 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
     version: BOOKING_POLICY.version, listingConfigVersion: listing.booking_config_version,
     cancellationTier: listing.cancellation_tier, houseRules: listing.house_rules,
     cancellation: { bands: CANCELLATION_TIERS[listing.cancellation_tier].bands.map(band=>[...band]), noShow: CANCELLATION_TIERS[listing.cancellation_tier].noShow, feeOnFullRefund: listing.cancellation_tier === 'flexible' },
-    pricing: { platformFeeBps: BOOKING_POLICY.platformFeeBps, illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
+    pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee', illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
     depositScope: 'per_visit', taxPolicy: 'not_configured', timeZone: config.timeZone,
   };
   // Public quotes remain available while payments are disabled. No credentials
@@ -215,13 +221,13 @@ async function currentInputs(tx, listing, selection, variables) {
   }
   if (selection.kind === 'hourly') {
     const payment = await getPaymentConfiguration(tx, variables);
-    return { now: clock.now, ...(await hourlyInputs(tx, listing)), payment, publications: await currentPolicyReferences(tx) };
+    return { now: clock.now, ...(await hourlyInputs(tx, listing)), payment, publications: await currentPolicyReferences(tx), fee: await resolveServiceFee(tx, listing.client_id, clock.now) };
   }
   const rates = await tx`SELECT slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${listing.id} ORDER BY slot`;
   const first = selection.dates[0], last = selection.dates.at(-1);
   const overrides = await tx`SELECT day::text AS day,slot,rent_minor FROM booking_price_override WHERE rentable_id=${listing.id} AND day BETWEEN ${first} AND ${last} ORDER BY day,slot`;
   const payment = await getPaymentConfiguration(tx, variables);
-  return { now: clock.now, rates, overrides, payment, publications: await currentPolicyReferences(tx) };
+  return { now: clock.now, rates, overrides, payment, publications: await currentPolicyReferences(tx), fee: await resolveServiceFee(tx, listing.client_id, clock.now) };
 }
 
 /**
@@ -323,7 +329,7 @@ async function currentCalendarInputs(tx, listing, dates, variables) {
   if (!inputs.owner_active) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   // prepareInventoryCheck treats expired holds as free in the read-only snapshot.
   const payment = await getPaymentConfiguration(tx, variables);
-  return { now: inputs.now, rates: inputs.rates, overrides: inputs.explicit, payment };
+  return { now: inputs.now, rates: inputs.rates, overrides: inputs.explicit, payment, fee: await resolveServiceFee(tx, listing.client_id, inputs.now) };
 }
 
 /** Bounded public read with the same price/config/interval rules as quoting. */
@@ -353,7 +359,7 @@ export async function getBookingAvailability(database, { rentableId, from, to, g
       const entry = { day: false, night: false, full: false, pricesMinor: {}, priceOverride: {}, reasons: {}, intervals: {} };
       for (const slot of ['day', 'night', 'full_day']) {
         try {
-          const quote = prepareQuote({ ...input, dates: [date], slot }, listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now);
+          const quote = prepareQuote({ ...input, dates: [date], slot }, listing, inputs.rates, inputs.overrides, inputs.payment, inputs.now, undefined, inputs.fee);
           const conflicts = checkInventory(quote.visits);
           if (conflicts.length) { entry.reasons[slot] = 'Unavailable'; continue; }
           entry[slot === 'full_day' ? 'full' : slot] = true;

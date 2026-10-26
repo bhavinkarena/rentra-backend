@@ -139,6 +139,10 @@ test(
         approve: true,
       });
       assert.equal(approved.approval, 'approved');
+      // Story 2.5: approval alone never confirms; only a verified payment does.
+      const [approvedOrder] =
+        await sql`SELECT state FROM booking_order WHERE id=${requested.orderId}`;
+      assert.equal(approvedOrder.state, 'held');
       const payWindow = new Date(approved.holdExpiresAt) - Date.now();
       assert.ok(payWindow > 11 * HOUR && payWindow <= 12 * HOUR, `pay window ${payWindow}`);
       const [reservation] =
@@ -170,6 +174,26 @@ test(
       );
       assert.equal(paid.state, 'confirmed');
       assert.equal(paid.paymentState, 'succeeded');
+      // Story 2.5: a repeated callback is idempotent, and Razorpay Test collects no bank money.
+      const replay = await verifyCheckoutPayment(
+        sql,
+        session,
+        {
+          orderId: requested.orderId,
+          paymentId: 'pay_REQ1',
+          signature: createHmac('sha256', env.RAZORPAY_KEY_SECRET)
+            .update(`${started.providerOrderId}|pay_REQ1`)
+            .digest('hex'),
+        },
+        opts,
+      );
+      assert.equal(replay.state, 'confirmed');
+      const [{ captures }] = await sql`SELECT count(*)::int AS captures FROM payment_transaction t
+        JOIN payment_attempt a ON a.id=t.attempt_id JOIN payment_order p ON p.id=a.payment_order_id WHERE p.booking_order_id=${requested.orderId} AND t.kind='capture'`;
+      assert.equal(captures, 1);
+      const [confirmed] =
+        await sql`SELECT payload FROM booking_lifecycle_event WHERE order_id=${requested.orderId} AND kind='confirmed'`;
+      assert.equal(confirmed.payload.actualCollectedMinor, 0);
 
       // A declined request frees the dates; the guest was never charged.
       const second = await hold(other);
@@ -191,12 +215,90 @@ test(
       const again = await hold(other);
       assert.equal(again.approval, 'pending');
 
+      // Story 2.4: changing the setting never converts a pending request into a payable hold.
+      await setInstantBook(sql, f.owner, { rentableId: f.listing, enabled: true });
+      assert.deepEqual(
+        (await listBookingRequests(sql, f.owner)).map((r) => r.orderId),
+        [again.orderId],
+      );
+      await assert.rejects(startCheckoutPayment(sql, session, again.orderId, opts), {
+        code: 'AWAITING_OWNER',
+      });
+      await setInstantBook(sql, f.owner, { rentableId: f.listing, enabled: false });
+
       // Back to instant book: the next checkout is an ordinary 10-minute hold.
       await sql`UPDATE booking_order SET hold_expires_at=now()-interval '1 second' WHERE id=${again.orderId}`;
       await setInstantBook(sql, f.owner, { rentableId: f.listing, enabled: true });
       const instant = await hold(other);
       assert.equal(instant.approval, null);
       assert.ok(new Date(instant.holdExpiresAt) - Date.now() <= 10 * 60_000);
+
+      // Story 2.5: a provider timeout is unknown, never failed, and never sends a second order.
+      const down = {
+        env,
+        fetcher: async () => {
+          throw new Error('socket hang up');
+        },
+      };
+      const unknown = await startCheckoutPayment(sql, session, instant.orderId, down);
+      assert.notEqual(unknown.paymentState, 'failed');
+      const [execution] =
+        await sql`SELECT e.state FROM payment_execution e JOIN payment_order p ON p.id=e.payment_order_id
+        WHERE p.booking_order_id=${instant.orderId}`;
+      assert.equal(execution.state, 'unknown');
+      await startCheckoutPayment(sql, session, instant.orderId, down);
+      const [{ attempts }] = await sql`SELECT count(*)::int AS attempts FROM payment_attempt a
+        JOIN payment_order p ON p.id=a.payment_order_id WHERE p.booking_order_id=${instant.orderId}`;
+      assert.equal(attempts, 1, 'no second provider order');
+
+      // Story 2.4: an expired hold (expired above) cannot be paid, so it can never take back sold stock.
+      await assert.rejects(startCheckoutPayment(sql, session, again.orderId, opts));
+
+      // Story 2.4: both race orders on one date leave exactly one hold.
+      const raceDay = addLocalDays(propertyToday(), 12);
+      await openBookingDates(sql, f.owner, { rentableId: f.listing, from: raceDay, to: raceDay });
+      for (let round = 0; round < 2; round++) {
+        const results = await Promise.allSettled([hold(raceDay), hold(raceDay)]);
+        assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1, `round ${round}`);
+        const winner = results.find((r) => r.status === 'fulfilled').value;
+        await sql`UPDATE booking_order SET hold_expires_at=now()-interval '1 second' WHERE id=${winner.orderId}`;
+      }
+
+      // Story 2.4: the owner reply window is capped by arrival.
+      const soon = addLocalDays(propertyToday(), 1);
+      await openBookingDates(sql, f.owner, { rentableId: f.listing, from: soon, to: soon });
+      await setInstantBook(sql, f.owner, { rentableId: f.listing, enabled: false });
+      const near = await hold(soon);
+      const [{ starts_at }] =
+        await sql`SELECT min(starts_at) AS starts_at FROM booking WHERE order_id=${near.orderId}`;
+      const expected = Math.min(Date.now() + 24 * HOUR, +new Date(starts_at));
+      assert.ok(
+        Math.abs(+new Date(near.holdExpiresAt) - expected) < 60_000,
+        'deadline = earlier of 24 h and arrival',
+      );
+      assert.ok(+new Date(near.holdExpiresAt) <= +new Date(starts_at));
+
+      // Story 2.5: disabling payments stops checkout, never browsing or quoting.
+      const [config] =
+        await sql`SELECT version FROM payment_gateway_config ORDER BY version DESC LIMIT 1`;
+      await setPaymentGatewayConfiguration(
+        sql,
+        {
+          actorId: f.admin,
+          expectedVersion: config.version,
+          provider: 'razorpay',
+          environment: 'test',
+          enabled: false,
+          collectionPurpose: 'full',
+        },
+        env,
+      );
+      const browsing = await createBookingQuote(
+        sql,
+        { rentableId: f.listing, dates: [raceDay], slot: 'day', guests: 2 },
+        { customerId: booked.customer, variables: env },
+      );
+      assert.ok(browsing.totals.totalMinor > 0);
     } finally {
       await rm(dir, { recursive: true, force: true });
       await fixture.drop();

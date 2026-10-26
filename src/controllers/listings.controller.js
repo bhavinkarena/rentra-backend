@@ -45,6 +45,7 @@ import { propertyReviewContext } from '@/services/admin/listings.js';
 import { ownerPropertyOverview } from '@/services/auth/property-overview.js';
 import { propertyPolicyHistory } from '@/services/booking/property-policy.js';
 import { sql } from '@/config/database.js';
+import { resolveServiceFee } from '@/services/finance/service-fee.js';
 
 /** The partner's own listings. Ownership is enforced by passing the client id. */
 export const summary = asyncHandler(async (req, res) =>
@@ -177,7 +178,9 @@ export const pricePreview = asyncHandler(async (req, res) => {
   const input = z
     .object({ rentMinor: z.coerce.number().int().min(0).max(50000000) })
     .parse(req.body);
-  return ok(res, visitMoneyMinor({ baseRentMinor: input.rentMinor, depositMinor: 0 }));
+  // Story 2.2: the owner previews what guests pay with the fee in force for this owner.
+  const fee = await resolveServiceFee(sql, req.user.id);
+  return ok(res, { ...visitMoneyMinor({ baseRentMinor: input.rentMinor, depositMinor: 0, feeBps: fee.bps }), feeBps: fee.bps });
 });
 
 export const photoSign = policyAction(signPhoto);

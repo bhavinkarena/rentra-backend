@@ -9,7 +9,7 @@ import { switchAccountRole } from './role-switch-actions.js';
 import { getCurrentAdmin, destroyAdminSession } from './admin.js';
 import { createSession, destroySession } from './session.js';
 import { customerPhone, customerRequestIp, requestCustomerCode, verifyCustomerCode } from './customer-identity.js';
-import { SELECTION_COOKIE, SELECTION_TTL, signCustomerSelection, readCustomerSelection, loginSelectionSchema } from './customer-selection.js';
+import { SELECTION_COOKIE, SELECTION_TTL, signCustomerSelection, readCustomerSelection, loginSelectionSchema, safeCustomerAreaPath } from './customer-selection.js';
 import { listingPath } from '../domain/listing-url.js';
 import { measure } from '../operations/measurement.js';
 
@@ -67,7 +67,8 @@ export async function verifyCustomerOtp(_previous, formData) {
     if (!profile) redirect('/onboarding');
   }
   // No anonymous quote survives this navigation. The listing requests a fresh owned quote.
-  redirect(intent?.returnTo ?? '/');
+  // Story 2.3: otherwise return to the customer page that asked for a sign-in.
+  redirect(intent?.returnTo ?? safeCustomerAreaPath(formData.get('next')) ?? '/');
 }
 
 /** Explicit user action; keeps the saved listing selection while changing role. */

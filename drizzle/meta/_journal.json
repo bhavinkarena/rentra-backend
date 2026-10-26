@@ -519,6 +519,13 @@
       "when": 1790591503015,
       "tag": "0073_review_approved",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1790591504015,
+      "tag": "0074_service_fee",
+      "breakpoints": true
     }
   ]
 }

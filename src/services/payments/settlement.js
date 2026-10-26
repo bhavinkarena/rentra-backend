@@ -72,7 +72,10 @@ export async function settleVerifiedPayment(database, paymentId, payment) {
       const plan = planned.find(p => p.date === date);
       if (!plan) throw new CheckoutError('ALLOCATION_PLAN_MISMATCH');
       // Hotel stays (Phase 7) also carry the room tax as its own component.
-      const components = plan.taxMinor != null ? [['rent',plan.rentMinor],['tax',plan.taxMinor]] : [['rent',plan.rentMinor],['fee',plan.feeMinor]];
+      // Story 2.2: a stay also carries the guest service fee as its own component when charged.
+      const components = plan.taxMinor != null
+        ? [['rent',plan.rentMinor],['tax',plan.taxMinor],...(plan.feeMinor > 0 ? [['fee',plan.feeMinor]] : [])]
+        : [['rent',plan.rentMinor],['fee',plan.feeMinor]];
       for (const [component, amount] of components) {
         if (!Number.isSafeInteger(amount) || amount < 0) throw new CheckoutError('ALLOCATION_PLAN_MISMATCH');
         const [allocation] = await tx`INSERT INTO payment_allocation(transaction_id,booking_id,component,actual_minor)

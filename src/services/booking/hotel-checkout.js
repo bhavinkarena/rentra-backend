@@ -1,4 +1,6 @@
 import 'server-only';
+import { allocateOrderFee } from '../domain/booking-money.js';
+import { resolveServiceFee } from '../finance/service-fee.js';
 import { z } from 'zod';
 import { currentPolicyReferences } from '../content/service.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
@@ -45,30 +47,36 @@ export const stayDetailsSchema = z.object({
 });
 
 /** Visit, payment and policy snapshots in the shapes the existing checkout reads. */
-function stayTerms(stay, payment, publications, names = {}) {
+function stayTerms(stay, payment, publications, names = {}, fee = { bps: 0, source: 'default', settingId: null }) {
   const roomMinor = stay.totals.roomMinor;
   const taxMinor = stay.totals.taxMinor;
-  const totalMinor = stay.totals.totalMinor;
+  // Story 2.2: the guest-paid service fee on rooms and their extras, never on tax, rounded once
+  // per stay and split over rooms. Room+tax amounts (and so the owner's share) are unchanged.
+  const roomFees = allocateOrderFee(stay.lines.map((line) => line.roomMinor), fee.bps);
+  const feeMinor = roomFees.reduce((sum, value) => sum + value, 0);
+  const stayMinor = stay.totals.totalMinor;
+  const totalMinor = stayMinor + feeMinor;
   const nights = stay.lines[0].nights.length;
   const visit = {
     date: stay.checkIn, slot: 'stay', checkIn: stay.checkIn, checkOut: stay.checkOut, nights,
     startsAt: stay.startsAt, endsAt: stay.endsAt, blockedStartAt: stay.startsAt, blockedEndAt: stay.endsAt,
-    rooms: stay.lines.map((line) => ({ roomTypeId: line.roomTypeId, name: names[line.roomTypeId] ?? 'Room', ratePlanId: line.ratePlanId, adults: line.adults,
-      childAges: line.childAges, plan: line.plan, roomMinor: line.roomMinor, taxMinor: line.taxMinor, totalMinor: line.totalMinor })),
-    rentMinor: totalMinor, roomMinor, taxMinor, feeMinor: 0, depositMinor: 0, illustrativeAdvanceMinor: totalMinor,
+    rooms: stay.lines.map((line, index) => ({ roomTypeId: line.roomTypeId, name: names[line.roomTypeId] ?? 'Room', ratePlanId: line.ratePlanId, adults: line.adults,
+      childAges: line.childAges, plan: line.plan, roomMinor: line.roomMinor, taxMinor: line.taxMinor, feeMinor: roomFees[index], totalMinor: line.totalMinor })),
+    rentMinor: stayMinor, roomMinor, taxMinor, feeMinor, totalMinor, depositMinor: 0, illustrativeAdvanceMinor: totalMinor,
   };
   const paymentSnapshot = {
     version: payment.version, provider: payment.provider, environment: payment.environment, mode: payment.mode,
     enabled: payment.enabled, collectionPurpose: 'full', expectedMinor: totalMinor, actualCollectedMinor: 0,
     collectionPolicyVersion: HOTEL_POLICY.version, remainingMinor: 0,
-    allocations: [{ date: stay.checkIn, rentMinor: roomMinor, taxMinor, feeMinor: 0, depositMinor: 0 }],
+    allocations: [{ date: stay.checkIn, rentMinor: roomMinor, taxMinor, feeMinor, depositMinor: 0 }],
   };
-  const policy = { version: HOTEL_POLICY.version, kind: 'stay', publications, hold: { minutes: HOTEL_POLICY.holdMinutes } };
+  const policy = { version: HOTEL_POLICY.version, kind: 'stay', publications, hold: { minutes: HOTEL_POLICY.holdMinutes },
+    pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee' } };
   return {
     visits: [visit], payment: paymentSnapshot, policy,
-    totals: { rentMinor: totalMinor, feeMinor: 0, depositMinor: 0, totalMinor, roomMinor, taxMinor, illustrativeAdvanceMinor: totalMinor },
-    // The stay's own hash covers rooms, plans, nights and money; payment and policy versions are added.
-    hash: quoteDigest({ stay: stay.hash, paymentVersion: payment.version, provider: payment.provider, publications }),
+    totals: { rentMinor: stayMinor, feeMinor, depositMinor: 0, totalMinor, roomMinor, taxMinor, illustrativeAdvanceMinor: totalMinor },
+    // The stay's own hash covers rooms, plans, nights and money; payment, policy and fee are added.
+    hash: quoteDigest({ stay: stay.hash, paymentVersion: payment.version, provider: payment.provider, publications, feeBps: fee.bps }),
   };
 }
 
@@ -79,7 +87,8 @@ async function priceStay(tx, listing, selection, now) {
   const publications = await currentPolicyReferences(tx);
   const types = await tx`SELECT id,name FROM room_type WHERE rentable_id=${listing.id}`;
   const [profile] = await tx`SELECT check_in_minute,check_out_minute FROM hotel_profile WHERE rentable_id=${listing.id}`;
-  const terms = stayTerms(stay, payment, publications, Object.fromEntries(types.map((t) => [t.id, t.name])));
+  const fee = await resolveServiceFee(tx, listing.client_id);
+  const terms = stayTerms(stay, payment, publications, Object.fromEntries(types.map((t) => [t.id, t.name])), fee);
   // Hotel times for the guest's screens; the instants are already in startsAt/endsAt.
   terms.policy.hotel = { checkInMinute: profile?.check_in_minute ?? null, checkOutMinute: profile?.check_out_minute ?? null };
   return { stay, ...terms };
@@ -124,7 +133,7 @@ export async function createStayQuote(database, input, { customerId }) {
       amount_rent_minor,amount_fee_minor,amount_deposit_minor,created_at,expires_at)
     VALUES (${customerId},${quoteDigest(selection)},${selection.rentableId},'INR','Asia/Kolkata',${JSON.stringify(selection)}::text::jsonb,
       ${JSON.stringify(quote.visits)}::text::jsonb,${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(quote.payment)}::text::jsonb,
-      ${HOTEL_POLICY.version},${HOTEL_POLICY.version},1,${quote.hash},${quote.totals.rentMinor},0,0,${new Date(quote.now).toISOString()},${expiresAt}) RETURNING id`;
+      ${HOTEL_POLICY.version},${HOTEL_POLICY.version},1,${quote.hash},${quote.totals.rentMinor},${quote.totals.feeMinor},0,${new Date(quote.now).toISOString()},${expiresAt}) RETURNING id`;
   return { id: saved.id, version: 1, hash: quote.hash, expiresAt, selection, visits: quote.visits, totals: quote.totals, replaces: quote.replaces };
 }
 

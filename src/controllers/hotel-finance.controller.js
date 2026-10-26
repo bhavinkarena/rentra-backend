@@ -12,6 +12,7 @@ import {
   settlePayoutRun,
   listPayoutRuns,
 } from '@/services/finance/hotel-payouts.js';
+import { changeServiceFee, listServiceFees } from '@/services/finance/service-fee.js';
 import { getAdminHotelAnalytics } from '@/services/analytics/hotel-analytics.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
@@ -45,4 +46,10 @@ export const payoutRunsList = asyncHandler(async (_req, res) =>
 );
 export const hotelAnalytics = asyncHandler(async (req, res) =>
   ok(res, await getAdminHotelAnalytics(sql, (await bookingActor('admin')).id, req.query)),
+);
+
+/** Story 2.2: the one guest-paid Rentra service fee (global and owner-wide overrides). */
+export const serviceFees = asyncHandler(async (_req, res) => ok(res, await listServiceFees(sql)));
+export const serviceFeeChange = asyncHandler(async (req, res) =>
+  ok(res, await changeServiceFee(sql, { adminId: req.admin.id, input: req.body, ip: req.ip })),
 );

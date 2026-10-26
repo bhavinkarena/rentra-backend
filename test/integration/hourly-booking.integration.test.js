@@ -143,7 +143,7 @@ test(
       // Pricing: peak band, split across 18:00, fee on rent, hour bands in the policy, no court ids in the quote.
       const peak = await quote(a, { start: '18:00' });
       assert.equal(peak.totals.rentMinor, 120000);
-      assert.equal(peak.totals.feeMinor, 9600);
+      assert.equal(peak.totals.feeMinor, 6000); // Story 2.2: 5% service fee
       assert.equal(peak.visits[0].slot, 'hourly');
       assert.equal(peak.policy.cancellation.bandUnit, 'hours');
       assert.equal('freeCourts' in peak, false);

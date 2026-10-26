@@ -95,9 +95,13 @@ test('Phase 7: hotel booking, payment and cancellation', { skip: !process.env.PO
     assert.equal(done.state, 'confirmed');
     assert.deepEqual(await roomStates(held.orderId), ['booked', 'booked']);
     const parts = await sql`SELECT component::text, actual_minor::int AS amount FROM payment_allocation a JOIN booking b ON b.id=a.booking_id WHERE b.order_id=${held.orderId} ORDER BY component`;
-    assert.deepEqual(parts.map((p) => p.component), ['rent', 'tax']);
-    assert.equal(parts[0].amount, quote.totals.roomMinor);
-    assert.equal(parts[1].amount, quote.totals.taxMinor);
+    // Story 2.2: the guest service fee is its own component, 5% of rooms before tax.
+    assert.deepEqual(parts.map((p) => p.component), ['fee', 'rent', 'tax']);
+    assert.equal(quote.totals.feeMinor, Math.floor((quote.totals.roomMinor * 5 + 50) / 100));
+    assert.equal(parts[0].amount, quote.totals.feeMinor);
+    assert.equal(parts[1].amount, quote.totals.roomMinor);
+    assert.equal(parts[2].amount, quote.totals.taxMinor);
+    assert.equal(quote.totals.totalMinor, quote.totals.roomMinor + quote.totals.taxMinor + quote.totals.feeMinor);
     const record = await readBookingRecord(sql, { kind: 'customer', session }, held.orderId, env);
     assert.equal(record.stay.rooms.length, 2);
     assert.equal(record.stay.details.gstin, '24ABCDE1234F1Z5');
@@ -198,7 +202,7 @@ test('Phase 7: hotel booking, payment and cancellation', { skip: !process.env.PO
     assert.equal(receipt.refundMinor, quote.totals.totalMinor);
     assert.deepEqual(await roomStates(held.orderId), ['released']);
     const parts = await sql`SELECT ra.component::text, ra.expected_minor::int amount FROM refund_allocation ra WHERE ra.booking_id=${visit.id} ORDER BY component`;
-    assert.deepEqual(parts.map((p) => [p.component, p.amount]), [['rent', quote.totals.roomMinor], ['tax', quote.totals.taxMinor]]);
+    assert.deepEqual(parts.map((p) => [p.component, p.amount]), [['fee', quote.totals.feeMinor], ['rent', quote.totals.roomMinor], ['tax', quote.totals.taxMinor]]);
   });
 
   await t.test('non-refundable rate keeps the whole stay', async () => {

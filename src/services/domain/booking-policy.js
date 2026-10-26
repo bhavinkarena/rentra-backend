@@ -9,7 +9,8 @@ export const BOOKING_POLICY = Object.freeze({
   /** Request to book: the owner answers within this, then the guest pays within payHoursAfterApproval. */
   requestHours: 24,
   payHoursAfterApproval: 12,
-  platformFeeBps: 800,
+  /** Story 2.2 launch default, used only when no service_fee_setting row applies. */
+  platformFeeBps: 500,
   illustrativeAdvanceBps: 2500,
 });
 

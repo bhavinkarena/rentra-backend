@@ -31,21 +31,21 @@ export function applyBasisPoints(amountMinor, basisPoints) {
   return safeNumber((BigInt(amountMinor) * BigInt(basisPoints) + 5_000n) / 10_000n);
 }
 
-export function calculateVisitPriceMinor({ baseRentMinor, depositMinor, guests, includedGuests, capacity, extraGuestChargeMinor }) {
+export function calculateVisitPriceMinor({ baseRentMinor, depositMinor, guests, includedGuests, capacity, extraGuestChargeMinor, feeBps }) {
   [baseRentMinor, depositMinor, extraGuestChargeMinor].forEach((value) => integer(value));
   [guests, includedGuests, capacity].forEach((value) => integer(value, 'Guest count'));
   if (guests < 1 || capacity < 1 || includedGuests > capacity || guests > capacity) {
     throw new RangeError('Guest count exceeds the configured capacity');
   }
   const extraGuestsMinor = safeNumber(BigInt(Math.max(0, guests - includedGuests)) * BigInt(extraGuestChargeMinor));
-  return visitMoneyMinor({ baseRentMinor, extraGuestsMinor, depositMinor });
+  return visitMoneyMinor({ baseRentMinor, extraGuestsMinor, depositMinor, feeBps });
 }
 
 /** Fee, total and illustrative advance for one visit's rent. The one place these rules live. */
-export function visitMoneyMinor({ baseRentMinor, extraGuestsMinor = 0, depositMinor }) {
+export function visitMoneyMinor({ baseRentMinor, extraGuestsMinor = 0, depositMinor, feeBps = BOOKING_POLICY.platformFeeBps, feeMinor: givenFee }) {
   [baseRentMinor, extraGuestsMinor, depositMinor].forEach((value) => integer(value));
   const rentMinor = safeNumber(BigInt(baseRentMinor) + BigInt(extraGuestsMinor));
-  const feeMinor = applyBasisPoints(rentMinor, BOOKING_POLICY.platformFeeBps);
+  const feeMinor = givenFee ?? applyBasisPoints(rentMinor, feeBps);
   const totalMinor = safeNumber(BigInt(rentMinor) + BigInt(feeMinor));
   const illustrativeAdvanceMinor = safeNumber(BigInt(applyBasisPoints(rentMinor, BOOKING_POLICY.illustrativeAdvanceBps)) + BigInt(feeMinor));
   return {
@@ -55,6 +55,38 @@ export function visitMoneyMinor({ baseRentMinor, extraGuestsMinor = 0, depositMi
     illustrativeAdvanceMinor,
     illustrativeBalanceMinor: totalMinor - illustrativeAdvanceMinor,
   };
+}
+
+/**
+ * Story 2.2: one Rentra service fee per order, rounded half up once on the
+ * whole rental base, then split over its parts by largest remainder (ties to
+ * the earlier part) so the parts always add up to the order fee.
+ */
+export function allocateOrderFee(baseMinors, feeBps) {
+  baseMinors.forEach((value) => integer(value));
+  const total = baseMinors.reduce((sum, value) => sum + BigInt(value), 0n);
+  const fee = BigInt(applyBasisPoints(safeNumber(total), feeBps));
+  if (total === 0n) return baseMinors.map(() => 0);
+  const exact = baseMinors.map((value) => BigInt(value) * fee);
+  const parts = exact.map((value) => value / total);
+  let left = fee - parts.reduce((sum, value) => sum + value, 0n);
+  const order = exact.map((value, index) => ({ index, rest: value % total }))
+    .sort((a, b) => (b.rest > a.rest ? 1 : b.rest < a.rest ? -1 : a.index - b.index));
+  for (const { index } of order) {
+    if (left <= 0n) break;
+    parts[index] += 1n;
+    left -= 1n;
+  }
+  return parts.map(safeNumber);
+}
+
+/** Re-prices visits with the order-level fee; everything else about each visit is unchanged. */
+export function withOrderFee(visits, feeBps) {
+  const fees = allocateOrderFee(visits.map((visit) => visit.rentMinor), feeBps);
+  return visits.map((visit, index) => ({
+    ...visit,
+    ...visitMoneyMinor({ baseRentMinor: visit.baseRentMinor, extraGuestsMinor: visit.extraGuestsMinor, depositMinor: visit.depositMinor, feeMinor: fees[index] }),
+  }));
 }
 
 const TOTAL_FIELDS = ['baseRentMinor', 'extraGuestsMinor', 'rentMinor', 'feeMinor', 'totalMinor', 'depositMinor', 'brokerageMinor', 'illustrativeAdvanceMinor', 'illustrativeBalanceMinor'];
@@ -70,7 +102,7 @@ export function sumVisitTotals(visits) {
  * No collection, tax, payment state or inventory availability is inferred here.
  * Full-day overrides must be explicit; day/night overrides are never added.
  */
-export function priceVisitsMinor({ dates, slot, guests, rate, overridesByDate = {}, weekendDays }) {
+export function priceVisitsMinor({ dates, slot, guests, rate, overridesByDate = {}, weekendDays, feeBps = BOOKING_POLICY.platformFeeBps }) {
   if (!BOOKING_SLOTS.includes(slot) || !rate) throw new RangeError('Slot pricing is not configured');
   integer(rate.weekdayMinor);
   integer(rate.weekendMinor);
@@ -81,10 +113,11 @@ export function priceVisitsMinor({ dates, slot, guests, rate, overridesByDate = 
     return {
       date, slot, guests,
       priceSource: override != null ? 'override' : weekend ? 'weekend' : 'weekday',
-      ...calculateVisitPriceMinor({ ...rate, baseRentMinor, guests }),
+      ...calculateVisitPriceMinor({ ...rate, baseRentMinor, guests, feeBps }),
     };
   });
-  return { currency: BOOKING_POLICY.currency, pricingVersion: BOOKING_POLICY.version, visits, totals: sumVisitTotals(visits) };
+  const priced = withOrderFee(visits, feeBps);
+  return { currency: BOOKING_POLICY.currency, pricingVersion: BOOKING_POLICY.version, visits: priced, totals: sumVisitTotals(priced) };
 }
 
 export function formatINRMinor(amountMinor) {

@@ -103,6 +103,10 @@ export async function commissionCommand(database, actor, input) {
   const parsed = z.discriminatedUnion('action', [createRule, endRule]).safeParse(input);
   if (!parsed.success) throw unprocessable(fields(parsed.error));
   const value = parsed.data;
+  // Story 2.2: hotel commission is replaced by the guest-paid service fee. Existing rules stay
+  // as history for stays booked under them and may still be ended; no new rule may start.
+  if (value.action !== 'end')
+    throw conflict('COMMISSION_RETIRED', 'Hotel commission is replaced by the Rentra service fee. Set fees under Finance → Service fee.');
   return database.begin(async (tx) => {
     await authorize(tx, actor, true);
     const today = await todayIst(tx);

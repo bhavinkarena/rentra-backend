@@ -173,74 +173,58 @@ test(
       },
     );
 
-    await t.test('commission rules: preview, save, overlap, past dates, end', async () => {
-      const tomorrow = addLocalDays(propertyToday(), 1);
-      const base = {
-        action: 'create',
-        scope: 'vertical',
-        ratePercent: '13',
-        tier: 'standard',
-        validFrom: tomorrow,
-        reason: 'Standard hotel commission',
-      };
-      await rejects(
-        commissionCommand(sql, admin, { ...base, validFrom: '2020-01-01', preview: 'true' }),
-        'VALIDATION_FAILED',
-      );
-      const preview = await commissionCommand(sql, admin, { ...base, preview: 'true' });
-      assert.match(preview.effect, /₹390 commission \+ ₹70\.2 GST/);
-      await rejects(
-        commissionCommand(sql, admin, { ...base, previewHash: 'x'.repeat(64) }),
-        'STALE_PREVIEW',
-      );
-      await commissionCommand(sql, admin, { ...base, previewHash: preview.previewHash });
-      await rejects(
-        commissionCommand(sql, admin, { ...base, previewHash: preview.previewHash }),
-        'RULE_OVERLAP',
-      );
-      const city = {
-        action: 'create',
-        scope: 'city',
-        cityId: h.city,
-        ratePercent: '10',
-        tier: 'founding',
-        validFrom: tomorrow,
-        validTo: addLocalDays(tomorrow, 364),
-        reason: 'Founding partners in Surat',
-      };
-      const cityPreview = await commissionCommand(sql, admin, { ...city, preview: 'true' });
-      assert.match(cityPreview.effect, /^Replaces 13%/);
-      await commissionCommand(sql, admin, { ...city, previewHash: cityPreview.previewHash });
-      assert.equal(
-        (await resolveCommission(sql, { rentableId: h.hotel, date: tomorrow })).rateBps,
-        1000,
-      );
-      const list = await listCommissionRules(sql, admin);
-      assert.deepEqual(list.items.map((r) => [r.scope, r.rateBps, r.state, r.hotels]).sort(), [
-        ['city', 1000, 'scheduled', 1],
-        ['vertical', 1300, 'scheduled', 1],
-      ]);
-      const cityRule = list.items.find((r) => r.scope === 'city');
-      const end = {
-        action: 'end',
-        id: cityRule.id,
-        validTo: addLocalDays(tomorrow, 30),
-        reason: 'Founding period shortened',
-      };
-      const endPreview = await commissionCommand(sql, admin, { ...end, preview: 'true' });
-      await commissionCommand(sql, admin, { ...end, previewHash: endPreview.previewHash });
-      assert.equal(
-        (await resolveCommission(sql, { rentableId: h.hotel, date: addLocalDays(tomorrow, 31) }))
-          .rateBps,
-        1300,
-      );
-      const [readOnly] =
-        await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES ('ro@fixture.invalid','x','RO','["admin.payments.read"]'::jsonb) RETURNING id`;
-      await rejects(
-        commissionCommand(sql, { kind: 'admin', id: readOnly.id }, { ...base, preview: 'true' }),
-        'FORBIDDEN',
-      );
-    });
+    await t.test(
+      'commission rules are retired history: no new rule, existing rules can end (Story 2.2)',
+      async () => {
+        const tomorrow = addLocalDays(propertyToday(), 1);
+        const base = {
+          action: 'create',
+          scope: 'vertical',
+          ratePercent: '13',
+          tier: 'standard',
+          validFrom: tomorrow,
+          reason: 'Standard hotel commission',
+        };
+        await rejects(
+          commissionCommand(sql, admin, { ...base, preview: 'true' }),
+          'COMMISSION_RETIRED',
+        );
+        await rejects(
+          commissionCommand(sql, admin, {
+            ...base,
+            scope: 'city',
+            cityId: h.city,
+            preview: 'true',
+          }),
+          'COMMISSION_RETIRED',
+        );
+        // A rule from before the service fee stays visible and can still be ended.
+        await sql`INSERT INTO commission_rule(vertical_code, city_id, rate_bps, tier, valid_from, reason, created_by)
+        VALUES ('hotel', ${h.city}, 1000, 'founding', ${tomorrow}, 'Founding partners in Surat', ${h.admin})`;
+        const list = await listCommissionRules(sql, admin);
+        const cityRule = list.items.find((r) => r.scope === 'city');
+        assert.equal(cityRule.rateBps, 1000);
+        const end = {
+          action: 'end',
+          id: cityRule.id,
+          validTo: addLocalDays(tomorrow, 30),
+          reason: 'Founding period shortened',
+        };
+        const endPreview = await commissionCommand(sql, admin, { ...end, preview: 'true' });
+        await commissionCommand(sql, admin, { ...end, previewHash: endPreview.previewHash });
+        assert.equal(
+          (await resolveCommission(sql, { rentableId: h.hotel, date: addLocalDays(tomorrow, 10) }))
+            .rateBps,
+          1000,
+        );
+        const [readOnly] =
+          await sql`INSERT INTO admin_user(email,password_hash,name,permissions) VALUES ('ro@fixture.invalid','x','RO','["admin.payments.read"]'::jsonb) RETURNING id`;
+        await rejects(
+          commissionCommand(sql, { kind: 'admin', id: readOnly.id }, { ...end, preview: 'true' }),
+          'FORBIDDEN',
+        );
+      },
+    );
 
     await t.test(
       'tax slabs: replace from a future date; quotes after it use the new bands',

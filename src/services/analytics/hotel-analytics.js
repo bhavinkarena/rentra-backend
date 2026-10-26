@@ -126,7 +126,7 @@ export async function getAdminHotelAnalytics(database, adminId, input) {
             WHERE ra.payment_allocation_id = pa.id AND f.state <> 'failed')), 0)::text AS refunded
         FROM payment_allocation pa JOIN payment_transaction t ON t.id = pa.transaction_id AND t.kind = 'capture' AND t.outcome = 'succeeded'
         JOIN booking b ON b.id = pa.booking_id AND b.slot = 'stay' JOIN rentable r ON r.id = b.rentable_id
-        WHERE b.local_day BETWEEN ${from}::date AND ${to}::date AND ${scope}`,
+        WHERE b.local_day BETWEEN ${from}::date AND ${to}::date AND ${scope} AND pa.component IN ('rent', 'tax')`,
       sql`SELECT coalesce(sum((line->>'commissionMinor')::bigint), 0)::text AS commission, coalesce(sum((line->>'roomMinor')::bigint), 0)::text AS room
         FROM payout_run pr, jsonb_array_elements(pr.snapshot->'lines') line JOIN rentable r ON r.id = (line->>'rentableId')::uuid
         WHERE (line->>'checkIn')::date BETWEEN ${from}::date AND ${to}::date AND ${scope}`,

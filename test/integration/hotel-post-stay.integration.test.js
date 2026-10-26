@@ -122,11 +122,13 @@ test('Phase 8: hotel post-stay — payouts, statements, analytics, reviews', { s
     preview = await payouts.previewPayoutRun(sql, a.admin, { environment: 'test' }, { now });
     const ids = preview.lines.map((line) => line.bookingId).sort();
     assert.deepEqual(ids, [a1.visitId, a2.visitId, b1.visitId].sort(), 'checked-in and kept-charge stays only');
-    // Payments and refunds straight from the ledger, not from the service.
+    // Payments and refunds straight from the ledger, not from the service. The guest service fee
+    // (Story 2.2) is Rentra's money, so the owner statement reconciles to rent and tax only.
     const [ledger] = await sql`SELECT
-        (SELECT sum(pa.actual_minor) FROM payment_allocation pa WHERE pa.booking_id IN ${sql(ids)})::bigint AS paid,
+        (SELECT sum(pa.actual_minor) FROM payment_allocation pa WHERE pa.booking_id IN ${sql(ids)} AND pa.component <> 'fee')::bigint AS paid,
         (SELECT coalesce(sum(ra.expected_minor), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
-          WHERE ra.booking_id IN ${sql(ids)} AND f.state <> 'failed')::bigint AS refunded`;
+          WHERE ra.booking_id IN ${sql(ids)} AND f.state <> 'failed' AND ra.component <> 'fee')::bigint AS refunded`;
+    assert.ok(preview.lines.every((line) => line.commissionMinor === 0 && line.commissionGstMinor === 0), 'guest-fee stays pay no commission');
     const tot = preview.totals;
     assert.equal(tot.paidMinor, Number(ledger.paid));
     assert.equal(tot.refundedMinor, Number(ledger.refunded));
@@ -142,15 +144,16 @@ test('Phase 8: hotel post-stay — payouts, statements, analytics, reviews', { s
     assert.equal(lineA2.roomMinor, a2.quote.totals.roomMinor, 'a non-refundable cancellation pays out the kept room');
   });
 
-  await t.test('a stay with no commission rule waits in held, never guessed', async () => {
+  await t.test('a guest-fee stay never waits for a commission rule (Story 2.2)', async () => {
     const c = await seedHotel(sql);
     await sql`INSERT INTO payout_destination(client_id,version,method,holder_name,account_last4,ifsc,name_check,state,source,submitted_at,verification_provider,verification_reference,verification_evidence_hash,verified_at)
       VALUES (${c.owner},1,'bank','Hotel Owner','4421','HDFC0001234','same','verified','migration',now(),'fixture','fixture-verification',${'a'.repeat(64)},now())`;
     const c1 = await paidStay(c, c.deluxeBase);
     await checkedIn(c1.visitId);
     const run = await payouts.previewPayoutRun(sql, a.admin, { environment: 'test' }, { now });
-    assert.ok(run.held.some((line) => line.bookingId === c1.visitId && /commission rule/.test(line.reason)));
-    assert.ok(!run.lines.some((line) => line.bookingId === c1.visitId));
+    assert.ok(!run.held.some((line) => line.bookingId === c1.visitId));
+    const line = run.lines.find((l) => l.bookingId === c1.visitId);
+    assert.equal(line.commissionMinor, 0);
     await sql`INSERT INTO commission_rule(vertical_code, rentable_id, rate_bps, tier, valid_from, reason, created_by)
       VALUES ('hotel', ${c.hotel}, 1000, 'standard', '2020-01-01', 'Launch commission', ${c.admin})`;
     preview = await payouts.previewPayoutRun(sql, a.admin, { environment: 'test' }, { now });

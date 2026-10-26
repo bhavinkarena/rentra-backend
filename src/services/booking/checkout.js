@@ -154,13 +154,13 @@ async function holdStay(tx, listing, customer, value, saved, requestHash, env) {
     amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,idempotency_key,request_hash,hold_expires_at)
     VALUES(${orderId},${'TEST_' + orderId},${customer.id},${listing.id},'held','INR','Asia/Kolkata',${quote.id},${quote.version},${quote.hash},
     ${quote.expiresAt},${HOTEL_POLICY.version},${HOTEL_POLICY.version},${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(listingSnapshot)}::text::jsonb,
-    ${JSON.stringify(details)}::text::jsonb,${quote.totals.rentMinor},0,0,${quote.totals.totalMinor},'real','test',${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
+    ${JSON.stringify(details)}::text::jsonb,${quote.totals.rentMinor},${quote.totals.feeMinor ?? 0},0,${quote.totals.totalMinor},'real','test',${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
   await tx`INSERT INTO booking(id,reference,rentable_id,customer_id,order_id,item_position,local_day,slot,guests,
     starts_at,ends_at,blocked_start_at,blocked_end_at,hours_known,currency,time_zone,
     amount_rent_minor,amount_fee_minor,amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,slot_snapshot)
     VALUES(${bookingId},${'T' + bookingId.replaceAll('-', '').slice(0, 15)},${listing.id},${customer.id},${orderId},1,${visit.date},'stay',${guests},
     ${visit.startsAt},${visit.endsAt},${visit.blockedStartAt},${visit.blockedEndAt},true,'INR','Asia/Kolkata',
-    ${visit.rentMinor},0,0,${visit.rentMinor},'real','test',${JSON.stringify(visit)}::text::jsonb)`;
+    ${visit.rentMinor},${visit.feeMinor ?? 0},0,${visit.rentMinor + (visit.feeMinor ?? 0)},'real','test',${JSON.stringify(visit)}::text::jsonb)`;
   // The same rooms, plans and money as the quote, or QUOTE_CHANGED / SOLD_OUT (checked again under this lock).
   await holdHotelRooms(tx, listing, { bookingId, quote: quote.stay, guestNames: value.stay.guestNames, now: nowDate });
   await tx`INSERT INTO payment_order(id,booking_order_id,provider,environment,mode,currency,purpose,expected_minor,idempotency_key,request_hash,due_at)

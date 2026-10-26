@@ -63,7 +63,9 @@ test('Phase 10: hotel booking flow — partial cancellation, change booking, KPI
     const stay = await pay({ checkIn, checkOut: addLocalDays(checkIn, 2), rooms: roomsOf(2, h.deluxeBase) });
     const rooms = await sql`SELECT id, (amount_room_minor + amount_tax_minor)::int AS total FROM booking_room WHERE booking_id=${stay.visitId} ORDER BY id`;
     const preview = await previewCancellation(sql, session, { orderId: stay.orderId, visitIds: [stay.visitId], roomIds: [rooms[0].id] }, env);
-    assert.equal(preview.refundMinor, rooms[0].total, JSON.stringify(preview.visits));
+    // Story 2.2: each room refund also returns its share of the guest service fee.
+    const feeShare = Math.floor((stay.quote.totals.feeMinor * rooms[0].total) / (rooms[0].total + rooms[1].total));
+    assert.equal(preview.refundMinor, rooms[0].total + feeShare, JSON.stringify(preview.visits));
     await commitCancellation(sql, session, { orderId: stay.orderId, visitIds: [stay.visitId], roomIds: [rooms[0].id], hash: preview.hash, idempotencyKey: randomUUID(), accepted: true }, env);
     const states = await sql`SELECT id, state FROM booking_room WHERE booking_id=${stay.visitId} ORDER BY id`;
     assert.deepEqual(states.map((r) => r.state), ['released', 'booked']);
@@ -73,7 +75,7 @@ test('Phase 10: hotel booking flow — partial cancellation, change booking, KPI
     assert.equal(held, 1, 'the cancelled room is back on sale');
     // The last room cancels the whole stay.
     const rest = await previewCancellation(sql, session, { orderId: stay.orderId, visitIds: [stay.visitId] }, env);
-    assert.equal(rest.refundMinor, rooms[1].total);
+    assert.equal(rest.refundMinor, rooms[1].total + stay.quote.totals.feeMinor - feeShare, 'the rest of the fee, nothing stranded');
   });
 
   await t.test('change dates: new stay paid, old stay cancelled and refunded in full', async () => {
