@@ -45,14 +45,18 @@ if (process.env.OWNER_FIXTURE_HUB === '1') {
 }
 const { issuePortalSession } = await import('../../src/services/auth/portal-sessions.js');
 const { encryptSession } = await import('../../src/services/auth/session-crypto.js');
-const owner = await encryptSession({
-  role: 'client',
-  userId: f.owner,
-  sessionId: await issuePortalSession(sql, 'client', f.owner, 3600),
-});
+const session = async (userId) =>
+  encryptSession({
+    role: 'client',
+    userId,
+    sessionId: await issuePortalSession(sql, 'client', userId, 3600),
+  });
+// `other` is a second owner, for the draft-recovery gate's access-denial check.
+const owner = await session(f.owner),
+  other = await session(f.other);
 await writeFile(
   process.env.OWNER_WIZARD_FIXTURE,
-  JSON.stringify({ databaseUrl: fixture.url, ids: f, tokens: { owner } }),
+  JSON.stringify({ databaseUrl: fixture.url, ids: f, tokens: { owner, other } }),
 );
 const { v2: cloudinary } = await import('cloudinary');
 cloudinary.uploader.upload_stream = (options, callback) =>
