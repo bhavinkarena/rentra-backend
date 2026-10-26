@@ -31,7 +31,7 @@ const n = (value) => Number(value ?? 0);
 
 /** Sold room-nights and their room revenue per night, for the scoped hotels. */
 function soldNights(sql, scope, from, to) {
-  return sql`SELECT (night->>'night')::date AS night, count(*)::int AS rooms, sum((night->>'rateMinor')::bigint)::text AS revenue
+  return sql`SELECT (night->>'night')::date AS night, count(*) FILTER (WHERE (night->>'night')::date < coalesce(br.inventory_end,br.check_out))::int AS rooms, sum((night->>'rateMinor')::bigint)::text AS revenue
     FROM booking_room br JOIN rentable r ON r.id = br.rentable_id, jsonb_array_elements(br.nights) night
     WHERE br.state IN ('booked', 'stayed', 'no_show') AND (night->>'night')::date BETWEEN ${from}::date AND ${to}::date AND ${scope}
     GROUP BY 1`;
@@ -131,14 +131,14 @@ export async function getAdminHotelAnalytics(database, adminId, input) {
         FROM payout_run pr, jsonb_array_elements(pr.snapshot->'lines') line JOIN rentable r ON r.id = (line->>'rentableId')::uuid
         WHERE (line->>'checkIn')::date BETWEEN ${from}::date AND ${to}::date AND ${scope}`,
       sql`SELECT r.id, r.title, ci.name AS city, x.rooms AS "roomNights", x.revenue::text AS "revenueMinor", r.rating_avg AS rating
-        FROM (SELECT br.rentable_id, count(*)::int AS rooms, sum((night->>'rateMinor')::bigint) AS revenue
+        FROM (SELECT br.rentable_id, count(*) FILTER (WHERE (night->>'night')::date < coalesce(br.inventory_end,br.check_out))::int AS rooms, sum((night->>'rateMinor')::bigint) AS revenue
           FROM booking_room br, jsonb_array_elements(br.nights) night
           WHERE br.state IN ('booked', 'stayed', 'no_show') AND (night->>'night')::date BETWEEN ${from}::date AND ${to}::date GROUP BY 1) x
         JOIN rentable r ON r.id = x.rentable_id JOIN city ci ON ci.id = r.city_id WHERE ${scope}
         ORDER BY x.revenue DESC LIMIT 10`,
       sql`SELECT ci.id, ci.name, count(DISTINCT r.id) FILTER (WHERE r.status = 'live')::int AS "liveHotels", coalesce(sum(x.rooms), 0)::int AS "roomNights"
         FROM rentable r JOIN city ci ON ci.id = r.city_id
-        LEFT JOIN (SELECT br.rentable_id, count(*)::int AS rooms FROM booking_room br, jsonb_array_elements(br.nights) night
+        LEFT JOIN (SELECT br.rentable_id, count(*) FILTER (WHERE (night->>'night')::date < coalesce(br.inventory_end,br.check_out))::int AS rooms FROM booking_room br, jsonb_array_elements(br.nights) night
           WHERE br.state IN ('booked', 'stayed', 'no_show') AND (night->>'night')::date BETWEEN ${from}::date AND ${to}::date GROUP BY 1) x ON x.rentable_id = r.id
         WHERE ${scope} GROUP BY ci.id, ci.name ORDER BY 4 DESC, 3 DESC LIMIT 10`,
       sql`SELECT count(*) FILTER (WHERE r.status = 'live')::int AS live, count(*) FILTER (WHERE r.status IN ('pending_review', 'pending_verification'))::int AS pending,

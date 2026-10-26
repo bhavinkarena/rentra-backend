@@ -26,17 +26,17 @@ export async function ownerDayVisits(database, ownerId, { date = propertyToday()
   const joins = database`FROM booking b JOIN booking_order o ON o.id=b.order_id JOIN rentable r ON r.id=b.rentable_id
     JOIN "user" u ON u.id=r.client_id JOIN category c ON c.id=r.category_id`;
   const [counts] = await database`SELECT count(*)::int total ${joins} WHERE ${where}`;
-  const rows = await database`SELECT b.*, r.booking_config,r.title, r.photos, c.vertical_code, o.listing_snapshot,
+  const rows = await database`SELECT b.*,CASE WHEN b.slot='stay' THEN (SELECT coalesce(sum(br.adults+cardinality(br.child_ages)),0)::int FROM booking_room br WHERE br.booking_id=b.id AND br.state='booked') ELSE b.guests END AS active_guests, r.booking_config,r.title, r.photos, c.vertical_code, o.listing_snapshot,
     o.reference order_reference,o.state order_state,o.amount_rent_minor order_rent,o.amount_fee_minor order_fee,o.amount_deposit_minor order_deposit,
     (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments,
     (SELECT string_agg(x.n||' × '||x.name, ', ' ORDER BY x.name) FROM (SELECT t.name, count(*) n FROM booking_room br JOIN room_type t ON t.id=br.room_type_id
-      WHERE br.booking_id=b.id AND br.state<>'released' GROUP BY t.name) x) room_summary,rs.name resource_name,clock_timestamp() as_of ${joins} LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
+      WHERE br.booking_id=b.id AND br.state<>'released' AND br.departed_at IS NULL GROUP BY t.name) x) room_summary,rs.name resource_name,clock_timestamp() as_of ${joins} LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
     WHERE ${where} ORDER BY ${event === 'leaving' ? database`b.ends_at` : database`b.starts_at`} ASC NULLS LAST,b.id
     LIMIT ${Math.min(50, limit)} OFFSET ${offset}`;
   return { total: counts.total, items: rows.map(row => ({
     id: row.order_id, visitId: row.id, reference: row.order_reference, title: row.title,
     propertyId: row.rentable_id, vertical: row.vertical_code, state: row.order_state,
-    visitState: row.state, guests: row.guests, firstVisit: (row.local_day instanceof Date ? row.local_day.toISOString() : String(row.local_day)).slice(0,10),
+    visitState: row.state, guests: row.active_guests, firstVisit: (row.local_day instanceof Date ? row.local_day.toISOString() : String(row.local_day)).slice(0,10),
     startsAt: row.hours_known ? new Date(row.starts_at).toISOString() : null,
     endsAt: row.hours_known ? new Date(row.ends_at).toISOString() : null,
     firstVisitStartsAt: row.hours_known ? new Date(row.starts_at).toISOString() : null,

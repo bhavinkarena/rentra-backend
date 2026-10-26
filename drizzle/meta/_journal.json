@@ -533,6 +533,13 @@
       "when": 1790591505015,
       "tag": "0075_cancellation_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1790591506015,
+      "tag": "0076_early_departure",
+      "breakpoints": true
     }
   ]
 }

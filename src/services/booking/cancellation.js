@@ -6,6 +6,38 @@ import { quoteDigest } from './quotes.js';
 import { cancellationEntitlement } from '../domain/cancellation.js';
 import { previewHotelCancellation } from './hotel-stays.js';
 import { allocateByWeights, refundOfPaid } from '../domain/booking-money.js';
+import { earlyDepartureRoom } from '../domain/early-departure.js';
+import { stayInstants } from '../domain/hotel.js';
+
+async function departureEntitlement(visit, now, roomIds, all) {
+  if (visit.slot !== 'stay' || visit.policy_snapshot?.kind !== 'stay' || !visit.hours_known
+    || !['confirmed', 'handed_over', 'returned'].includes(visit.state)
+    || new Date(visit.starts_at) > new Date(now) || new Date(visit.ends_at) <= new Date(now)) throw new CheckoutError('EARLY_DEPARTURE_UNAVAILABLE');
+  const selected = roomIds ? all.filter(row => roomIds.includes(row.id)) : all.filter(row => row.state === 'booked');
+  if (!selected.length || (roomIds && selected.length !== roomIds.length) || selected.some(row => row.state !== 'booked' || row.departed_at)) throw new CheckoutError('ROOM_NOT_CANCELLABLE');
+  let fees, details;
+  try {
+    const localDay=String(visit.local_day instanceof Date ? visit.local_day.toISOString() : visit.local_day).slice(0,10);
+    if (selected.some(row => row.arrival!==localDay || row.arrival!==visit.slot_snapshot?.checkIn || row.checkout!==visit.slot_snapshot?.checkOut)) throw new RangeError('EARLY_DEPARTURE_UNSUPPORTED');
+    const schedule=visit.policy_snapshot.hotel;
+    if (![schedule?.checkInMinute,schedule?.checkOutMinute].every(minute=>Number.isInteger(minute)&&minute>=0&&minute<1440)) throw new RangeError('EARLY_DEPARTURE_UNSUPPORTED');
+    const booked=stayInstants({checkIn:localDay,checkOut:selected[0].checkout,checkInMinute:schedule.checkInMinute,checkOutMinute:schedule.checkOutMinute});
+    if (+new Date(booked.startsAt)!==+new Date(visit.starts_at) || +new Date(booked.endsAt)!==+new Date(visit.ends_at)) throw new RangeError('EARLY_DEPARTURE_UNSUPPORTED');
+    fees = allocateByWeights(Number(visit.amount_fee_minor), all.map(row => Number(row.amount_room_minor)));
+    details = selected.map(row => ({ id: row.id, ...earlyDepartureRoom({
+      checkIn: row.arrival, checkOut: row.checkout, nights: row.nights,
+      rent: Number(row.amount_room_minor), tax: Number(row.amount_tax_minor), fee: fees[all.indexOf(row)],
+      policy: row.plan_snapshot?.cancellationPolicy, checkInMinute: visit.policy_snapshot.hotel?.checkInMinute,
+      timeZone: visit.time_zone,
+    }, now) }));
+    if (details.some(room => room.consumedNights.length===0)) throw new RangeError('EARLY_DEPARTURE_UNSUPPORTED');
+  } catch { throw new CheckoutError('EARLY_DEPARTURE_UNSUPPORTED'); }
+  const total = key => details.reduce((sum, room) => sum + BigInt(room.refund[key]), 0n);
+  if (['rent', 'tax', 'fee'].some(key => total(key) > BigInt(Number.MAX_SAFE_INTEGER))) throw new CheckoutError('EARLY_DEPARTURE_UNSUPPORTED');
+  return { rent: Number(total('rent')), tax: Number(total('tax')), fee: Number(total('fee')), deposit: 0,
+    basis: 'unused_nights', roomDetails: details, rooms: selected.length, roomIds: selected.map(row => row.id),
+    partial: selected.length < all.filter(row => row.state === 'booked').length };
+}
 
 /**
  * Hotel stay (Phase 7): each room's own rate rule (free until a deadline, then
@@ -57,10 +89,11 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
 }
 
 const selection = z.object({ orderId:z.string().uuid(), visitIds:z.array(z.string().uuid()).min(1).max(10),
-  roomIds:z.array(z.string().uuid()).min(1).max(8).optional() }).strict();
+  roomIds:z.array(z.string().uuid()).min(1).max(8).optional(), operation:z.literal('early_departure').optional() }).strict();
 const normalize = input => {
   const value=selection.parse(input); value.visitIds=[...new Set(value.visitIds)].sort();
   if (value.roomIds) { value.roomIds=[...new Set(value.roomIds)].sort(); if (value.visitIds.length!==1) throw new CheckoutError('ROOMS_NEED_ONE_STAY'); }
+  if (value.operation && value.visitIds.length !== 1) throw new CheckoutError('ROOMS_NEED_ONE_STAY');
   return value;
 };
 /** Verified capture allocations for these visits, with what earlier refunds already reserved. */
@@ -105,15 +138,19 @@ export async function createRefundObligations(tx, visits, { reason, idempotencyK
   return refundIds;
 }
 async function estimate(tx, order, value) {
+  const departureRooms=value.operation ? await tx`SELECT br.*,br.check_in::text AS arrival,br.check_out::text AS checkout
+    FROM booking_room br JOIN booking b ON b.id=br.booking_id
+    WHERE b.order_id=${order.id} AND b.id IN ${tx(value.visitIds)} ORDER BY br.id FOR UPDATE OF br` : null;
   const [{now}]=await tx`SELECT clock_timestamp() now`;
   const visits=await tx`SELECT b.*,o.policy_snapshot FROM booking b JOIN booking_order o ON o.id=b.order_id WHERE b.order_id=${order.id} AND b.id IN ${tx(value.visitIds)} ORDER BY b.id`;
   if(visits.length!==value.visitIds.length) throw new CheckoutError('VISIT_NOT_FOUND');
   const allocations=await capturedAllocations(tx, value.visitIds);
   const plans=[];
   for(const visit of visits) {
-    if(visit.state!=='confirmed') throw new CheckoutError(value.roomIds && visit.slot==='stay' ? 'ROOM_NOT_CANCELLABLE' : 'VISIT_NOT_CANCELLABLE');
+    if(!value.operation && visit.state!=='confirmed') throw new CheckoutError(value.roomIds && visit.slot==='stay' ? 'ROOM_NOT_CANCELLABLE' : 'VISIT_NOT_CANCELLABLE');
     let entitlement;
-    if(visit.slot==='stay') entitlement=await stayEntitlement(tx,visit,now,value.roomIds ?? null);
+    if(value.operation) entitlement=await departureEntitlement(visit,now,value.roomIds ?? null,departureRooms.filter(room=>room.booking_id===visit.id));
+    else if(visit.slot==='stay') entitlement=await stayEntitlement(tx,visit,now,value.roomIds ?? null);
     else if (value.roomIds) throw new CheckoutError('ROOMS_NEED_ONE_STAY');
     else try { entitlement=cancellationEntitlement(visit,now); } catch(error) { throw new CheckoutError(error.message); }
     const sources=allocations.filter(a=>a.booking_id===visit.id);
@@ -133,13 +170,15 @@ async function estimate(tx, order, value) {
     plans.push({id:visit.id,reference:visit.reference,date:String(visit.local_day instanceof Date?visit.local_day.toISOString():visit.local_day).slice(0,10),
       state:visit.state,version:visit.lifecycle_version,...entitlement,
       startedAtEstimate: visit.slot==='stay' && entitlement.basis==='full_paid' && new Date(visit.starts_at)<=new Date(now),
+      ...(value.operation ? { priorReserved: Object.fromEntries(['rent','tax','fee'].map(key => [key,sources.filter(a=>a.component===key).reduce((sum,a)=>sum+Number(a.reserved),0)])) } : {}),
       refundMinor:refunds.reduce((sum,a)=>sum+a.amount,0),refunds});
   }
   const result={orderId:order.id,visits:plans,refundMinor:plans.reduce((sum,v)=>sum+v.refundMinor,0),actualBankRefundMinor:0};
   // Story 2.7: the preview binds who asked, the scope and the booked policy versions, not just the amounts.
   const binding={customer:order.customer_id,roomIds:value.roomIds??null,
     policies:visits.map(v=>[v.id,v.lifecycle_version,v.policy_snapshot?.version??null,Boolean(v.policy_snapshot?.cancellationPolicy)])};
-  return {...result,hash:quoteDigest({...result,binding})};
+  if (value.operation) result.operation=value.operation;
+  return {...result,...(value.operation ? { requestedAt:new Date(now).toISOString() } : {}),hash:quoteDigest({...result,binding})};
 }
 function publicPreview(preview) {
   return {...preview,visits:preview.visits.map(({refunds: _refunds,...visit})=>visit)};
@@ -157,9 +196,22 @@ export async function previewCancellation(database,session,input,env=process.env
 export async function applyCancellation(tx, order, preview, value, { actorKind, reason, idempotencyKey, requestHash, customerId }) {
   const id=randomUUID();
   // The refund reason is a category key for finance; the visit keeps the guest's own words.
-  const refundIds=await createRefundObligations(tx, preview.visits, { reason:'Customer visit cancellation', idempotencyKey:id, requestHash });
+  const departing=value.operation==='early_departure';
+  const refundIds=await createRefundObligations(tx, preview.visits, { reason:departing?'Customer early departure':'Customer visit cancellation', idempotencyKey:id, requestHash });
   const partial=preview.visits.some(v=>v.partial);
-  if (partial) {
+  const snapshot={...publicPreview(preview),id,refundIds,...(departing?{departedAt:preview.requestedAt}:{cancelledAt:new Date().toISOString()}),...(partial?{roomIds:value.roomIds}:{})};
+  const saveReceipt=()=>tx`INSERT INTO booking_cancellation(id,order_id,customer_id,idempotency_key,request_hash,snapshot)
+    VALUES(${id},${order.id},${customerId},${idempotencyKey},${requestHash},${JSON.stringify(snapshot)}::text::jsonb)`;
+  if (departing) await saveReceipt();
+  if (departing) {
+    for (const room of preview.visits[0].roomDetails) {
+      const changed=await tx`UPDATE booking_room SET state='stayed',departed_at=${preview.requestedAt},inventory_end=${room.inventoryEnd},updated_at=clock_timestamp()
+        WHERE booking_id=${value.visitIds[0]} AND id=${room.id} AND state='booked' AND departed_at IS NULL RETURNING id`;
+      if(changed.length!==1) throw new CheckoutError('CANCELLATION_CHANGED');
+    }
+    await tx`UPDATE booking SET state=CASE WHEN EXISTS(SELECT 1 FROM booking_room WHERE booking_id=booking.id AND state='booked') THEN state ELSE 'completed'::booking_state END,
+      lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp() WHERE id=${value.visitIds[0]}`;
+  } else if (partial) {
     const released=await tx`UPDATE booking_room SET state='released',updated_at=clock_timestamp()
       WHERE booking_id=${value.visitIds[0]} AND id IN ${tx(value.roomIds)} AND state='booked'
         AND EXISTS (SELECT 1 FROM booking b WHERE b.id=booking_room.booking_id AND b.state='confirmed'
@@ -175,17 +227,15 @@ export async function applyCancellation(tx, order, preview, value, { actorKind, 
     await tx`UPDATE booking_order SET state='cancelled',updated_at=clock_timestamp() WHERE id=${order.id}
       AND NOT EXISTS(SELECT 1 FROM booking WHERE order_id=${order.id} AND state<>'cancelled')`;
   }
-  const snapshot={...publicPreview(preview),id,refundIds,cancelledAt:new Date().toISOString(),...(partial?{roomIds:value.roomIds}:{})};
-  await tx`INSERT INTO booking_cancellation(id,order_id,customer_id,idempotency_key,request_hash,snapshot)
-    VALUES(${id},${order.id},${customerId},${idempotencyKey},${requestHash},${JSON.stringify(snapshot)}::text::jsonb)`;
-  await lifecycle(tx,order.id,'cancel_'+id.replaceAll('-',''),{cancellationId:id,visitIds:value.visitIds,...(partial?{roomIds:value.roomIds}:{}),refundIds,environment:'test',actualBankRefundMinor:0});
+  if (!departing) await saveReceipt();
+  await lifecycle(tx,order.id,(departing?'depart_':'cancel_')+id.replaceAll('-',''),{cancellationId:id,visitIds:value.visitIds,...(departing?{operation:value.operation,roomIds:preview.visits[0].roomIds,departedAt:preview.requestedAt,rooms:preview.visits[0].rooms,roomDetails:preview.visits[0].roomDetails}:partial?{roomIds:value.roomIds}:{}),refundIds,environment:'test',actualBankRefundMinor:0});
   return snapshot;
 }
 
 export async function commitCancellation(database,session,input,env=process.env) {
   const parsed=z.object({orderId:z.string().uuid(),visitIds:z.array(z.string().uuid()).min(1).max(10),roomIds:z.array(z.string().uuid()).min(1).max(8).optional(),
-    hash:z.string().regex(/^[a-f0-9]{64}$/),idempotencyKey:z.string().uuid(),accepted:z.literal(true),reason:z.string().trim().max(160).default('')}).strict().parse(input);
-  const value=normalize({orderId:parsed.orderId,visitIds:parsed.visitIds,...(parsed.roomIds?{roomIds:parsed.roomIds}:{})});
+    operation:z.literal('early_departure').optional(),hash:z.string().regex(/^[a-f0-9]{64}$/),idempotencyKey:z.string().uuid(),accepted:z.literal(true),reason:z.string().trim().max(160).default('')}).strict().parse(input);
+  const value=normalize({orderId:parsed.orderId,visitIds:parsed.visitIds,...(parsed.roomIds?{roomIds:parsed.roomIds}:{}),...(parsed.operation?{operation:parsed.operation}:{})});
   const requestHash=quoteDigest({...parsed,visitIds:value.visitIds,roomIds:value.roomIds});
   return ownedCheckout(database,session,value.orderId,async(tx,order)=>{
     const [previous]=await tx`SELECT snapshot,request_hash FROM booking_cancellation WHERE customer_id=${session.userId} AND idempotency_key=${parsed.idempotencyKey}`;

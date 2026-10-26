@@ -61,7 +61,7 @@ export function bookingSummary(record) {
     `Rent ${bookingMoney(v.rentMinor)}; fee ${bookingMoney(v.feeMinor)}; separate deposit ${bookingMoney(v.depositMinor)}`);
   if (record.stay) {
     // Hotel stay: rooms, plans and the GST invoice details (the hotel issues the tax invoice).
-    lines.push('', 'ROOMS', ...record.stay.rooms.map(room => `${room.name} · ${room.plan?.name ?? ''} | ${room.guestName || 'Guest'} | ${room.adults} adult(s)${room.childAges?.length ? `, ${room.childAges.length} child(ren)` : ''} | room ${bookingMoney(room.roomMinor)} + tax ${bookingMoney(room.taxMinor)} | ${room.state}`));
+    lines.push('', 'ROOMS', ...record.stay.rooms.map(room => `${room.name} · ${room.plan?.name ?? ''} | ${room.guestName || 'Guest'} | ${room.adults} adult(s)${room.childAges?.length ? `, ${room.childAges.length} child(ren)` : ''} | room ${bookingMoney(room.roomMinor)} + tax ${bookingMoney(room.taxMinor)} | ${room.state}${room.departedAt ? ` | Ended early: ${bookingTime(room.departedAt, record.timeZone)}; ${room.inventoryEnd < record.stay.checkOut ? `unused nights released from ${room.inventoryEnd}` : 'no unused nights to release'}; original dates retained` : ''}`));
     const d = record.stay.details;
     if (d?.arrivalTime) lines.push(`Expected arrival: ${d.arrivalTime}`);
     if (d?.requests) lines.push(`Requests: ${d.requests}`);

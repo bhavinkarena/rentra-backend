@@ -27,6 +27,12 @@ const assigned = (database, staff) =>
   database`EXISTS (SELECT 1 FROM staff_property sp JOIN rentable ar ON ar.id=sp.rentable_id
     WHERE sp.staff_id=${staff.id} AND sp.rentable_id=b.rentable_id AND ar.client_id=${staff.ownerId})`;
 
+const roomFacts = tx => tx`(SELECT jsonb_agg(jsonb_build_object('id',br.id,'name',rt.name,'state',br.state,
+  'departedAt',br.departed_at,'inventoryEnd',br.inventory_end,'checkIn',br.check_in,'checkOut',br.check_out) ORDER BY br.id)
+  FROM booking_room br JOIN room_type rt ON rt.id=br.room_type_id WHERE br.booking_id=b.id)`;
+const activeGuests = tx => tx`(SELECT coalesce(sum(br.adults+cardinality(br.child_ages)),0)::int
+  FROM booking_room br WHERE br.booking_id=b.id AND br.state='booked')`;
+
 const visitDTO = (row) => ({
   id: row.id,
   reference: row.reference,
@@ -34,7 +40,8 @@ const visitDTO = (row) => ({
   propertyTitle: row.title,
   date: dayOf(row),
   slot: row.slot,
-  guests: row.guests,
+  guests: row.slot==='stay' && new Date(row.ends_at)>new Date() && ['confirmed','handed_over','returned','disputed'].includes(row.state) ? row.active_guests : row.guests,
+  ...(row.slot==='stay' ? {originalGuests:row.guests, rooms:row.rooms ?? []} : {}),
   state: row.state,
   startsAt: row.hours_known ? instant(row.starts_at) : null,
   endsAt: row.hours_known ? instant(row.ends_at) : null,
@@ -60,7 +67,7 @@ export async function listStaffVisits(database, staff, input = {}) {
     today: database`b.state IN ('confirmed','handed_over','returned','disputed') AND b.starts_at < ${dayStart} + interval '1 day' AND b.ends_at > ${dayStart}`,
     upcoming: database`b.state IN ('confirmed','handed_over') AND b.ends_at > ${now}`,
     action_needed: database`(b.state='returned' OR (b.state='confirmed' AND b.starts_at <= ${now}) OR (b.state='handed_over' AND b.ends_at <= ${now}))`,
-    past: database`b.state IN ('returned','completed','disputed') AND b.ends_at <= ${now}`,
+    past: database`b.state IN ('returned','completed','disputed') AND (b.ends_at <= ${now} OR (b.state='completed' AND EXISTS(SELECT 1 FROM booking_room br WHERE br.booking_id=b.id AND br.departed_at IS NOT NULL)))`,
   };
   const scope = database`b.order_id IS NOT NULL AND ${assigned(database, staff)}`;
   const [counts] = await database`SELECT
@@ -69,7 +76,7 @@ export async function listStaffVisits(database, staff, input = {}) {
       count(*) FILTER (WHERE ${conditions.action_needed})::int AS action_needed,
       count(*) FILTER (WHERE ${conditions.past})::int AS past
     FROM booking b WHERE ${scope}`;
-  const rows = await database`SELECT b.*, r.title, o.listing_snapshot->'contact' AS contact FROM booking b JOIN rentable r ON r.id=b.rentable_id JOIN booking_order o ON o.id=b.order_id
+  const rows = await database`SELECT b.*,${activeGuests(database)} active_guests,${roomFacts(database)} rooms, r.title, o.listing_snapshot->'contact' AS contact FROM booking b JOIN rentable r ON r.id=b.rentable_id JOIN booking_order o ON o.id=b.order_id
     WHERE ${scope} AND ${conditions[tab]}
     ORDER BY ${tab === 'past' ? database`b.starts_at DESC` : database`b.starts_at ASC`}, b.id LIMIT 50`;
   return { tab, date, counts, offline:tab==='today'?await offlineBookings(database,staff.ownerId,{staffId:staff.id,contact:staff.permissions?.guestContact!==false && date===propertyToday()}):[],items: rows.map((row) => ({ ...visitDTO(row), guest: guestFor(staff, row.contact, [visitDTO(row)]) })) };
@@ -79,7 +86,7 @@ export async function listStaffVisits(database, staff, input = {}) {
 export async function readStaffVisitRecord(database, staff, orderId) {
   if (!uuid.safeParse(orderId).success) return null;
   return database.begin(async (tx) => {
-    const rows = await tx`SELECT b.*, r.title, o.reference AS order_reference, o.time_zone, o.policy_snapshot,o.listing_snapshot,o.owner_note
+    const rows = await tx`SELECT b.*,${activeGuests(tx)} active_guests,${roomFacts(tx)} rooms, r.title, o.reference AS order_reference, o.time_zone, o.policy_snapshot,o.listing_snapshot,o.owner_note
       FROM booking b JOIN booking_order o ON o.id=b.order_id JOIN rentable r ON r.id=b.rentable_id
       WHERE b.order_id=${orderId} AND ${assigned(tx, staff)} ORDER BY b.item_position NULLS LAST, b.local_day, b.id`;
     if (!rows.length) return null;

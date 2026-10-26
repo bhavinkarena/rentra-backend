@@ -4,7 +4,7 @@ export function ownerPreferences(value = {}) {
   return Object.fromEntries(OWNER_CATEGORIES.map(c => [c,{mobile:value[c]?.mobile !== false,email:value[c]?.email !== false}]));
 }
 export const ownerEventTitles = {
-  booking_confirmed:'New booking',booking_requested:'New booking request — accept or decline',visits_cancelled:'Booking cancelled',arrival_tomorrow:'Arrival tomorrow',arrival_today:'Arrival today',checkout_overdue:'Check-out not recorded',
+  rooms_departed_early:'Selected rooms ended early',booking_confirmed:'New booking',booking_requested:'New booking request — accept or decline',visits_cancelled:'Booking cancelled',arrival_tomorrow:'Arrival tomorrow',arrival_today:'Arrival today',checkout_overdue:'Check-out not recorded',
   application_approved:'Your verification is approved',application_more_info:'Your verification needs changes',application_rejected:'Your verification was not approved',
   listing_published:'Your property is live',listing_review_decided:'Property review updated',listing_hidden:'Your property needs attention',
   verification_scheduled:'Property verification scheduled',verification_rescheduled:'Property verification moved',verification_recorded:'Property verification updated',evidence_requested:'Rentra asked for a property video',
@@ -43,5 +43,6 @@ export function ownerNotificationMessage(row, origin) {
   const unit=d.slot==='stay' ? (d.rooms ? `${d.rooms} room${d.rooms===1?'':'s'}` : null) : d.slot?.replaceAll('_',' ');
   const context=[row.property_title,d.reference,when,unit,d.guests ? `${d.guests} guests` : null].filter(Boolean).join(' · ');
   const rent=d.rentMinor != null && /^\d+$/.test(String(d.rentMinor)) ? `Booked rent ₹${(BigInt(d.rentMinor)/100n).toLocaleString('en-IN')}.${(BigInt(d.rentMinor)%100n).toString().padStart(2,'0')}.` : '';
-  return `${title}${context ? ': '+context : ''}. ${rent} Open: ${origin}${ownerUpdateHref(row)}`;
+  const departure=d.departedAt ? ` Selected occupancy ended at ${d.departedAt}.` : '';
+  return `${title}${departure}${context ? ': '+context : ''}. ${rent} Open: ${origin}${ownerUpdateHref(row)}`;
 }

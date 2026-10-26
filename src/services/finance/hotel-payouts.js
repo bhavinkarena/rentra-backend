@@ -263,7 +263,7 @@ export async function getOwnerHotelEarnings(database, ownerId, { month } = {}) {
     const [stats] = await tx`
       SELECT count(DISTINCT b.id)::int AS stays,
         count(DISTINCT b.id) FILTER (WHERE b.state = 'cancelled')::int AS cancelled,
-        coalesce(sum(cardinality(ARRAY(SELECT jsonb_array_elements(br.nights)))) FILTER (WHERE br.state IN ('booked', 'stayed', 'no_show')), 0)::int AS room_nights
+        coalesce(sum(cardinality(ARRAY(SELECT night FROM jsonb_array_elements(br.nights) night WHERE (night->>'night')::date < coalesce(br.inventory_end,br.check_out)))) FILTER (WHERE br.state IN ('booked', 'stayed', 'no_show')), 0)::int AS room_nights
       FROM booking b JOIN rentable r ON r.id = b.rentable_id AND r.client_id = ${ownerId}
       LEFT JOIN booking_room br ON br.booking_id = b.id
       WHERE b.slot = 'stay' AND b.state <> 'requested' AND to_char(b.local_day, 'YYYY-MM') = ${period}`;

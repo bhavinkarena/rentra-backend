@@ -106,7 +106,7 @@ export async function listBookingRecords(database, actor, input = {}, env = proc
       return {...filters,page,pages,total:count.total,summary:{total:count.total,today:count.total},properties:[],verticals:[],resources:[],items:rows.map(r=>({...orderDTO(r),...adminCard(r),visitId:r.visit_id,visitCount:1,visitStates:[r.visit_state],payments:r.payments || [],firstVisitLabel:`${r.visit_reference} \u00b7 ${r.first_visit}`,firstVisitSlot:r.slot,firstVisitStartsAt:r.hours_known?instant(r.starts_at):null}))};
     }
     const upcoming = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','disputed') AND v.ends_at>clock_timestamp())`;
-    const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed','no_show') AND v.ends_at<=clock_timestamp())`;
+    const past = tx`EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state IN ('confirmed','handed_over','returned','completed','disputed','no_show') AND (v.ends_at<=clock_timestamp() OR (v.state='completed' AND EXISTS(SELECT 1 FROM booking_room br WHERE br.booking_id=v.id AND br.departed_at IS NOT NULL))))`;
     const cancelled = tx`(o.state IN ('cancelled','expired') OR (o.state='held' AND o.hold_expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM booking v WHERE v.order_id=o.id AND v.state='cancelled'))`;
     const today = tx`EXISTS(SELECT 1 FROM booking b WHERE b.order_id=o.id AND ${ownerVisitDay(tx, propertyToday())})`;
     // CP13: an open incident needs Rentra follow-up, so it is admin work, not owner work.
@@ -269,9 +269,9 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     const stay = stayRow ? {
       checkIn: stayRow.slot_snapshot?.checkIn ?? null, checkOut: stayRow.slot_snapshot?.checkOut ?? null, nights: stayRow.slot_snapshot?.nights ?? null,
       roomMinor: amount(stayRow.slot_snapshot?.roomMinor), taxMinor: amount(stayRow.slot_snapshot?.taxMinor),
-      rooms: (await tx`SELECT br.id,br.state,br.adults,br.child_ages,br.guest_name,br.amount_room_minor,br.amount_tax_minor,br.plan_snapshot,t.name
+      rooms: (await tx`SELECT br.id,br.state,br.departed_at,br.inventory_end::text,br.adults,br.child_ages,br.guest_name,br.amount_room_minor,br.amount_tax_minor,br.plan_snapshot,t.name
         FROM booking_room br JOIN room_type t ON t.id=br.room_type_id WHERE br.booking_id=${stayRow.id} ORDER BY t.name,br.id`).map(room => ({
-        id: room.id, name: room.name, state: room.state, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
+        id: room.id, name: room.name, state: room.state, departedAt: instant(room.departed_at), inventoryEnd: room.inventory_end, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
         plan: room.plan_snapshot, roomMinor: amount(room.amount_room_minor), taxMinor: amount(room.amount_tax_minor) })),
       details: order.guest_details ?? null,
       // Phase 10: the hotel page, for "Change dates or rooms".
@@ -284,7 +284,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       purpose: order.listing_snapshot?.purpose || null,
       policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,
         houseRules: houseRuleLines(order.policy_snapshot?.houseRules) },
-      events: events.map(row => ({ kind: /^cancel_[a-f0-9]{32}$/.test(row.kind) ? 'visits_cancelled' : /^refund_[a-f0-9]{32}$/.test(row.kind) ? 'test_refund_processed'
+      events: events.map(row => ({ kind: /^depart_[a-f0-9]{32}$/.test(row.kind) ? 'rooms_departed_early' : /^cancel_[a-f0-9]{32}$/.test(row.kind) ? 'visits_cancelled' : /^refund_[a-f0-9]{32}$/.test(row.kind) ? 'test_refund_processed'
         : /^visit_[a-f0-9]{32}$/.test(row.kind) ? (['handover','return','complete'].includes(row.phase) ? `visit_${row.phase}_recorded` : 'visit_evidence_recorded') : row.kind, at: instant(row.created_at) })),
       payments: payments.map(p => ({ id: p.id, provider: p.provider, environment: p.environment, state: p.state, purpose: p.purpose,
         providerOrderId: p.provider_order_id, expectedMinor: amount(p.expected_minor), capturedMinor: amount(p.captured_minor),
