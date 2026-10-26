@@ -54,9 +54,22 @@ const session = async (userId) =>
 // `other` is a second owner, for the draft-recovery gate's access-denial check.
 const owner = await session(f.owner),
   other = await session(f.other);
+// Admin sessions for the Story 1.2 evidence gate: a full reviewer and a records-only admin.
+const { runWithContext } = await import('../../src/runtime/context.js');
+const { createAdminSession } = await import('../../src/services/auth/admin.js');
+const adminSession = async (adminId) => {
+  let token;
+  await runWithContext(
+    { req: { cookies: {} }, res: { cookie: (_name, value) => (token = value) } },
+    () => createAdminSession(adminId, true),
+  );
+  return token;
+};
+const admin = await adminSession(f.admin),
+  limited = await adminSession(f.limited);
 await writeFile(
   process.env.OWNER_WIZARD_FIXTURE,
-  JSON.stringify({ databaseUrl: fixture.url, ids: f, tokens: { owner, other } }),
+  JSON.stringify({ databaseUrl: fixture.url, ids: f, tokens: { owner, other, admin, limited } }),
 );
 const { v2: cloudinary } = await import('cloudinary');
 cloudinary.uploader.upload_stream = (options, callback) =>

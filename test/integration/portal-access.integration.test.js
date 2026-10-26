@@ -177,6 +177,18 @@ test(
           .statusCode,
         403,
       );
+      // Story 1.2: the property review detail is denied like private files.
+      assert.equal((await invoke(adminGate, {}, 'GET', '/properties/123')).statusCode, 401);
+      assert.equal(
+        (await invoke(requireAdmin, { rentra_admin: clientToken }, 'GET', '/properties/123'))
+          .statusCode,
+        401,
+      );
+      assert.equal(
+        (await invoke(adminGate, { rentra_admin: adminToken }, 'GET', '/properties/123'))
+          .statusCode,
+        403,
+      );
       await database`UPDATE admin_user SET permissions=NULL`;
       assert.equal(
         (await invoke(adminGate, { rentra_admin: adminToken }, 'GET', '/documents/123/file'))

@@ -46,7 +46,21 @@ test(
         await listPropertyReviews(sql, f.admin, { status });
       assert.equal((await listPropertyReviews(sql, f.admin, { status: 'all' })).total, 1);
       assert.equal((await listPropertyReviews(sql, f.admin, { assignee: 'unassigned' })).total, 1);
+      const before = await sql`SELECT status,content_version,
+        (SELECT count(*) FROM listing_submission WHERE rentable_id=${id}) AS submissions,
+        (SELECT count(*) FROM listing_review WHERE rentable_id=${id}) AS reviews
+        FROM rentable WHERE id=${id}`;
       const initial = await readPropertyReview(sql, id);
+      await readPropertyReview(sql, id);
+      // Story 1.2: inspecting evidence never mutates the property or its review state.
+      assert.deepEqual(
+        await sql`SELECT status,content_version,
+          (SELECT count(*) FROM listing_submission WHERE rentable_id=${id}) AS submissions,
+          (SELECT count(*) FROM listing_review WHERE rentable_id=${id}) AS reviews
+          FROM rentable WHERE id=${id}`,
+        before,
+      );
+      assert.ok('applicationStatus' in initial.property);
       assert.equal(initial.readiness.remaining.length, 0);
       assert.equal(initial.current.snapshot.listing.title, 'Review River Farm');
       assert.equal(initial.current.snapshot.documents[0].storageKey, undefined);

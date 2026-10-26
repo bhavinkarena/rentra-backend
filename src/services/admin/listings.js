@@ -198,7 +198,8 @@ export async function readPropertyReview(database, id) {
   return database.begin('isolation level repeatable read read only', async (tx) => {
   const [owner] =
     await tx`SELECT r.id,r.title,r.slug,r.public_code,r.status,r.content_version,r.client_id,r.rental_unit::text AS rental_unit,u.name,u.email,u.account_status,
-    (SELECT id FROM client_application WHERE user_id=u.id) AS application_id FROM rentable r JOIN "user" u ON u.id=r.client_id WHERE r.id=${id}`;
+    (SELECT id FROM client_application WHERE user_id=u.id) AS application_id,
+    (SELECT status::text FROM client_application WHERE user_id=u.id) AS application_status FROM rentable r JOIN "user" u ON u.id=r.client_id WHERE r.id=${id}`;
   if (!owner) throw notFound('LISTING_NOT_FOUND', 'Property not found.');
   const submissions =
     await tx`SELECT s.*,a.email AS reviewer FROM listing_submission s LEFT JOIN admin_user a ON a.id=s.assigned_to WHERE rentable_id=${id} ORDER BY pass_number DESC`;
