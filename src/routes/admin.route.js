@@ -110,6 +110,18 @@ router.post(
   formFields(),
   propertyReviews.decide,
 );
+// Story 1.3: property video evidence requests and audited playback.
+router.post(
+  '/properties/:id/evidence-requests',
+  validate({ params: clientIdParam }),
+  formFields(),
+  propertyReviews.requestEvidence,
+);
+router.get(
+  '/properties/:id/evidence-requests/:requestId/video',
+  validate({ params: z.object({ id: uuid, requestId: uuid }) }),
+  propertyReviews.evidenceVideo,
+);
 // Verification and publication (CP07): every command re-checks the reviewed revision.
 router.post(
   '/properties/:id/verifications',

@@ -6,6 +6,7 @@ import { listingCompletion } from '../domain/listing-completion.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { rentable } from '../db/schema/index.js';
 import { checklistFor, listVerifications, publicationState } from './verification.js';
+import { listEvidenceRequests } from './evidence-requests.js';
 import { clientLifecycle, lifecycleState, propertyActivity } from './property-lifecycle.js';
 
 export const REVIEW_SECTIONS = [
@@ -221,6 +222,7 @@ export async function readPropertyReview(database, id) {
     draftSnapshot: await snapshot(tx,(await tx`SELECT * FROM rentable WHERE id=${id}`)[0]),
     readiness: current ? listingCompletion(current.snapshot.listing,{...current.snapshot,legacySubmission:current.snapshot.workflowVersion!==2}) : null,
     verifications: await listVerifications(tx, id),
+    evidenceRequests: await listEvidenceRequests(tx, id),
     publication: await publicationState(tx, id),
     checklist: checklistFor(owner.rental_unit).map(([key, label]) => ({ key, label })),
     lifecycle: await lifecycleState(tx, id),

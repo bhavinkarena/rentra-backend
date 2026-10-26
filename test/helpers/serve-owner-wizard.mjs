@@ -19,6 +19,20 @@ Object.assign(process.env, {
   LOG_FORMAT: 'off',
 });
 globalThis.__rentraSql = sql;
+if (process.env.OWNER_FIXTURE_VIDEO === '1') {
+  // Story 1.3 gate: video evidence enabled against an in-memory private store. The browser's
+  // upload to the signed URL is intercepted by the gate, so every signed key reads back as a
+  // small MP4.
+  process.env.EVIDENCE_VIDEO_UPLOADS = 'true';
+  const { memoryVideoStore } = await import('../../src/services/uploads/video-store.js');
+  const store = memoryVideoStore();
+  const sign = store.signUpload;
+  store.signUpload = (publicId) => {
+    store.files.set(publicId, { format: 'mp4', bytes: 2_000_000 });
+    return sign(publicId);
+  };
+  globalThis.__rentraVideoStore = store;
+}
 const f = await seedReviewFixture(sql);
 if (process.env.OWNER_FIXTURE_HUB === '1') {
   // Phase 6 gate: the seed property is live, and a copy of it was sent back by Rentra.

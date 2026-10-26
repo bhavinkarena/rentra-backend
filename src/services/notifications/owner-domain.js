@@ -7,7 +7,7 @@ export const ownerEventTitles = {
   booking_confirmed:'New booking',booking_requested:'New booking request — accept or decline',visits_cancelled:'Booking cancelled',arrival_tomorrow:'Arrival tomorrow',arrival_today:'Arrival today',checkout_overdue:'Check-out not recorded',
   application_approved:'Your verification is approved',application_more_info:'Your verification needs changes',application_rejected:'Your verification was not approved',
   listing_published:'Your property is live',listing_review_decided:'Property review updated',listing_hidden:'Your property needs attention',
-  verification_scheduled:'Property verification scheduled',verification_rescheduled:'Property verification moved',verification_recorded:'Property verification updated',
+  verification_scheduled:'Property verification scheduled',verification_rescheduled:'Property verification moved',verification_recorded:'Property verification updated',evidence_requested:'Rentra asked for a property video',
   dates_running_out:'Your open dates are running out',review_published:'New guest review — reply when ready',review_report_closed:'Your review report was reviewed',
   dispute_opened:'A dispute was opened',dispute_response_requested:'Rentra needs your dispute reply',dispute_resolved:'A dispute was resolved',support_reply:'Rentra replied to your support request',
   caretaker_evidence:'Your caretaker recorded a visit update',caretaker_revoked:'Caretaker removed during a visit',payout_destination_failed:'Your payout method needs changes',

@@ -72,6 +72,12 @@ const envSchema = Joi.object({
         'any.required': 'CLOUDINARY_API_SECRET is required when CLOUDINARY_CLOUD_NAME is set',
       }),
     }),
+  /**
+   * Story 1.3 release gate: owner property-video requests and uploads stay off
+   * until a real Cloudinary account has shown authenticated video upload,
+   * metadata and signed playback.
+   */
+  EVIDENCE_VIDEO_UPLOADS: Joi.boolean().default(false),
 
   RAZORPAY_KEY_ID: Joi.string().pattern(/^rzp_test_[A-Za-z0-9]+$/).allow('').optional(),
   RAZORPAY_KEY_SECRET: Joi.string().allow('').optional(),

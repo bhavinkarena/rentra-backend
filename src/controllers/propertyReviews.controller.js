@@ -17,6 +17,7 @@ import {
   hideProperty,
   restoreProperty,
 } from '@/services/admin/property-lifecycle.js';
+import { requestVideo, streamEvidenceVideo } from '@/services/admin/evidence-requests.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 
@@ -76,3 +77,26 @@ export const publish = verificationCommand(publishProperty);
 export const hide = verificationCommand(hideProperty);
 export const restore = verificationCommand(restoreProperty);
 export const correct = verificationCommand(correctProperty);
+
+/** Story 1.3 property video evidence. */
+export const requestEvidence = verificationCommand(requestVideo);
+export const evidenceVideo = asyncHandler(async (req, res) => {
+  const upstream = await streamEvidenceVideo(sql, {
+    id: req.params.id,
+    requestId: req.params.requestId,
+    adminId: req.admin.id,
+    range: req.get('range'),
+    ip: req.ip,
+  });
+  if (!upstream) return res.status(502).type('text/plain').send('Video unavailable.');
+  res.status(upstream.status);
+  for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+    const value = upstream.headers.get(name);
+    if (value) res.set(name, value);
+  }
+  res.set('X-Content-Type-Options', 'nosniff');
+  const { Readable } = await import('node:stream');
+  const { pipeline } = await import('node:stream/promises');
+  // A reviewer closing the player mid-stream is normal; it just ends the copy.
+  await pipeline(Readable.fromWeb(upstream.body), res).catch(() => {});
+});

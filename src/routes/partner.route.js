@@ -1,6 +1,7 @@
 import { ownerSearch, ownerSearchQuery } from '@/services/auth/owner-search.js';
 import * as hotelOps from '@/controllers/hotel-ops.controller.js';
 import { z } from 'zod';
+import { uuid } from '@/validations/common.validation.js';
 import { ownerToday, todaySection } from '@/services/auth/owner-today.js';
 import { saveListingHours } from '@/services/booking/calendar-actions.js';
 import { runAction } from '@/utils/runAction.js';
@@ -50,6 +51,12 @@ import {
  * `requireActiveClient` is Gate 1, and guards publishing and the calendar.
  */
 import { readGuide, saveGuide, setupGuide } from '@/services/auth/owner-guide.js';
+import {
+  ownerEvidenceRequests,
+  signVideoUpload,
+  confirmVideoUpload,
+  submitVideoResponse,
+} from '@/services/admin/evidence-requests.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 const router = Router();
@@ -156,6 +163,41 @@ router.get(
   validate({ params: listingIdParam }),
   listings.overview,
 );
+
+/** Story 1.3: the owner answers a reviewer's property video request. */
+const evidenceParams = z.object({ id: uuid, requestId: uuid });
+router.get(
+  '/listings/:id/evidence-requests',
+  client,
+  validate({ params: listingIdParam }),
+  asyncHandler(async (req, res) =>
+    ok(res, await ownerEvidenceRequests(sql, { clientId: req.user.id, id: req.params.id })),
+  ),
+);
+for (const [path, run] of [
+  ['sign', signVideoUpload],
+  ['confirm', confirmVideoUpload],
+  ['submit', submitVideoResponse],
+]) {
+  router.post(
+    `/listings/:id/evidence-requests/:requestId/${path}`,
+    client,
+    validate({ params: evidenceParams }),
+    formFields(),
+    asyncHandler(async (req, res) =>
+      ok(
+        res,
+        await run(sql, {
+          clientId: req.user.id,
+          id: req.params.id,
+          requestId: req.params.requestId,
+          publicId: req.body?.publicId,
+          ip: req.ip,
+        }),
+      ),
+    ),
+  );
+}
 
 /** One route per wizard step: each step saves independently. */
 for (const [step, handler] of [
