@@ -42,11 +42,17 @@ test(
         });
         return submissionId;
       };
-      const schedule = (submissionId, mode = 'video_call', at = future(3)) =>
+      const SCOPE = 'Boundary wall and pool fencing look different from the photos.';
+      const schedule = (submissionId, mode = 'video_call', at = future(3), note) =>
         v.scheduleVerification(sql, {
           adminId: f.admin,
           id,
-          input: { submissionId, mode, scheduledAt: at },
+          input: {
+            submissionId,
+            mode,
+            scheduledAt: at,
+            note: note ?? (mode === 'physical' ? SCOPE : ''),
+          },
         });
       const record = (visitId, expectedVersion, outcome, extra = {}) =>
         v.recordVerificationOutcome(sql, {
@@ -91,8 +97,23 @@ test(
       assert.equal(moved.version, 2);
 
       // 3. Failed verification returns the property to the client with the findings.
-      const failed = await record(first.visitId, 2, 'failed', { checklist: [] });
+      // Story 1.4: internal findings stay private; the owner gets a separate message.
+      await assert.rejects(record(first.visitId, 2, 'failed', { checklist: [] }), (e) =>
+        Boolean(e.fields?.ownerMessage),
+      );
+      const OWNER_MESSAGE = 'Please add clear photos of the pool fencing and resubmit.';
+      const failed = await record(first.visitId, 2, 'failed', {
+        checklist: [],
+        ownerMessage: OWNER_MESSAGE,
+      });
       assert.equal(failed.status, 'draft');
+      const [returned] = await sql`SELECT rejection_reason FROM rentable WHERE id=${id}`;
+      assert.equal(returned.rejection_reason, OWNER_MESSAGE);
+      const owned = await sql`SELECT detail::text FROM client_update WHERE client_id=${f.owner}`;
+      assert.ok(
+        owned.every((u) => !u.detail.includes(FINDINGS)),
+        'owner updates never carry findings',
+      );
       let detail = await readPropertyReview(sql, id);
       assert.equal(detail.property.status, 'draft');
 
@@ -125,7 +146,14 @@ test(
       assert.ok(
         (await v.publicationState(sql, id)).blockers.some((b) => /No passed verification/.test(b)),
       );
+      // Story 1.4: a physical visit must say why it is needed and what to check.
+      await assert.rejects(schedule(submission, 'physical', future(3), 'pool'), (e) =>
+        Boolean(e.fields?.note),
+      );
       const physical = await schedule(submission, 'physical');
+      const [scoped] = await sql`SELECT reason FROM audit_log
+        WHERE action='verification_scheduled' AND after->>'visitId'=${physical.visitId}`;
+      assert.equal(scoped.reason, SCOPE);
       await sql`UPDATE rentable SET capacity=13 WHERE id=${id}`;
       submission = await approve();
       const replacement = await schedule(submission, 'physical');

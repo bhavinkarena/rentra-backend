@@ -63,12 +63,18 @@ const localTime = z
     'Schedule within the next 90 days.',
   );
 
-const scheduleInput = z.object({
-  submissionId: uuid,
-  mode: z.enum(['video_call', 'physical']),
-  scheduledAt: localTime,
-  note: z.string().trim().max(500).default(''),
-});
+const scheduleInput = z
+  .object({
+    submissionId: uuid,
+    mode: z.enum(['video_call', 'physical']),
+    scheduledAt: localTime,
+    note: z.string().trim().max(500).default(''),
+  })
+  // Story 1.4: physical visits are selective, so each records why and what to check.
+  .refine((d) => d.mode !== 'physical' || d.note.length >= 10, {
+    path: ['note'],
+    message: 'Say why a site visit is needed and what to check.',
+  });
 const rescheduleInput = z.object({
   expectedVersion: z.coerce.number().int().min(1),
   scheduledAt: localTime,
@@ -82,6 +88,7 @@ const outcomeInput = z.object({
   expectedVersion: z.coerce.number().int().min(1),
   outcome: z.enum(['passed', 'failed', 'no_show']),
   findings: z.string().trim().max(4000).default(''),
+  ownerMessage: z.string().trim().max(1000).default(''),
   checklist: z.array(z.enum(CHECKLIST_KEYS)).default([]),
   geoLat: z.union([z.literal(''), z.coerce.number().min(-90).max(90)]).optional(),
   geoLng: z.union([z.literal(''), z.coerce.number().min(-180).max(180)]).optional(),
@@ -346,6 +353,9 @@ export async function recordVerificationOutcome(database, { adminId, id, visitId
       );
     if (d.outcome !== 'no_show' && d.findings.length < 20)
       throw unprocessable({ findings: 'Write at least 20 characters of findings.' });
+    // Findings are internal; a failed visit tells the owner only what to fix.
+    if (d.outcome === 'failed' && d.ownerMessage.length < 10)
+      throw unprocessable({ ownerMessage: 'Tell the owner what to fix (at least 10 characters).' });
     const geo = d.geoLat !== undefined && d.geoLat !== '' && d.geoLng !== undefined && d.geoLng !== '';
     if (d.outcome === 'passed') {
       const required = checklistFor(row.rental_unit).map(([key]) => key);
@@ -364,7 +374,7 @@ export async function recordVerificationOutcome(database, { adminId, id, visitId
         geo_lat=${geo ? d.geoLat : null}, geo_lng=${geo ? d.geoLng : null}, version=version+1
       WHERE id=${visit.id}`;
     if (d.outcome === 'failed') {
-      await tx`UPDATE rentable SET status='draft', rejection_reason=${d.findings}, updated_at=now() WHERE id=${id}`;
+      await tx`UPDATE rentable SET status='draft', rejection_reason=${d.ownerMessage}, updated_at=now() WHERE id=${id}`;
     }
     await audit(tx, {
       adminId,
