@@ -80,6 +80,8 @@ export const detail = asyncHandler(async (req, res) => {
   listing.listing.adminCorrection = review?.correction ?? null;
   // Which operator acted stays internal.
   delete listing.listing.restrictedBy;
+  if (review) delete review.assignee;
+
   listing.listing.policyHistory = await propertyPolicyHistory(sql, req.user.id, req.params.id);
   listing.review = review;
   listing.listing.completion = listingCompletion(listing.listing, listing);

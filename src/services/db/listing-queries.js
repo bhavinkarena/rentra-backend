@@ -264,7 +264,14 @@ export async function getListingForEdit(id, clientId = null) {
       ne(documents.status, 'superseded'),
     )),
 
-    db.select().from(listingReview)
+    // Owner-facing: the reviewing operator stays internal.
+    db.select({
+      passNumber: listingReview.passNumber,
+      outcome: listingReview.outcome,
+      reason: listingReview.reason,
+      flaggedFields: listingReview.flaggedFields,
+      reviewedAt: listingReview.reviewedAt,
+    }).from(listingReview)
       .where(eq(listingReview.rentableId, id))
       .orderBy(asc(listingReview.passNumber)),
   ]);
