@@ -4,7 +4,7 @@ The Rentra API: Express 4 over Postgres, with Drizzle for schema and queries.
 
 Split out of the Next.js app, which keeps the pages and components. The
 business logic was not rewritten — it was moved across intact. See
-[docs/MIGRATION.md](docs/MIGRATION.md) for how, and why that was the safer
+[docs/MIGRATION.md](../Rentra-Doc/backend/docs/MIGRATION.md) for how, and why that was the safer
 choice than a reimplementation.
 
 ```
@@ -107,13 +107,15 @@ Two values need care:
 
 ## Documentation
 
-- [docs/API.md](docs/API.md) — the full route table.
-- [docs/MIGRATION.md](docs/MIGRATION.md) — what moved, what each Server Action
+Shared plans, design and handoff live in [Rentra-Doc on GitHub](https://github.com/bhavinkarena/Rentra-Doc). The local links here assume `Rentra`, `rentra-backend` and `Rentra-Doc` are sibling checkouts.
+
+- [docs/API.md](../Rentra-Doc/backend/docs/API.md) — the full route table.
+- [docs/MIGRATION.md](../Rentra-Doc/backend/docs/MIGRATION.md) — what moved, what each Server Action
   became, and what to watch for.
 
 ## AOG structure and formatting
 
-See [architecture alignment](docs/ARCHITECTURE.md) for the reference comparison,
+See [architecture alignment](../Rentra-Doc/backend/docs/ARCHITECTURE.md) for the reference comparison,
 folder responsibilities, compatibility choices and feature workflow.
 
 - `npm run lint:fix` runs ESLint autofixes and Prettier document formatting.
