@@ -155,6 +155,9 @@ test(
           .catch((error) => {
             if (error !== ROLLBACK) throw error;
           });
+        // Story 2.1: publication also needs an approved owner identity.
+        await sql`INSERT INTO client_application(user_id,status) SELECT client_id,'approved' FROM rentable WHERE id=${h.hotel}
+          ON CONFLICT (user_id) DO UPDATE SET status='approved'`;
         const published = await publishProperty(sql, {
           id: h.hotel,
           adminId: h.admin,

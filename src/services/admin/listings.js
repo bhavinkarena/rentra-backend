@@ -5,7 +5,7 @@ import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { listingCompletion } from '../domain/listing-completion.js';
 import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { rentable } from '../db/schema/index.js';
-import { checklistFor, listVerifications, publicationState } from './verification.js';
+import { autoPublishProperty, checklistFor, listVerifications, publicationState } from './verification.js';
 import { listEvidenceRequests } from './evidence-requests.js';
 import { raiseAdminAlert } from './admin-alerts.js';
 import { clientLifecycle, lifecycleState, propertyActivity } from './property-lifecycle.js';
@@ -47,7 +47,7 @@ const camel = (row) =>
   );
 const decisionSchema = z.object({
   submissionId: z.string().uuid(),
-  outcome: z.enum(['changes_requested', 'rejected', 'approved_for_visit']),
+  outcome: z.enum(['changes_requested', 'rejected', 'approved_for_visit', 'approved']),
   reason: z.string().trim().min(4).max(2000),
   flagged: z.array(z.enum(REVIEW_SECTIONS)).default([]),
 });
@@ -281,7 +281,7 @@ export async function decidePropertyReview(database, { id, adminId, input, ip = 
   const d = parsed.data;
   if (d.outcome === 'changes_requested' && !d.flagged.length)
     throw unprocessable({ flagged: 'Choose at least one section to correct.' });
-  return database.begin(async (tx) => {
+  const result = await database.begin(async (tx) => {
     const row = await lockedListing(tx, id);
     const [s] =
       await tx`SELECT * FROM listing_submission WHERE id=${d.submissionId} AND rentable_id=${id} FOR UPDATE`;
@@ -300,7 +300,7 @@ export async function decidePropertyReview(database, { id, adminId, input, ip = 
     if ((await tx`SELECT id FROM listing_review WHERE submission_id=${s.id}`).length)
       throw conflict('ALREADY_DECIDED', 'This submission was already decided.');
     if (
-      d.outcome === 'approved_for_visit' &&
+      ['approved_for_visit', 'approved'].includes(d.outcome) &&
       listingCompletion(s.snapshot.listing,{...s.snapshot,legacySubmission:s.snapshot.workflowVersion!==2}).remaining.length
     )
       throw conflict('LISTING_INCOMPLETE', 'This submitted revision is incomplete.');
@@ -308,13 +308,20 @@ export async function decidePropertyReview(database, { id, adminId, input, ip = 
       changes_requested: 'draft',
       rejected: 'rejected',
       approved_for_visit: 'pending_verification',
+      // Story 2.1: approved and waiting for publication setup; a visit stays optional.
+      approved: 'pending_verification',
     }[d.outcome];
     await tx`INSERT INTO listing_review(rentable_id,pass_number,submission_id,outcome,reason,flagged_fields,reviewed_by)
       VALUES (${id},${s.pass_number},${s.id},${d.outcome},${d.reason},${JSON.stringify([...new Set(d.flagged)])}::text::jsonb,${adminId})`;
     await tx`UPDATE listing_submission SET assigned_to=${adminId} WHERE id=${s.id}`;
-    await tx`UPDATE rentable SET status=${status},rejection_reason=${d.outcome === 'approved_for_visit' ? null : d.reason},updated_at=now() WHERE id=${id}`;
+    await tx`UPDATE rentable SET status=${status},rejection_reason=${['approved_for_visit', 'approved'].includes(d.outcome) ? null : d.reason},updated_at=now() WHERE id=${id}`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,after,reason,ip)
       VALUES ('admin',${adminId},'rentable',${id},'listing_review_decided',${JSON.stringify({ submissionId: s.id, outcome: d.outcome, from: row.status, status, pass: s.pass_number })}::text::jsonb,${d.reason},${ip})`;
     return { ok: true, status, submissionId: s.id };
   });
+  // Story 2.1: approval publishes at once when everything else is already complete.
+  // A publication failure must not turn a recorded decision into an error; the sweep retries it.
+  if (d.outcome === 'approved' && (await autoPublishProperty(database, id).catch(() => false)))
+    result.status = 'live';
+  return result;
 }

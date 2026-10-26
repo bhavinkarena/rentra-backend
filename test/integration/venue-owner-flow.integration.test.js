@@ -85,6 +85,9 @@ test(
         visitId: visit.visitId,
         input: { ...input, checklist: VENUE_CHECKLIST.map(([key]) => key) },
       });
+      // Story 2.1: publication also needs an approved owner identity.
+      await sql`INSERT INTO client_application(user_id,status) SELECT client_id,'approved' FROM rentable WHERE id=${id}
+        ON CONFLICT (user_id) DO UPDATE SET status='approved'`;
       const published = await publishProperty(sql, {
         id,
         adminId: venue.admin,

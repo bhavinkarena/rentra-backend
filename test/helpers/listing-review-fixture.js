@@ -88,3 +88,16 @@ export async function seedBusyOwnerVisits(sql, orderId, from = 2, to = 40, listi
       b.currency,b.time_zone,b.guests,b.units_booked,b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.hours_known
     FROM orders o CROSS JOIN booking b WHERE b.order_id=${orderId} AND b.item_position=1`;
 }
+
+/**
+ * Story 2.1 publication prerequisites for tests that publish: an approved owner
+ * identity and, for day/slot properties, open future dates. Idempotent.
+ */
+export async function makePublishable(sql, ownerId, listingId, { openDates = true } = {}) {
+  await sql`INSERT INTO client_application(user_id,status) VALUES (${ownerId},'approved')
+    ON CONFLICT (user_id) DO UPDATE SET status='approved'`;
+  if (openDates)
+    await sql`INSERT INTO availability(rentable_id,day,slot,units_available)
+      SELECT ${listingId}, (now() AT TIME ZONE 'Asia/Kolkata')::date + d, 'day', 1 FROM generate_series(1,30) d
+      ON CONFLICT DO NOTHING`;
+}

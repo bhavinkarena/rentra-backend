@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
-import { seedReviewFixture } from '../helpers/listing-review-fixture.js';
+import { seedReviewFixture, makePublishable } from '../helpers/listing-review-fixture.js';
 
 const future = (days, time = '11:00') => {
   const date = new Date(Date.now() + days * 86400000 + 5.5 * 3600000);
@@ -27,6 +27,7 @@ test(
       globalThis.__rentraSql = sql;
       process.env.DATABASE_URL = fixture.url;
       const f = await seedReviewFixture(sql);
+      await makePublishable(sql, f.owner, f.listing, { openDates: false });
       const id = f.listing;
       const { submitProperty, decidePropertyReview, readPropertyReview, propertyReviewContext } =
         await import('@/services/admin/listings.js');
@@ -133,8 +134,9 @@ test(
       });
       await record(video.visitId, 1, 'passed');
       state = await v.publicationState(sql, id);
-      assert.equal(state.eligible, true);
-      assert.equal(state.inventory.bookable, false, 'no confirmed schedule yet');
+      // Story 2.1: evidence is complete, but publication waits for sellable future dates.
+      assert.equal(state.eligible, false);
+      assert.deepEqual(state.blockers, ['Not bookable yet: no open dates on the calendar.']);
 
       // 6. A content change after a passed verification blocks publication.
       await sql`UPDATE rentable SET title='Review River Farm Renamed' WHERE id=${id}`;
@@ -171,6 +173,7 @@ test(
       await record(replacement.visitId, 1, 'passed', { geoLat: 21.17, geoLng: 72.83 });
 
       // 9. Publish exactly once; the published revision is attributed and not marked stale.
+      await makePublishable(sql, f.owner, f.listing);
       const [before] = await sql`SELECT content_version FROM rentable WHERE id=${id}`;
       const race = await Promise.allSettled([publish(submission), publish(submission)]);
       assert.deepEqual(race.map((r) => r.status).sort(), ['fulfilled', 'rejected']);

@@ -114,7 +114,7 @@ async function reviewedRevision(tx, row) {
 function revisionCurrent(row, submission) {
   return Boolean(
     submission &&
-      submission.review_outcome === 'approved_for_visit' &&
+      ['approved_for_visit', 'approved'].includes(submission.review_outcome) &&
       submission.content_version === row.content_version,
   );
 }
@@ -197,15 +197,27 @@ export async function publicationState(database, id) {
   else if (row.status !== 'pending_verification')
     blockers.push('The property is not waiting for verification.');
   if (owner?.account_status !== 'active') blockers.push('The client account is not active.');
-  if (!submission || submission.review_outcome !== 'approved_for_visit')
-    blockers.push('The current submission has not been approved for verification.');
+  const [application] = await database`SELECT status FROM client_application WHERE user_id=${row.client_id}`;
+  if (application?.status !== 'approved') blockers.push('The owner identity is not approved.');
+  const outcome = submission?.review_outcome;
+  if (!['approved_for_visit', 'approved'].includes(outcome))
+    blockers.push('The current submission has not been approved.');
   else if (submission.content_version !== row.content_version)
     blockers.push('The property changed after submission; it needs a new review.');
   if (submission && listingCompletion(submission.snapshot.listing, {...submission.snapshot,legacySubmission:submission.snapshot.workflowVersion!==2}).remaining.length)
     blockers.push('The submitted revision is incomplete.');
-  if (!visit) blockers.push('No passed verification of this exact revision is recorded.');
+  // Story 2.1: a visit is required only where the reviewer chose 'approve for verification',
+  // but a visit the reviewer scheduled anyway must finish before publication.
+  if (outcome === 'approved_for_visit' && !visit)
+    blockers.push('No passed verification of this exact revision is recorded.');
+  const [open] = submission
+    ? await database`SELECT 1 FROM verification_visit WHERE submission_id=${submission.id}
+        AND completed_at IS NULL AND cancelled_at IS NULL LIMIT 1`
+    : [];
+  if (open && outcome === 'approved') blockers.push('A scheduled verification visit has not finished.');
   const inventory = await listingInventory(database, id, row);
-  if (['hour', 'night'].includes(row.rental_unit) && !inventory.bookable) blockers.push(inventory.note);
+  // Publication needs sellable future dates for every kind of property (FR-6).
+  if (!inventory.bookable) blockers.push(inventory.note);
   return {
     eligible: blockers.length === 0,
     blockers,
@@ -338,7 +350,7 @@ export async function recordVerificationOutcome(database, { adminId, id, visitId
   });
   if (!parsed.success) throw unprocessable(fields(parsed.error));
   const d = parsed.data;
-  return database.begin(async (tx) => {
+  const result = await database.begin(async (tx) => {
     const { row } = await lockProperty(tx, id);
     const visit = await lockOpenVisit(tx, id, visitId, d.expectedVersion);
     const submission = await reviewedRevision(tx, row);
@@ -386,6 +398,38 @@ export async function recordVerificationOutcome(database, { adminId, id, visitId
     });
     return { visitId: visit.id, outcome: d.outcome, status: d.outcome === 'failed' ? 'draft' : row.status };
   });
+  if (d.outcome === 'passed' && (await autoPublishProperty(database, id))) result.status = 'live';
+  return result;
+}
+
+async function publishNow(tx, { row, state, actor }) {
+  const [visit] = state.visitId
+    ? await tx`SELECT completed_at, recorded_by FROM verification_visit WHERE id=${state.visitId}`
+    : [];
+  // verified_at only records a real completed verification; approval alone is not one.
+  await tx`UPDATE rentable SET status='live', prior_status=NULL, rejection_reason=NULL,
+      verified_at=${visit ? new Date(visit.completed_at).toISOString() : null}::timestamptz,
+      verified_by=${visit?.recorded_by ?? null},
+      published_submission_id=${state.submissionId}, published_at=now(), published_by=${actor.adminId ?? null},
+      updated_at=now()
+    WHERE id=${row.id}`;
+  const after = {
+    submissionId: state.submissionId,
+    contentVersion: row.content_version,
+    visitId: state.visitId,
+    bookable: state.inventory.bookable,
+    automatic: !actor.adminId,
+  };
+  if (actor.adminId) {
+    await audit(tx, { adminId: actor.adminId, id: row.id, action: 'listing_published', after, ip: actor.ip });
+  } else {
+    await tx`INSERT INTO audit_log(actor_type, actor_id, entity, entity_id, action, after, reason)
+      VALUES ('system', NULL, 'rentable', ${row.id}, 'listing_published', ${JSON.stringify(after)}::text::jsonb,
+        'Approved, owner identity verified and publication setup complete')`;
+    // The audit trigger only notifies for admin actors; tell the owner directly.
+    await tx`SELECT client_update_insert(${row.client_id}, ${'published:' + state.submissionId}, 'property', 'info',
+      'listing_published', ${row.id}, NULL, '{}'::jsonb, now())`;
+  }
 }
 
 export async function publishProperty(database, { adminId, id, input, ip = null }) {
@@ -398,24 +442,7 @@ export async function publishProperty(database, { adminId, id, input, ip = null 
     if (state.submissionId !== submissionId)
       throw conflict('SUBMISSION_CHANGED', 'Reload: the reviewed revision changed.');
     if (!state.eligible) throw conflict('PUBLICATION_BLOCKED', state.blockers.join(' '));
-    const [submission] = await tx`SELECT snapshot FROM listing_submission WHERE id=${submissionId}`;
-    const [visit] = await tx`SELECT completed_at, recorded_by FROM verification_visit WHERE id=${state.visitId}`;
-    await tx`UPDATE rentable SET status='live', prior_status=NULL, rejection_reason=NULL,
-        verified_at=${new Date(visit.completed_at).toISOString()}::timestamptz, verified_by=${visit.recorded_by},
-        published_submission_id=${submissionId}, published_at=now(), published_by=${adminId}, updated_at=now()
-      WHERE id=${id}`;
-    await audit(tx, {
-      adminId,
-      id,
-      action: 'listing_published',
-      after: {
-        submissionId,
-        contentVersion: row.content_version,
-        visitId: state.visitId,
-        bookable: state.inventory.bookable,
-      },
-      ip,
-    });
+    await publishNow(tx, { row, state, actor: { adminId, ip } });
     return { row, state };
   });
   revalidateListing(
@@ -423,4 +450,34 @@ export async function publishProperty(database, { adminId, id, input, ip = null 
     { statusChanged: true },
   );
   return { id, status: 'live', submissionId, inventory: result.state.inventory };
+}
+
+/**
+ * Story 2.1 (FR-6): publish without a separate step once every condition holds.
+ * Safe to call any time; it does nothing unless the property is eligible.
+ */
+export async function autoPublishProperty(database, id) {
+  const published = await database.begin(async (tx) => {
+    const { row } = await lockProperty(tx, id);
+    if (row.status !== 'pending_verification') return null;
+    const state = await publicationState(tx, id);
+    if (!state.eligible) return null;
+    await publishNow(tx, { row, state, actor: {} });
+    return row;
+  });
+  if (published)
+    revalidateListing(
+      { id, slug: published.slug, publicCode: published.public_code },
+      { statusChanged: true },
+    );
+  return Boolean(published);
+}
+
+/** Catches approvals that become publishable later, e.g. when the owner opens dates. */
+export async function autoPublishReady(database) {
+  // ponytail: scans every waiting property each tick; page it if this ever reaches thousands.
+  const waiting = await database`SELECT id FROM rentable WHERE status='pending_verification' ORDER BY id`;
+  let count = 0;
+  for (const { id } of waiting) if (await autoPublishProperty(database, id)) count++;
+  return count;
 }

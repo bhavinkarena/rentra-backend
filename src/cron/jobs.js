@@ -1,5 +1,6 @@
 import { runOwnerNotificationJobs } from '../services/notifications/owner-jobs.js';
 import { runAdminAlertJobs } from '../services/admin/admin-alerts.js';
+import { autoPublishReady } from '../services/admin/verification.js';
 import { completeReturnedVisits } from '../services/booking/visit-lifecycle.js';
 import { cleanListingPhotoOrphans } from '../services/uploads/cloudinary.js';
 import { autoOpenDates } from '../services/booking/owner-settings.js';
@@ -31,6 +32,8 @@ export function createJobs(sql) {
       lastRun: 0,
     },
     { name: 'resume-paused', run: () => resumeEndedPauses(sql), intervalMs: 3600000, lastRun: 0 },
+    // Story 2.1: approved properties go public once the owner completes publication setup.
+    { name: 'auto-publish', run: () => autoPublishReady(sql), intervalMs: 300000, lastRun: 0 },
     { name: 'auto-open-dates', run: () => autoOpenDates(sql), intervalMs: 86400000, lastRun: 0 },
     { name: 'exports', run: () => runExportJobs(sql) },
     { name: 'privacy', run: () => runPrivacyJobs(sql) },

@@ -238,11 +238,14 @@ export function listingCompletion(
     inReview,
     isLive: status === 'live',
     review: {
+      // Story 2.1: approval no longer implies a visit; only a scheduled one is described as such.
       label: status === 'pending_verification'
-        ? 'Verification visit'
+        ? (l.reviewVerification ? 'Verification visit' : 'Approved')
         : 'Rentra reviews this property',
       hint: status === 'pending_verification'
-        ? 'We check the property matches, then publish it.'
+        ? (l.reviewVerification
+          ? 'We check the property matches, then publish it.'
+          : 'It goes live automatically once your identity is approved and you open bookable dates.')
         : '2 working days. Every property is checked before it goes live.',
       state: status === 'live' ? 'done' : inReview ? 'in_review' : 'waiting',
     },

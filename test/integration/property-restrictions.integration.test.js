@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
-import { seedConfirmedBooking, seedReviewFixture } from '../helpers/listing-review-fixture.js';
+import {
+  seedConfirmedBooking,
+  seedReviewFixture,
+  makePublishable,
+} from '../helpers/listing-review-fixture.js';
 import { ownerEditEffect, ownerPauseTarget } from '@/services/domain/listing-lifecycle.js';
 
 const future = (days) => {
@@ -29,6 +33,7 @@ test(
       globalThis.__rentraSql = sql;
       process.env.DATABASE_URL = fixture.url;
       const f = await seedReviewFixture(sql);
+      await makePublishable(sql, f.owner, f.listing, { openDates: false });
       const id = f.listing;
       const { submitProperty, decidePropertyReview, readPropertyReview, propertyReviewContext } =
         await import('@/services/admin/listings.js');
@@ -57,8 +62,10 @@ test(
         });
         return submissionId;
       };
-      const publish = (submissionId) =>
-        v.publishProperty(sql, { adminId: f.admin, id, input: { submissionId } });
+      const publish = async (submissionId) => {
+        await makePublishable(sql, f.owner, f.listing);
+        return v.publishProperty(sql, { adminId: f.admin, id, input: { submissionId } });
+      };
       const state = () => lc.lifecycleState(sql, id);
       const hide = (expectedVersion, reason = REASON) =>
         lc.hideProperty(sql, { adminId: f.admin, id, input: { expectedVersion, reason } });
@@ -160,6 +167,8 @@ test(
       assert.equal((await propertyReviewContext(sql, id)).needsResubmission, true);
 
       // 6. Hide blocks publication of a verified revision; restore returns it to verification.
+      // Dates closed first, so the passed visit does not publish automatically.
+      await sql`DELETE FROM availability WHERE rentable_id=${id}`;
       const second = await verify();
       s = await state();
       assert.equal(s.status, 'pending_verification');

@@ -86,7 +86,7 @@ export async function ownerPropertyOverview(database, ownerId, id) {
   // PROP-01: when each stage of Draft → In review → Verification → Live last happened.
   const [stages] = await database`SELECT
       (SELECT max(submitted_at) FROM listing_submission WHERE rentable_id=${id}) AS submitted,
-      (SELECT max(reviewed_at) FROM listing_review WHERE rentable_id=${id} AND outcome='approved_for_visit') AS approved,
+      (SELECT max(reviewed_at) FROM listing_review WHERE rentable_id=${id} AND outcome IN ('approved_for_visit','approved')) AS approved,
       (SELECT scheduled_at FROM verification_visit WHERE rentable_id=${id} ORDER BY created_at DESC LIMIT 1) AS visit,
       (SELECT count(*)::int FROM booking WHERE rentable_id=${id} AND state IN ('confirmed','handed_over','completed')
         AND date_trunc('month', local_day) = date_trunc('month', (now() AT TIME ZONE 'Asia/Kolkata')::date)) AS month_bookings`;

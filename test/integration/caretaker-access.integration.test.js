@@ -2,7 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
-import { seedConfirmedBooking, seedReviewFixture } from '../helpers/listing-review-fixture.js';
+import {
+  seedConfirmedBooking,
+  seedReviewFixture,
+  makePublishable,
+} from '../helpers/listing-review-fixture.js';
 
 const future = (days) => {
   const date = new Date(Date.now() + days * 86400000 + 5.5 * 3600000);
@@ -28,6 +32,7 @@ test(
       globalThis.__rentraSql = sql;
       process.env.DATABASE_URL = fixture.url;
       const f = await seedReviewFixture(sql);
+      await makePublishable(sql, f.owner, f.listing, { openDates: false });
       const id = f.listing;
       const { submitProperty, decidePropertyReview } = await import('@/services/admin/listings.js');
       const v = await import('@/services/admin/verification.js');
@@ -69,6 +74,7 @@ test(
           checklist: ALL,
         },
       });
+      await makePublishable(sql, f.owner, f.listing);
       await v.publishProperty(sql, { adminId: f.admin, id, input: { submissionId } });
       const booked = await seedConfirmedBooking(sql, id);
       // Same shape as the CP11/12 gate seed: a visit in progress with its committed reservation.

@@ -134,7 +134,7 @@ export const amenityValueType = pgEnum('amenity_value_type', [
 
 /** Gate 2's outcomes. Three ways forward, one way back — same as Gate 1. */
 export const listingReviewOutcome = pgEnum('listing_review_outcome', [
-  'changes_requested', 'approved_for_visit', 'published', 'rejected',
+  'changes_requested', 'approved_for_visit', 'published', 'rejected', 'approved',
 ]);
 
 /**

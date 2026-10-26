@@ -2,7 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
-import { seedConfirmedBooking, seedReviewFixture } from '../helpers/listing-review-fixture.js';
+import {
+  seedConfirmedBooking,
+  seedReviewFixture,
+  makePublishable,
+} from '../helpers/listing-review-fixture.js';
 
 const future = (days) => {
   const date = new Date(Date.now() + days * 86400000 + 5.5 * 3600000);
@@ -29,6 +33,7 @@ test(
       globalThis.__rentraSql = sql;
       process.env.DATABASE_URL = fixture.url;
       const f = await seedReviewFixture(sql);
+      await makePublishable(sql, f.owner, f.listing, { openDates: false });
       const id = f.listing;
       const { submitProperty, decidePropertyReview } = await import('@/services/admin/listings.js');
       const v = await import('@/services/admin/verification.js');
@@ -103,6 +108,7 @@ test(
         visitId,
         input: { expectedVersion: 1, outcome: 'passed', findings: FINDINGS, checklist: ALL },
       });
+      await makePublishable(sql, f.owner, f.listing);
       await v.publishProperty(sql, { adminId: f.admin, id, input: { submissionId } });
       for (const action of [
         'listing_review_decided',
@@ -114,10 +120,12 @@ test(
       const text = JSON.stringify(await list());
       for (const secret of [FINDINGS, NOTE, 'reviewer@fixture.invalid', f.admin])
         assert.equal(text.includes(secret), false, `inbox leaks ${secret}`);
+      // Publication needs open dates; closing them afterwards leaves a live, unbookable property.
+      await sql`DELETE FROM availability WHERE rentable_id=${id}`;
       tasks = Object.fromEntries(
         (await inbox.clientTasks(sql, f.owner)).tasks.map((t) => [t.key, t]),
       );
-      assert.equal(tasks.properties_unbookable.count, 1, 'live without hours is not bookable');
+      assert.equal(tasks.properties_unbookable.count, 1, 'live without open dates is not bookable');
       assert.equal(
         tasks.properties_unbookable.count,
         (await getClientListingsPage(f.owner, { status: 'unbookable' })).total,

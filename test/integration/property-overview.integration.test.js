@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
-import { seedConfirmedBooking, seedReviewFixture } from '../helpers/listing-review-fixture.js';
+import {
+  seedConfirmedBooking,
+  seedReviewFixture,
+  makePublishable,
+} from '../helpers/listing-review-fixture.js';
 
 const future = (days) => {
   const date = new Date(Date.now() + days * 86400000 + 5.5 * 3600000);
@@ -27,6 +31,7 @@ test(
       globalThis.__rentraSql = sql;
       process.env.DATABASE_URL = fixture.url;
       const f = await seedReviewFixture(sql);
+      await makePublishable(sql, f.owner, f.listing, { openDates: false });
       const id = f.listing;
       const { submitProperty, decidePropertyReview, assignPropertyReview } =
         await import('@/services/admin/listings.js');
@@ -69,9 +74,12 @@ test(
         visitId,
         input: { expectedVersion: 1, outcome: 'passed', findings: FINDINGS, checklist: ALL },
       });
+      await makePublishable(sql, f.owner, f.listing);
       await v.publishProperty(sql, { adminId: f.admin, id, input: { submissionId } });
 
-      // Live but not bookable: hours unconfirmed, no open dates.
+      // Live but not bookable: after publication the owner unconfirms hours and closes dates.
+      await sql`DELETE FROM availability WHERE rentable_id=${id}`;
+      await sql`UPDATE rentable SET booking_config='{"inventoryReady":false}'::jsonb WHERE id=${id}`;
       let overview = await ownerPropertyOverview(sql, f.owner, id);
       assert.equal(overview.inventory.bookable, false);
       assert.equal(overview.inventory.nextOpenDate, null);
