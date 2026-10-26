@@ -382,8 +382,29 @@ test(
         idempotencyKey: randomUUID(),
         accepted: true,
       };
+      // Story 2.8: a stale preview is refused and nothing changes; a fresh preview is required.
+      await assert.rejects(
+        commitCancellation(app, session, { ...cancel, hash: 'a'.repeat(64) }, env),
+        { code: 'CANCELLATION_CHANGED' },
+      );
+      assert.equal(
+        (await sql`SELECT state FROM booking WHERE id=${paidVisit.id}`)[0].state,
+        'confirmed',
+      );
       const cancelled = await commitCancellation(app, session, cancel, env);
       assert.deepEqual(await commitCancellation(app, session, cancel, env), cancelled);
+      // Story 2.8: the same key with a different payload conflicts instead of acting again.
+      await assert.rejects(
+        commitCancellation(app, session, { ...cancel, reason: 'Changed my mind again' }, env),
+        { code: 'IDEMPOTENCY_CONFLICT' },
+      );
+      // Story 2.8: one refund intent, recorded atomically with the cancellation and kept separate
+      // from its completion (no admin approval; the refund still has to be executed).
+      const refunds = await sql`SELECT r.state, r.expected_minor::int AS amount FROM refund r
+        JOIN refund_allocation ra ON ra.refund_id=r.id WHERE ra.booking_id=${paidVisit.id} GROUP BY r.id`;
+      assert.equal(refunds.length, 1);
+      assert.equal(refunds[0].amount, estimate.refundMinor);
+      assert.notEqual(refunds[0].state, 'succeeded', 'cancelled is not the same as refunded');
       assert.equal(
         (await sql`SELECT state FROM booking WHERE id=${paidVisit.id}`)[0].state,
         'cancelled',

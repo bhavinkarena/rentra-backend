@@ -11,7 +11,10 @@ import {
   expireInventoryHolds,
 } from '../../src/services/booking/inventory.js';
 import { getTimeSlots, getHourlyAvailability } from '../../src/services/booking/time-slots.js';
-import { previewCancellation } from '../../src/services/booking/cancellation.js';
+import {
+  previewCancellation,
+  commitCancellation,
+} from '../../src/services/booking/cancellation.js';
 import { setPaymentGatewayConfiguration } from '../../src/services/payments/gateway-settings.js';
 import {
   startCheckoutPayment,
@@ -407,6 +410,29 @@ test(
         );
         assert.equal(visit.rent + visit.fee, visit.refundMinor, 'split over what was paid');
       }
+      // Story 2.8: a 0% cancellation still cancels, but creates no refund and so no provider call.
+      const zero = await previewCancellation(sql, a.session, {
+        orderId: heldA.orderId,
+        visitIds: [confirmed.id],
+      });
+      assert.equal(zero.refundMinor, 0);
+      await commitCancellation(sql, a.session, {
+        orderId: heldA.orderId,
+        visitIds: [confirmed.id],
+        hash: zero.hash,
+        idempotencyKey: randomUUID(),
+        accepted: true,
+      });
+      assert.equal(
+        (await sql`SELECT state FROM booking WHERE id=${confirmed.id}`)[0].state,
+        'cancelled',
+      );
+      assert.equal(
+        (
+          await sql`SELECT count(*)::int AS n FROM refund_allocation WHERE booking_id=${confirmed.id}`
+        )[0].n,
+        0,
+      );
     } finally {
       await fixture.drop();
     }
