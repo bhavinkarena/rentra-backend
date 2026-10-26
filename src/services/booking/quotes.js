@@ -9,6 +9,7 @@ import { bookingModel } from '../domain/verticals.js';
 import { HourlyError, buildHourlyVisit, priceHourlyVisit } from '../domain/hourly.js';
 import { BOOKING_POLICY } from '../domain/booking-policy.js';
 import { resolveServiceFee } from '../finance/service-fee.js';
+import { listingCancellationPolicy } from '../domain/cancellation-policy.js';
 import { addLocalDays, buildVisitIntervals, propertyToday } from '../domain/booking-dates.js';
 import { priceVisitsMinor, sumVisitTotals, visitMoneyMinor } from '../domain/booking-money.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
@@ -112,6 +113,8 @@ export function prepareHourlyQuote(selection, listing, inputs, now, publications
     ...(publications ? { publications } : {}),
     version: BOOKING_POLICY.version, listingConfigVersion: listing.booking_config_version,
     cancellationTier: listing.cancellation_tier, houseRules: listing.house_rules,
+    // Story 2.6: the owner's percentage windows, accepted with the booking.
+    cancellationPolicy: listingCancellationPolicy(listing),
     cancellation: { bandUnit: 'hours', bands: tier.bands.map((band) => [...band]), noShow: tier.noShow, feeOnFullRefund: listing.cancellation_tier === 'flexible' },
     pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee', illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
     depositScope: 'per_visit', taxPolicy: 'not_configured', timeZone: config.timeZone,
@@ -166,6 +169,8 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
     ...(publications ? {publications} : {}),
     version: BOOKING_POLICY.version, listingConfigVersion: listing.booking_config_version,
     cancellationTier: listing.cancellation_tier, houseRules: listing.house_rules,
+    // Story 2.6: the owner's percentage windows, accepted with the booking.
+    cancellationPolicy: listingCancellationPolicy(listing),
     cancellation: { bands: CANCELLATION_TIERS[listing.cancellation_tier].bands.map(band=>[...band]), noShow: CANCELLATION_TIERS[listing.cancellation_tier].noShow, feeOnFullRefund: listing.cancellation_tier === 'flexible' },
     pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee', illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
     depositScope: 'per_visit', taxPolicy: 'not_configured', timeZone: config.timeZone,

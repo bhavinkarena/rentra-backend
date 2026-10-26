@@ -1,4 +1,5 @@
 import 'server-only';
+import { freeCancelHoursOf, policyFromHotelPlan } from '../domain/cancellation-policy.js';
 
 import {
   HOTEL_POLICY, HotelError, cancellationTerms, hotelRefund, priceRoomStay, roomTypeAvailability, stayInstants, stayNights,
@@ -21,7 +22,17 @@ const roomTypeOf = (row) => ({
   baseOccupancy: row.base_occupancy, roomCount: row.room_count,
   extraAdultMinor: int(row.extra_adult_minor), extraChildMinor: int(row.extra_child_minor),
 });
-const planOf = (row) => ({
+// Story 2.6: a plan uses the hotel default unless the owner chose its own policy.
+const planOf = (row, hotelPolicy) => {
+  const cancellationPolicy = row.cancellation_policy ?? hotelPolicy ?? policyFromHotelPlan({ freeCancelHours: row.free_cancel_hours });
+  return {
+    ...planColumns(row),
+    cancellationPolicy,
+    inheritsCancellation: row.cancellation_policy == null,
+    freeCancelHours: freeCancelHoursOf(cancellationPolicy),
+  };
+};
+const planColumns = (row) => ({
   id: row.id, roomTypeId: row.room_type_id, name: row.name, mealPlan: row.meal_plan, isActive: row.is_active,
   weekdayMinor: int(row.weekday_minor), weekendMinor: int(row.weekend_minor), derivedFrom: row.derived_from,
   derivedPctBps: row.derived_pct_bps, derivedPerGuestMinor: int(row.derived_per_guest_minor),
@@ -38,7 +49,8 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
   const ids = listings.map((l) => l.id);
   if (!ids.length) return new Map();
   const [profiles, rooms, plans, overrides, nightRows, staleHolds, slabs] = await Promise.all([
-    tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights
+    tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights,
+        r.cancellation_policy AS hotel_policy
       FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id JOIN category c ON c.id = r.category_id
       WHERE p.rentable_id IN ${tx(ids)} AND c.vertical_code = 'hotel'`,
     tx`SELECT * FROM room_type WHERE rentable_id IN ${tx(ids)} AND is_active ORDER BY sort_order, name, id`,
@@ -90,7 +102,7 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
         childFreeAge: profile.child_free_age, weekendNights: profile.weekend_nights.map(Number),
       },
       roomTypes: (roomsByHotel.get(listing.id) ?? []).map(roomTypeOf),
-      plans: (plansByHotel.get(listing.id) ?? []).map(planOf),
+      plans: (plansByHotel.get(listing.id) ?? []).map((row) => planOf(row, profile.hotel_policy)),
       overridesByPlan: overridesByHotel.get(listing.id) ?? {},
       nightsByRoom,
       slabs: taxSlabs,
@@ -122,6 +134,8 @@ function priceLine(data, nights, { roomType, plan, adults, childAges }) {
 
 const planSnapshot = (plan) => ({
   name: plan.name, mealPlan: plan.mealPlan, freeCancelHours: plan.freeCancelHours, lateCharge: plan.lateCharge, noShow: plan.noShow,
+  // Story 2.6: the room's own accepted policy; mixed rooms each keep theirs.
+  cancellationPolicy: plan.cancellationPolicy,
 });
 
 /** Price `party` (one entry per room) in one room type and plan; throws HotelError when the plan cannot take it. */
@@ -281,7 +295,8 @@ export async function previewHotelCancellation(sql, bookingId, now = new Date())
     id: row.id,
     ...hotelRefund({
       totalMinor: int(row.amount_room_minor) + int(row.amount_tax_minor), nights: row.nights,
-      plan: { freeCancelHours: row.plan_snapshot.freeCancelHours, lateCharge: row.plan_snapshot.lateCharge },
+      plan: { freeCancelHours: row.plan_snapshot.freeCancelHours, lateCharge: row.plan_snapshot.lateCharge,
+        cancellationPolicy: row.plan_snapshot.cancellationPolicy },
     }, row.starts_at, now),
   }));
   return { lines, refundMinor: lines.reduce((sum, line) => sum + line.refundMinor, 0), chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0) };

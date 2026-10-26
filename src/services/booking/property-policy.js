@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import { withListingInventory } from './inventory.js';
 import { pricingSchema, termsSchema } from '../schemas/zod/listing.js';
+import { listingCancellationPolicy, policyFromTier } from '../domain/cancellation-policy.js';
 import { conflict, notFound, unprocessable } from '../../utils/apiError.js';
 
 const signature = (value) =>
@@ -33,7 +34,8 @@ export async function changePropertyPolicy(database, ownerId, id, command, input
     const before =
       command === 'pricing'
         ? { rates, extraGuestCharge: Number(listing.extra_guest_charge_minor) / 100 }
-        : { depositAmount: Number(listing.deposit_minor) / 100, cancellationTier: listing.cancellation_tier };
+        : { depositAmount: Number(listing.deposit_minor) / 100, cancellationTier: listing.cancellation_tier,
+            cancellationPolicy: listingCancellationPolicy(listing) };
     const token = signature([
       ownerId,
       id,
@@ -71,7 +73,10 @@ export async function changePropertyPolicy(database, ownerId, id, command, input
           if (schedule.enabled){schedule.extraGuestChargeMinor = (value.extraGuestCharge || 0) * 100;if(value.includedGuests)schedule.includedGuests=value.includedGuests;}
       await tx`UPDATE rentable SET extra_guest_charge_minor=${(value.extraGuestCharge || 0) * 100},booking_config=${JSON.stringify(config)}::text::jsonb,booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
     } else {
-      await tx`UPDATE rentable SET deposit_minor=${value.depositAmount * 100},cancellation_tier=${value.cancellationTier},booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
+      // Story 2.6: the owner's windows (the chosen preset when none were sent). New quotes only.
+      const policy = value.cancellationPolicy ?? policyFromTier(value.cancellationTier, listing.rental_unit);
+      await tx`UPDATE rentable SET deposit_minor=${value.depositAmount * 100},cancellation_tier=${value.cancellationTier},
+        cancellation_policy=${JSON.stringify(policy)}::text::jsonb,booking_config_version=booking_config_version+1,updated_at=now() WHERE id=${id}`;
     }
     const [after] =
       await tx`SELECT content_version,booking_config_version FROM rentable WHERE id=${id}`;

@@ -80,14 +80,18 @@ test('CP11 accepted cancellation snapshots govern exact cutoff and survive later
     amount_fee_minor: 8000,
     amount_deposit_minor: 0,
   };
-  assert.equal(cancellationEntitlement(visit, new Date('2030-01-02T03:30:00Z')).rent, 100000);
+  // Story 2.6 (FR-9): an exact cutoff takes the at/after window, so 72 h before is already 50%.
+  assert.equal(cancellationEntitlement(visit, new Date('2030-01-02T03:29:59.999Z')).rent, 100000);
+  assert.equal(cancellationEntitlement(visit, new Date('2030-01-02T03:29:59.999Z')).fee, 8000);
+  assert.equal(cancellationEntitlement(visit, new Date('2030-01-02T03:30:00Z')).rent, 50000);
   assert.equal(cancellationEntitlement(visit, new Date('2030-01-02T03:30:00.001Z')).rent, 50000);
-  assert.equal(cancellationEntitlement(visit, new Date('2030-01-02T03:30:00Z')).fee, 8000);
   const accepted = {
     ...visit,
     policy_snapshot: {
       ...policy,
       cancellation: { bands: [[0, 0.25]], noShow: 0, feeOnFullRefund: false },
+      // The accepted windows, not today's listing policy, decide the refund.
+      cancellationPolicy: { version: 1, windows: [{ hoursBefore: 0, pct: 25 }], atOrAfterCheckInPct: 0, earlyDeparture: { offered: false, pct: 0 } },
     },
   };
   assert.equal(cancellationEntitlement(accepted, new Date('2030-01-02T03:30:00Z')).rent, 25000);

@@ -29,6 +29,7 @@ import { revalidateListing } from '@/services/cache/listing-cache';
 import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { slugify } from '@/services/domain/listing-url';
 import { ownerEditEffect, ownerPauseTarget, trustChanges, TRUST_FIELDS as TRUST_FIELD_LIST } from '@/services/domain/listing-lifecycle';
+import { policyFromTier } from '@/services/domain/cancellation-policy.js';
 import {
   uploadPrivateDocument, uploadPublicListingPhoto, detectMime, UPLOAD_LIMITS,
   isCloudinaryConfigured,
@@ -322,7 +323,7 @@ export async function saveRules(_prev, formData) {
     checkInFrom: d.checkInFrom,
     checkOutBy: d.checkOutBy,
     houseRules,
-    ...(formData.get('wizardRules')==='1'?{depositMinor:termsSchema.parse(Object.fromEntries(formData)).depositAmount*100,cancellationTier:termsSchema.parse(Object.fromEntries(formData)).cancellationTier,bookingConfigVersion:raw`${rentable.bookingConfigVersion}+1`}:{}),
+    ...(formData.get('wizardRules')==='1'?wizardTerms(formData, listing):{}),
   }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
 
   return { ok: true, contentVersion, sentBack };
@@ -349,11 +350,21 @@ async function saveVenueRules(listing, formData) {
     notes: d.extraRules || null,
     cancellationConfirmed: formData.get('wizardRules')==='1' ? true : listing.houseRules?.cancellationConfirmed,
   };
-  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules, ...(formData.get('wizardRules')==='1'?{depositMinor:termsSchema.parse(Object.fromEntries(formData)).depositAmount*100,cancellationTier:termsSchema.parse(Object.fromEntries(formData)).cancellationTier,bookingConfigVersion:raw`${rentable.bookingConfigVersion}+1`}:{}) }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
+  const { sentBack, contentVersion } = await applyEdit(listing, { houseRules, ...(formData.get('wizardRules')==='1'?wizardTerms(formData, listing):{}) }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
   return { ok: true, contentVersion, sentBack };
 }
 
 /** Owner forms send structured lists (courts, rate bands) as one JSON field. */
+/** Story 2.6: wizard rules save deposit, the preset tier and the owner's cancellation windows together. */
+function wizardTerms(formData, listing) {
+  const terms = termsSchema.parse(Object.fromEntries(formData));
+  return {
+    depositMinor: terms.depositAmount * 100,
+    cancellationTier: terms.cancellationTier,
+    cancellationPolicy: terms.cancellationPolicy ?? policyFromTier(terms.cancellationTier, listing.rentalUnit),
+    bookingConfigVersion: raw`${rentable.bookingConfigVersion}+1`,
+  };
+}
 function jsonField(formData, key) {
   try {
     return JSON.parse(String(formData.get(key) ?? ''));
@@ -377,7 +388,7 @@ async function policyAction(formData, command) {
     if (result.ok) revalidateListing(listing);
     return result;
   }
-  const keys = command === 'pricing' ? ['day_weekday','day_weekend','night_weekday','night_weekend','full_day_weekday','full_day_weekend','extraGuestCharge','extraHourCharge','includedGuests'] : ['depositAmount','cancellationTier'];
+  const keys = command === 'pricing' ? ['day_weekday','day_weekend','night_weekday','night_weekend','full_day_weekday','full_day_weekend','extraGuestCharge','extraHourCharge','includedGuests'] : ['depositAmount','cancellationTier','cancellationPolicy'];
   const result = await changePropertyPolicy(sql,user.id,listing.id,command,{
     values:Object.fromEntries(keys.filter(key=>key!=='includedGuests'||formData.has(key)).map(key=>[key,formData.get(key)||0])),
     expectedVersion:Number(formData.get('contentVersion')),direct:formData.get('direct')==='true',autosave:formData.get('autosave')==='1',preview:formData.get('mode')==='preview',previewToken:formData.get('previewToken'),
@@ -420,7 +431,7 @@ export async function saveHotelRoomsStep(_prev, formData) {
 /** Rate plans: `plans` is one JSON field (wizard step `pricing`). */
 export async function saveHotelRatesStep(_prev, formData) {
   const { user, listing } = await hotelListing(formData);
-  const result = await saveHotelRates(sql, user.id, { rentableId: listing.id, expectedVersion: Number(formData.get('contentVersion')), plans: jsonField(formData, 'plans') });
+  const result = await saveHotelRates(sql, user.id, { rentableId: listing.id, expectedVersion: Number(formData.get('contentVersion')), plans: jsonField(formData, 'plans'), defaultPolicy: formData.get('defaultPolicy') ? jsonField(formData, 'defaultPolicy') : undefined });
   revalidateListing(listing);
   return result;
 }

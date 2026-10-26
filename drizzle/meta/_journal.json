@@ -526,6 +526,13 @@
       "when": 1790591504015,
       "tag": "0074_service_fee",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1790591505015,
+      "tag": "0075_cancellation_policy",
+      "breakpoints": true
     }
   ]
 }

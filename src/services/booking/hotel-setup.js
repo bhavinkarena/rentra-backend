@@ -1,11 +1,12 @@
 import 'server-only';
 import { z } from 'zod';
 import {
-  HOTEL_CANCELLATION, hotelGstSchema, hotelPlansSchema, hotelRoomsSchema, hotelRulesSchema, hotelStaySchema,
+  hotelGstSchema, hotelPlansSchema, hotelRoomsSchema, hotelRulesSchema, hotelStaySchema,
 } from '../schemas/zod/listing.js';
 import { conflict, notFound, unprocessable } from '../../utils/apiError.js';
 import { withListingInventory } from './inventory.js';
 import { ownerEditEffect } from '../domain/listing-lifecycle.js';
+import { CANCELLATION_PRESETS, freeCancelHoursOf, presetName } from '../domain/cancellation-policy.js';
 
 /**
  * The hotel owner's setup (hotel plan, Phase 3): room types, rate plans and the
@@ -19,8 +20,6 @@ const flat = (error) => {
   return out;
 };
 const minuteOf = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
-const cancellationOf = (row) => Object.entries(HOTEL_CANCELLATION).find(([, t]) =>
-  t.freeCancelHours === row.free_cancel_hours && t.lateCharge === row.late_charge && t.noShow === row.no_show)?.[0] ?? 'custom';
 
 /** Locks the hotel, checks the owner and the version the form was rendered from. */
 function ownedHotel(database, ownerId, rentableId, expectedVersion, run) {
@@ -104,10 +103,11 @@ export async function saveHotelRooms(database, ownerId, { rentableId, expectedVe
 }
 
 /** Rate plans for the hotel's room types. Prices are not trust content: no review on change. */
-export async function saveHotelRates(database, ownerId, { rentableId, expectedVersion, plans }) {
-  const parsed = hotelPlansSchema.safeParse({ plans });
+export async function saveHotelRates(database, ownerId, { rentableId, expectedVersion, plans, defaultPolicy: rawDefault }) {
+  const parsed = hotelPlansSchema.safeParse({ plans, ...(rawDefault ? { defaultPolicy: rawDefault } : {}) });
   if (!parsed.success) throw unprocessable(flat(parsed.error));
   const input = parsed.data.plans;
+  const { defaultPolicy } = parsed.data;
   return ownedHotel(database, ownerId, rentableId, expectedVersion, async (tx) => {
     const rooms = await tx`SELECT id, name FROM room_type WHERE rentable_id=${rentableId}`;
     const existing = await tx`SELECT id, room_type_id, derived_from, is_active FROM rate_plan WHERE rentable_id=${rentableId}`;
@@ -130,8 +130,17 @@ export async function saveHotelRates(database, ownerId, { rentableId, expectedVe
     }
     // Base rates first, so a new derived rate can point at a new base rate by its key.
     const ids = new Map();
+    // Story 2.6: the hotel default first; a 'default' rate stores no policy of its own.
+    const [hotelRow] = await tx`SELECT cancellation_policy FROM rentable WHERE id=${rentableId}`;
+    const hotelDefault = defaultPolicy ?? hotelRow?.cancellation_policy ?? CANCELLATION_PRESETS.night.moderate;
+    if (defaultPolicy) await tx`UPDATE rentable SET cancellation_policy=${JSON.stringify(defaultPolicy)}::text::jsonb, updated_at=now() WHERE id=${rentableId}`;
     const write = async (row) => {
-      const terms = HOTEL_CANCELLATION[row.cancellation];
+      const own = row.cancellation === 'default' ? null
+        : row.cancellation === 'custom' ? row.cancellationPolicy : CANCELLATION_PRESETS.night[row.cancellation];
+      const effective = own ?? hotelDefault;
+      // Older readers still see matching columns; the policy is what bookings snapshot.
+      const free = freeCancelHoursOf(effective);
+      const terms = { freeCancelHours: free == null ? null : Math.max(1, free), lateCharge: 'full_stay', noShow: 'full_stay' };
       const parent = row.derivedFrom == null ? null : (ids.get(row.derivedFrom) ?? row.derivedFrom);
       const values = {
         name: row.name, meal_plan: row.mealPlan, weekday_minor: row.derivedFrom == null ? row.weekday * 100 : null,
@@ -139,6 +148,7 @@ export async function saveHotelRates(database, ownerId, { rentableId, expectedVe
         derived_pct_bps: row.derivedFrom == null ? 0 : row.adjustPct * 100, derived_per_guest_minor: row.derivedFrom == null ? 0 : row.perGuest * 100,
         free_cancel_hours: terms.freeCancelHours, late_charge: terms.lateCharge, no_show: terms.noShow,
         min_nights: row.minNights, sort_order: row.sortOrder, is_active: row.isActive,
+        cancellation_policy: own ? tx.json(own) : null,
       };
       const [plan] = row.id
         ? await tx`UPDATE rate_plan SET ${tx(values)}, updated_at=now() WHERE id=${row.id} AND rentable_id=${rentableId} RETURNING id`
@@ -194,7 +204,7 @@ export async function saveHotelProfile(database, ownerId, { rentableId, expected
 
 /** The owner's editor view: profile, every room type (with rooms booked ahead) and every plan. */
 export async function hotelForEdit(database, rentableId) {
-  const [[profile], roomTypes, ratePlans] = await Promise.all([
+  const [[profile], roomTypes, ratePlans, [hotelPolicy]] = await Promise.all([
     database`SELECT star_rating AS "starRating", check_in_minute AS "checkInMinute", check_out_minute AS "checkOutMinute",
         child_free_age AS "childFreeAge", weekend_nights AS "weekendNights", policies, gst_registered AS "gstRegistered", gstin
       FROM hotel_profile WHERE rentable_id=${rentableId}`,
@@ -206,8 +216,9 @@ export async function hotelForEdit(database, rentableId) {
           AND br.check_out > (now() AT TIME ZONE 'Asia/Kolkata')::date) AS "upcomingRooms"
       FROM room_type t WHERE t.rentable_id=${rentableId} ORDER BY t.sort_order, t.name, t.id`,
     database`SELECT id, room_type_id, name, meal_plan, derived_from, weekday_minor, weekend_minor, derived_pct_bps,
-        derived_per_guest_minor, free_cancel_hours, late_charge, no_show, min_nights, sort_order, is_active
+        derived_per_guest_minor, free_cancel_hours, late_charge, no_show, min_nights, sort_order, is_active, cancellation_policy
       FROM rate_plan WHERE rentable_id=${rentableId} ORDER BY sort_order, name, id`,
+    database`SELECT cancellation_policy FROM rentable WHERE id=${rentableId}`,
   ]);
   return {
     hotel: {
@@ -218,8 +229,12 @@ export async function hotelForEdit(database, rentableId) {
         weekday: row.weekday_minor == null ? null : Number(row.weekday_minor) / 100,
         weekend: row.weekend_minor == null ? null : Number(row.weekend_minor) / 100,
         adjustPct: row.derived_pct_bps / 100, perGuest: Number(row.derived_per_guest_minor) / 100,
-        cancellation: cancellationOf(row), minNights: row.min_nights, sortOrder: row.sort_order, isActive: row.is_active,
+        // Story 2.6: 'default' inherits the hotel default; otherwise the preset these windows equal, or 'custom'.
+        cancellation: row.cancellation_policy == null ? 'default' : presetName(row.cancellation_policy, 'night'),
+        cancellationPolicy: row.cancellation_policy,
+        minNights: row.min_nights, sortOrder: row.sort_order, isActive: row.is_active,
       })),
+      cancellationPolicy: hotelPolicy?.cancellation_policy ?? CANCELLATION_PRESETS.night.moderate,
     },
   };
 }

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { slotEnum, cancellationTierEnum } from './booking';
+import { cancellationPolicySchema } from '../../domain/cancellation-policy.js';
 
 export const slotPriceSchema = z.object({
   slot: slotEnum,
@@ -142,6 +143,8 @@ export const pricingSchema = z.object({
 export const termsSchema = z.object({
   depositAmount: rupees,
   cancellationTier: cancellationTierEnum,
+  // Story 2.6: the owner's percentage windows (JSON from the form); the tier is the preset it started from.
+  cancellationPolicy: z.preprocess((v) => { if (typeof v !== 'string' || !v) return v || undefined; try { return JSON.parse(v); } catch { return 'invalid'; } }, cancellationPolicySchema.optional()),
 });
 
 export const ownershipDocSchema = z.object({
@@ -260,7 +263,9 @@ export const hotelPlanSchema = z.object({
   weekend: wholeRupees(300, 200000, 'Weekend price').nullable().default(null),
   adjustPct: z.number().int().min(-50).max(50).default(0),
   perGuest: wholeRupees(0, 10000, 'Per-guest charge').default(0),
-  cancellation: z.enum(Object.keys(HOTEL_CANCELLATION)),
+  // Story 2.6: 'default' uses the hotel default; a preset fills the windows; 'custom' sends its own.
+  cancellation: z.enum(['default', ...Object.keys(HOTEL_CANCELLATION), 'custom']).default('default'),
+  cancellationPolicy: cancellationPolicySchema.optional(),
   minNights: z.number().int().min(1).max(30).default(1),
   sortOrder: z.number().int().min(0).max(1000),
   isActive: z.boolean().default(true),
@@ -268,13 +273,18 @@ export const hotelPlanSchema = z.object({
   if (row.derivedFrom == null) {
     if (row.weekday == null) ctx.addIssue({ code: 'custom', path: ['weekday'], message: 'Enter the weekday price' });
     if (row.weekend == null) ctx.addIssue({ code: 'custom', path: ['weekend'], message: 'Enter the weekend price' });
-  } else if (row.adjustPct === 0 && row.perGuest === 0 && row.cancellation !== 'non_refundable') {
+  }
+  if (row.cancellation === 'custom' && !row.cancellationPolicy)
+    ctx.addIssue({ code: 'custom', path: ['cancellationPolicy'], message: 'Set the refund windows for this rate' });
+  if (row.derivedFrom != null && row.adjustPct === 0 && row.perGuest === 0 && row.cancellation === 'default') {
     ctx.addIssue({ code: 'custom', path: ['adjustPct'], message: 'A plan that follows another needs a different price or terms' });
   }
 });
 
 export const hotelPlansSchema = z.object({
   plans: z.array(hotelPlanSchema).min(1, 'Add at least one rate').max(120),
+  // Story 2.6: the hotel default every 'default' rate uses.
+  defaultPolicy: cancellationPolicySchema.optional(),
 }).strict();
 
 const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');

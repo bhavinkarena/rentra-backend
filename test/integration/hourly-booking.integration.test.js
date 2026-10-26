@@ -378,8 +378,8 @@ test(
       );
 
       // Phase 10: refunds follow the moderate hour bands to the paisa (24h → 100%, 6h → 50%, then 0).
-      const [{ amount_rent_minor: rentMinor }] =
-        await sql`SELECT amount_rent_minor FROM booking WHERE id=${confirmed.id}`;
+      const [{ amount_rent_minor: rentMinor, amount_fee_minor: feeMinor }] =
+        await sql`SELECT amount_rent_minor, amount_fee_minor FROM booking WHERE id=${confirmed.id}`;
       for (const [hoursAhead, rate] of [
         [30, 1],
         [12, 0.5],
@@ -401,10 +401,11 @@ test(
         assert.equal(visit.rate, rate, `${hoursAhead}h ahead`);
         assert.equal(
           visit.refundMinor,
-          Math.floor(Number(rentMinor) * rate),
+          // Story 2.6: under booked windows a full refund also returns the service fee.
+          Math.floor(Number(rentMinor) * rate) + (rate === 1 ? Number(feeMinor) : 0),
           `${hoursAhead}h refund`,
         );
-        assert.equal(visit.fee, 0, 'moderate keeps the fee');
+        assert.equal(visit.fee, rate === 1 ? Number(feeMinor) : 0);
       }
     } finally {
       await fixture.drop();

@@ -1,4 +1,5 @@
 import { applyBasisPoints } from './booking-money.js';
+import { refundPct } from './cancellation-policy.js';
 import { addLocalDays, isLocalDate, parseLocalDate, propertyLocalInstant, propertyToday } from './booking-dates.js';
 
 /**
@@ -134,6 +135,14 @@ export function cancellationTerms(plan, checkInAt) {
 export function hotelRefund(line, checkInAt, now) {
   const remaining = new Date(checkInAt).getTime() - new Date(now).getTime();
   if (!Number.isFinite(remaining)) throw new RangeError('Invalid clock');
+  if (line.plan.cancellationPolicy) {
+    // Story 2.6: the room's booked percentage windows; an exact cutoff takes the at/after window.
+    const pct = refundPct(line.plan.cancellationPolicy, remaining);
+    if (remaining <= 0 && pct === 0) throw new HotelError('STAY_STARTED', 'The stay has started. Contact support to change it.');
+    const total = money(line.totalMinor, 'Total');
+    const refundMinor = Math.floor((total * pct) / 100);
+    return { refundMinor, chargeMinor: total - refundMinor, free: pct === 100 };
+  }
   if (remaining <= 0) throw new HotelError('STAY_STARTED', 'The stay has started. Contact support to change it.');
   const total = money(line.totalMinor, 'Total');
   const { freeCancelHours, lateCharge } = line.plan;

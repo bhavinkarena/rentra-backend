@@ -772,6 +772,8 @@ export const rentable = pgTable(
 
     depositMinor: minor('deposit_minor').notNull().default(0),
     cancellationTier: cancellationTier('cancellation_tier').notNull().default('moderate'),
+    /** Story 2.6: percentage windows (or the hotel default); null falls back to the tier preset. */
+    cancellationPolicy: jsonb('cancellation_policy'),
     /** Explicit owner schedules; null is unavailable until reviewed/configured. */
     bookingConfig: jsonb('booking_config'),
     arrivalGuide:jsonb('arrival_guide').notNull().default({}),
