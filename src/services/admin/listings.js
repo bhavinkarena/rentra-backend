@@ -7,6 +7,7 @@ import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { rentable } from '../db/schema/index.js';
 import { checklistFor, listVerifications, publicationState } from './verification.js';
 import { listEvidenceRequests } from './evidence-requests.js';
+import { raiseAdminAlert } from './admin-alerts.js';
 import { clientLifecycle, lifecycleState, propertyActivity } from './property-lifecycle.js';
 
 export const REVIEW_SECTIONS = [
@@ -133,6 +134,19 @@ export async function submitProperty(database, { id, clientId, ip = null }) {
       VALUES (${id},${row.content_version},${pass},${JSON.stringify(data)}::text::jsonb,${clientId},${latest?.assigned_to ?? null}) RETURNING id`;
     await tx`UPDATE rentable SET status='pending_review',review_pass=${pass},rejection_reason=NULL,updated_at=now() WHERE id=${id}`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,after,ip) VALUES ('client',${clientId},'rentable',${id},'listing_submitted',${JSON.stringify({ submissionId: submission.id, pass, contentVersion: row.content_version })}::text::jsonb,${ip})`;
+    // Story 1.6: a response to an earlier decision alerts the reviewer once, naming this submission.
+    const [previous] = latest
+      ? await tx`SELECT outcome FROM listing_review WHERE submission_id=${latest.id}`
+      : [];
+    if (previous)
+      await raiseAdminAlert(tx, {
+        kind: 'property_resubmitted',
+        eventKey: `resubmitted:${submission.id}`,
+        rentableId: id,
+        submissionId: submission.id,
+        detail: { pass, title: row.title, previousOutcome: previous.outcome },
+        assignedTo: latest.assigned_to,
+      });
     return { id, submissionId: submission.id, pass, slug: row.slug, publicCode: row.public_code };
   });
 }
@@ -300,7 +314,7 @@ export async function decidePropertyReview(database, { id, adminId, input, ip = 
     await tx`UPDATE listing_submission SET assigned_to=${adminId} WHERE id=${s.id}`;
     await tx`UPDATE rentable SET status=${status},rejection_reason=${d.outcome === 'approved_for_visit' ? null : d.reason},updated_at=now() WHERE id=${id}`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,after,reason,ip)
-      VALUES ('admin',${adminId},'rentable',${id},'listing_review_decided',${JSON.stringify({ submissionId: s.id, outcome: d.outcome, status, pass: s.pass_number })}::text::jsonb,${d.reason},${ip})`;
+      VALUES ('admin',${adminId},'rentable',${id},'listing_review_decided',${JSON.stringify({ submissionId: s.id, outcome: d.outcome, from: row.status, status, pass: s.pass_number })}::text::jsonb,${d.reason},${ip})`;
     return { ok: true, status, submissionId: s.id };
   });
 }

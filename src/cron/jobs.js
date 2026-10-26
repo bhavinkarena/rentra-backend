@@ -1,4 +1,5 @@
 import { runOwnerNotificationJobs } from '../services/notifications/owner-jobs.js';
+import { runAdminAlertJobs } from '../services/admin/admin-alerts.js';
 import { completeReturnedVisits } from '../services/booking/visit-lifecycle.js';
 import { cleanListingPhotoOrphans } from '../services/uploads/cloudinary.js';
 import { autoOpenDates } from '../services/booking/owner-settings.js';
@@ -41,11 +42,13 @@ export function createJobs(sql) {
     {
       name: 'notifications',
       run: async () => {
-        const [customer, owner] = await Promise.all([
+        const [customer, owner, reviewer] = await Promise.all([
           runNotificationJobs(sql),
           runOwnerNotificationJobs(sql),
+          // Reviewer alerts must not take down customer and owner delivery.
+          runAdminAlertJobs(sql).catch((error) => ({ error: error.message })),
         ]);
-        return { customer, owner };
+        return { customer, owner, reviewer };
       },
       heartbeat: (ok) => recordWorkerHealth(sql, 'notifications', ok),
     },

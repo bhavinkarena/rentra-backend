@@ -505,6 +505,13 @@
       "when": 1790591501015,
       "tag": "0071_property_evidence_request",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1790591502015,
+      "tag": "0072_admin_alert",
+      "breakpoints": true
     }
   ]
 }

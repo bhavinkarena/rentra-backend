@@ -97,6 +97,13 @@ router.get(
   decisionHistory,
 );
 router.get('/properties', validate({ query: listingQueueQuery }), propertyReviews.list);
+// Stories 1.6/1.7: reviewer alerts (registered before /properties/:id).
+router.get('/properties/alerts', propertyReviews.alerts);
+router.post(
+  '/properties/alerts/:alertId/read',
+  validate({ params: z.object({ alertId: uuid }) }),
+  propertyReviews.readAlert,
+);
 router.get('/properties/:id', validate({ params: clientIdParam }), propertyReviews.detail);
 router.post(
   '/properties/:id/assign',

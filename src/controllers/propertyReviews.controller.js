@@ -18,6 +18,7 @@ import {
   restoreProperty,
 } from '@/services/admin/property-lifecycle.js';
 import { requestVideo, streamEvidenceVideo } from '@/services/admin/evidence-requests.js';
+import { listAdminAlerts, markAdminAlertRead } from '@/services/admin/admin-alerts.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';
 
@@ -100,3 +101,9 @@ export const evidenceVideo = asyncHandler(async (req, res) => {
   // A reviewer closing the player mid-stream is normal; it just ends the copy.
   await pipeline(Readable.fromWeb(upstream.body), res).catch(() => {});
 });
+
+/** Stories 1.6/1.7: the signed-in reviewer's own alerts. */
+export const alerts = asyncHandler(async (req, res) => ok(res, await listAdminAlerts(sql, req.admin.id)));
+export const readAlert = asyncHandler(async (req, res) =>
+  ok(res, await markAdminAlertRead(sql, { adminId: req.admin.id, alertId: req.params.alertId })),
+);
