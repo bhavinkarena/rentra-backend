@@ -1,3 +1,4 @@
+import { resolvePayoutMode } from './payout-modes.js';
 import 'server-only';
 import { z } from 'zod';
 import { badRequest } from '@/utils/apiError.js';
@@ -43,6 +44,7 @@ export async function ownerPayoutStatus(tx, actor) {
   const current = rows.find(r => ['submitted','verified'].includes(r.state));
   const failed = !current && rows.find(r => r.state==='failed');
   return {
+    payoutMode: await resolvePayoutMode(tx, actor.id),
     railAvailable: false,
     kind: failed ? 'failed' : current ? 'unavailable' : 'missing',
     masked: current ? maskedDestination(current) : null,

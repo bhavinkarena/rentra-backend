@@ -540,6 +540,13 @@
       "when": 1790591506015,
       "tag": "0076_early_departure",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1790591507015,
+      "tag": "0077_payout_mode",
+      "breakpoints": true
     }
   ]
 }

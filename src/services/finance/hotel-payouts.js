@@ -1,17 +1,17 @@
+import { resolvePayoutMode, lockPayoutPolicy, PAYOUT_GATE } from './payout-modes.js';
 import 'server-only';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { badRequest, conflict, forbidden, notFound } from '@/utils/apiError.js';
+import { conflict, forbidden, notFound } from '@/utils/apiError.js';
 import { resolveCommission } from '../booking/hotel-stays.js';
 import { maskedDestination } from '../domain/payout-destinations.js';
-import { addLocalDays, propertyToday } from '../domain/booking-dates.js';
+import { propertyToday } from '../domain/booking-dates.js';
 
 /**
- * Hotel payouts (hotel plan §5.8, Phase 8). A stay is payable after check-in is
- * marked, or 24 hours after check-in time if it was not (and a cancelled or
- * no-show stay pays out what the guest was charged). Every Tuesday one run pays
- * every payable stay. Per stay, from the money actually kept (captured minus
- * refunds, including refunds still in flight):
+ * Hotel accounting statements. Verified captures on supported confirmed bookings
+ * are eligible before arrival; policy-settled cancellations retain only net entitlement.
+ * Provider execution and bank verification remain unavailable. Historical snapshots
+ * keep their original dates, amounts and pinned destinations.
  *
  *   room kept + GST kept (registered hotel only)
  *   − commission − 18% GST on commission − TCS (s.52, registered only) − TDS (s.194-O)
@@ -26,7 +26,6 @@ export const PAYOUT_POLICY = Object.freeze({
   commissionGstBps: 1800,
   tcsBps: 50,
   tdsBps: 10,
-  payoutWeekday: 2, // Tuesday
 });
 
 const uuid = z.string().uuid();
@@ -54,10 +53,9 @@ export function stayLine({ roomPaidMinor, taxPaidMinor = 0, roomRefundedMinor = 
   };
 }
 
-/** The Tuesday a run made today pays on (today when today is Tuesday), in India time. */
+/** Statement date only; no bank settlement schedule is promised. */
 export function nextPayoutDate(today = propertyToday()) {
-  const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
-  return addLocalDays(today, (PAYOUT_POLICY.payoutWeekday - weekday + 7) % 7);
+  return today;
 }
 
 /** Payment environment of the current gateway configuration: what "the next payout" means today. */
@@ -72,18 +70,21 @@ async function currentEnvironment(tx) {
  */
 async function payableStays(tx, { environment, ownerId = null, asOf }) {
   return tx`
-    SELECT b.id, b.reference, b.state, b.rentable_id, b.starts_at, r.client_id AS owner_id, r.title,
+    SELECT DISTINCT ON (b.id) b.id, b.reference, b.state, b.rentable_id, b.starts_at, rentra_payout_booking_supported(b.id) AS booking_supported, bo.listing_snapshot->>'ownerId' AS owner_id, r.title,
       b.slot_snapshot->>'checkIn' AS check_in, b.slot_snapshot->>'checkOut' AS check_out, b.local_day::text AS local_day,
       coalesce(hp.gst_registered, false) AS gst_registered, hp.gstin,
+      rentra_payout_rent_capture_count(b.id, ${environment}) AS capture_count,
       rent.id AS rent_allocation_id, rent.actual_minor::text AS room_paid,
       tax.id AS tax_allocation_id, coalesce(tax.actual_minor, 0)::text AS tax_paid,
-      (SELECT coalesce(sum(ra.expected_minor), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
+      (SELECT coalesce(sum(CASE WHEN f.state='succeeded' THEN ra.actual_minor ELSE ra.expected_minor END), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
         WHERE ra.payment_allocation_id = rent.id AND f.state <> 'failed')::text AS room_refunded,
-      (SELECT coalesce(sum(ra.expected_minor), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
+      (SELECT coalesce(sum(CASE WHEN f.state='succeeded' THEN ra.actual_minor ELSE ra.expected_minor END), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
         WHERE ra.payment_allocation_id = tax.id AND f.state <> 'failed')::text AS tax_refunded,
       d.id AS destination_id, d.method, d.account_last4, d.ifsc, d.upi_id, d.state AS destination_state, d.version AS destination_version,
+      EXISTS (SELECT 1 FROM "user" u WHERE u.id::text=bo.listing_snapshot->>'ownerId' AND u.role='client' AND u.account_status='active') AS owner_active,
       (SELECT o.policy_snapshot->'pricing'->>'feeModel' FROM booking_order o WHERE o.id = b.order_id) AS fee_model
     FROM booking b
+    JOIN booking_order bo ON bo.id=b.order_id
     JOIN rentable r ON r.id = b.rentable_id
     JOIN category c ON c.id = r.category_id AND c.vertical_code = 'hotel'
     JOIN payment_allocation rent ON rent.booking_id = b.id AND rent.component = 'rent'
@@ -91,14 +92,12 @@ async function payableStays(tx, { environment, ownerId = null, asOf }) {
       AND t.verified_at IS NOT NULL AND t.mode = 'real' AND t.environment::text = ${environment}
     LEFT JOIN payment_allocation tax ON tax.booking_id = b.id AND tax.component = 'tax' AND tax.transaction_id = rent.transaction_id
     LEFT JOIN hotel_profile hp ON hp.rentable_id = r.id
-    LEFT JOIN LATERAL (SELECT * FROM payout_destination pd WHERE pd.client_id = r.client_id AND pd.state = 'verified'
+    LEFT JOIN LATERAL (SELECT * FROM payout_destination pd WHERE pd.client_id::text = bo.listing_snapshot->>'ownerId' AND pd.state IN ('submitted','verified')
       ORDER BY pd.version DESC LIMIT 1) d ON true
-    WHERE b.slot = 'stay' AND b.starts_at <= ${asOf}
-      AND (b.state IN ('handed_over', 'returned', 'completed', 'no_show')
-        OR (b.state IN ('confirmed', 'cancelled') AND b.starts_at + interval '24 hours' <= ${asOf}))
+    WHERE b.slot = 'stay'
       AND NOT EXISTS (SELECT 1 FROM payout p WHERE p.booking_id = b.id)
-      AND (${!ownerId} OR r.client_id = ${ownerId}::uuid)
-    ORDER BY r.client_id, b.starts_at, b.id`;
+      AND (${!ownerId} OR bo.listing_snapshot->>'ownerId' = ${ownerId})
+    ORDER BY b.id,rent.id`;
 }
 
 /** Statement for the stays payable now, grouped by owner; `held` lists stays waiting on a verified payout method. */
@@ -108,6 +107,12 @@ async function buildRun(tx, { environment, ownerId = null, now = null }) {
   const lines = [];
   const held = [];
   for (const row of rows) {
+    if (!row.booking_supported || Number(row.capture_count) !== 1) {
+      held.push({ bookingId: row.id, reference: row.reference, state: row.state, ownerId: row.owner_id, hotel: row.title,
+        checkIn: row.check_in ?? row.local_day, checkOut: row.check_out,
+        reason: !row.booking_supported ? 'Confirmed booking or policy-settled cancellation evidence unavailable' : 'Multiple captures require finance reconciliation' });
+      continue;
+    }
     let rule;
     try {
       // Story 2.2: stays booked with the guest-paid service fee carry no owner commission.
@@ -128,11 +133,13 @@ async function buildRun(tx, { environment, ownerId = null, now = null }) {
       rateBps: rule.rateBps, ruleId: rule.ruleId,
       roomAllocationId: row.rent_allocation_id, taxAllocationId: row.tax_allocation_id,
       paidMinor: n(row.room_paid) + n(row.tax_paid), refundedMinor: n(row.room_refunded) + n(row.tax_refunded),
+      payoutMode: await resolvePayoutMode(tx, row.owner_id),
       ...stayLine({ roomPaidMinor: row.room_paid, taxPaidMinor: row.tax_paid, roomRefundedMinor: row.room_refunded,
         taxRefundedMinor: row.tax_refunded, rateBps: rule.rateBps, gstRegistered: row.gst_registered }),
     };
     if (line.roomMinor === 0 && line.gstMinor === 0) continue; // Fully refunded: nothing to pay or charge.
-    if (!row.destination_id) held.push({ ...line, reason: 'Payout method not verified' });
+    if (!row.owner_id || !row.owner_active) held.push({ ...line, reason: 'Booked owner attribution or active owner account unavailable' });
+    else if (!row.destination_id || row.destination_state !== 'verified') held.push({ ...line, reason: 'Payout method not verified' });
     else lines.push({ ...line, destination: { id: row.destination_id, method: row.method, accountLast4: row.account_last4, ifsc: row.ifsc, upiId: row.upi_id } });
   }
   const totals = sumLines(lines);
@@ -140,7 +147,7 @@ async function buildRun(tx, { environment, ownerId = null, now = null }) {
     ownerId: id, hotels: [...new Set(own.map((line) => line.hotel))], destination: maskedDestination(own[0].destination),
     ...sumLines(own),
   }));
-  const content = { environment, payoutDate: nextPayoutDate(), periodEnd: asOf.slice(0, 10), lines, totals };
+  const content = { environment, gate: PAYOUT_GATE, disbursementAvailable: false, payoutDate: nextPayoutDate(), periodEnd: asOf.slice(0, 10), lines, totals };
   return { ...content, owners, held, previewHash: digest(content) };
 }
 
@@ -172,33 +179,48 @@ export async function previewPayoutRun(database, adminId, input = {}, { now = nu
 
 /**
  * Admin: make the run exactly as previewed. One run at a time (advisory lock);
- * a changed preview is refused. Live lines become funded payout rows (room, and
- * GST for a registered hotel); test lines are recorded unfunded.
+ * a changed preview is refused. Only explicitly unfunded Test statements are available.
  */
 export async function executePayoutRun(database, adminId, input, { now = null } = {}) {
   const value = z.object({ environment: z.enum(['live', 'test']), previewHash: z.string().length(64) }).strict().parse(input);
   return database.begin(async (tx) => {
     await requireAdmin(tx, adminId, true);
+    if (value.environment === 'live') throw conflict('PAYOUT_EXECUTION_UNAVAILABLE', PAYOUT_GATE);
+    await lockPayoutPolicy(tx);
     await tx`SELECT pg_advisory_xact_lock(73421, 1)`;
+    const proposed = await buildRun(tx, { environment: value.environment, now });
+    if (proposed.previewHash !== value.previewHash) throw conflict('STALE_PREVIEW', 'Payable stays changed since the preview. Review the run again.');
+    // Pin only this reviewed candidate set; unrelated history and owners never queue here.
+    const listingIds = [...new Set(proposed.lines.map(line => line.rentableId))].sort();
+    const bookingIds = proposed.lines.map(line => line.bookingId).sort();
+    const ownerIds = [...new Set(proposed.lines.map(line => line.ownerId))].sort();
+    const destinationIds = [...new Set(proposed.lines.map(line => line.destination.id))].sort();
+    // Match inventory/cancellation order: listings, sorted orders, visits, then money.
+    await tx`SELECT r.id FROM rentable r WHERE r.id=ANY(${listingIds}::uuid[]) ORDER BY r.id FOR UPDATE OF r`;
+    await tx`SELECT bo.id FROM booking_order bo WHERE bo.id IN (SELECT order_id FROM booking WHERE id=ANY(${bookingIds}::uuid[])) ORDER BY bo.id FOR UPDATE OF bo`;
+    await tx`SELECT b.id FROM booking b WHERE b.id=ANY(${bookingIds}::uuid[]) ORDER BY b.id FOR UPDATE OF b`;
+    await tx`SELECT u.id FROM "user" u WHERE u.id=ANY(${ownerIds}::uuid[]) ORDER BY u.id FOR SHARE OF u`;
+    await tx`SELECT d.id FROM payout_destination d WHERE d.id=ANY(${destinationIds}::uuid[]) ORDER BY d.id FOR SHARE OF d`;
+    await tx`SELECT po.id FROM payment_order po WHERE po.booking_order_id IN
+      (SELECT order_id FROM booking WHERE id=ANY(${bookingIds}::uuid[])) ORDER BY po.id FOR UPDATE OF po`;
     const run = await buildRun(tx, { environment: value.environment, now });
     if (run.previewHash !== value.previewHash) throw conflict('STALE_PREVIEW', 'Payable stays changed since the preview. Review the run again.');
     if (!run.lines.length) throw conflict('NO_PAYABLE_STAYS', 'No stays are ready for payout.');
     const [{ count }] = await tx`SELECT count(*)::int AS count FROM payout_run`;
-    const periodStart = run.lines.reduce((min, line) => (line.checkIn < min ? line.checkIn : min), run.lines[0].checkIn);
+    const periodStart = run.lines.reduce((min, line) => (line.checkIn < min ? line.checkIn : min), run.periodEnd);
     const [saved] = await tx`INSERT INTO payout_run (run_number, environment, period_start, period_end, payout_date, total_bookings,
         room_revenue_minor, gst_collected_minor, commission_minor, commission_gst_minor, tcs_minor, tds_minor, net_minor, snapshot, executed_at, executed_by)
       VALUES (${`P-${String(count + 1).padStart(4, '0')}`}, ${run.environment}, ${periodStart}, ${run.periodEnd}, ${run.payoutDate}, ${run.totals.stays},
         ${run.totals.roomMinor}, ${run.totals.gstMinor}, ${run.totals.commissionMinor}, ${run.totals.commissionGstMinor}, ${run.totals.tcsMinor},
         ${run.totals.tdsMinor}, ${run.totals.netMinor}, ${JSON.stringify({ lines: run.lines, totals: run.totals, policy: PAYOUT_POLICY })}::text::jsonb,
         now(), ${adminId}) RETURNING id, run_number`;
-    const live = run.environment === 'live';
     for (const line of run.lines) {
-      const row = (gross, commission, tds, tcs, net, allocation) => tx`INSERT INTO payout (payout_run_id, booking_id, client_id, gross_minor,
+      const row = (gross, commission, tds, tcs, net) => tx`INSERT INTO payout (payout_run_id, booking_id, client_id, gross_minor,
           commission_minor, tds_194o_minor, gst_tcs_minor, net_minor, actual_net_minor, funding_allocation_id, destination_id, status)
         VALUES (${saved.id}, ${line.bookingId}, ${line.ownerId}, ${gross}, ${commission}, ${tds}, ${tcs}, ${net},
-          ${live ? net : 0}, ${live ? allocation : null}, ${line.destination.id}, 'pending')`;
-      await row(line.roomMinor, line.commissionMinor + line.commissionGstMinor, line.tdsMinor, line.tcsMinor, line.roomNetMinor, line.roomAllocationId);
-      if (line.gstToHotelMinor > 0) await row(line.gstToHotelMinor, 0, 0, 0, line.gstToHotelMinor, line.taxAllocationId);
+          0, NULL, ${line.destination.id}, 'pending')`;
+      await row(line.roomMinor, line.commissionMinor + line.commissionGstMinor, line.tdsMinor, line.tcsMinor, line.roomNetMinor);
+      if (line.gstToHotelMinor > 0) await row(line.gstToHotelMinor, 0, 0, 0, line.gstToHotelMinor);
     }
     await tx`INSERT INTO audit_log (actor_type, actor_id, entity, entity_id, action, "after")
       VALUES ('admin', ${adminId}, 'payout_run', ${saved.id}, 'payout_run_executed', ${JSON.stringify({ runNumber: saved.run_number, environment: run.environment, totals: run.totals })}::text::jsonb)`;
@@ -206,21 +228,20 @@ export async function executePayoutRun(database, adminId, input, { now = null } 
   });
 }
 
-/** Admin: record the bank transfer (UTR) for a run; its payouts become paid. */
-export async function settlePayoutRun(database, adminId, { runId, utr }) {
+/** Compatibility endpoint: close an unfunded Test statement; Live UTR settlement is unavailable. */
+export async function settlePayoutRun(database, adminId, { runId }) {
   uuid.parse(runId);
-  const reference = String(utr ?? '').trim();
-  if (!/^[A-Za-z0-9]{6,32}$/.test(reference)) throw badRequest('INVALID_UTR', 'Enter the bank transfer UTR (6–32 letters or digits).');
   return database.begin(async (tx) => {
     await requireAdmin(tx, adminId, true);
     const [run] = await tx`SELECT * FROM payout_run WHERE id = ${runId} FOR UPDATE`;
     if (!run) throw notFound();
+    if (run.environment === 'live') throw conflict('PAYOUT_EXECUTION_UNAVAILABLE', PAYOUT_GATE);
     if (run.status === 'completed') throw conflict('ALREADY_SETTLED', 'This payout run is already settled.');
     await tx`UPDATE payout_run SET status = 'completed' WHERE id = ${runId}`;
-    await tx`UPDATE payout SET status = 'paid', utr = ${reference}, settled_at = now() WHERE payout_run_id = ${runId}`;
+    // Test statements may be closed administratively, but never become bank-paid.
     await tx`INSERT INTO audit_log (actor_type, actor_id, entity, entity_id, action, "after")
-      VALUES ('admin', ${adminId}, 'payout_run', ${runId}, 'payout_run_settled', ${JSON.stringify({ utr: reference })}::text::jsonb)`;
-    return { ok: true, id: runId, status: 'completed', utr: reference };
+      VALUES ('admin', ${adminId}, 'payout_run', ${runId}, 'payout_run_settled', ${JSON.stringify({ statementClosed: true, actualBankMoneyMinor: 0 })}::text::jsonb)`;
+    return { ok: true, id: runId, status: 'completed', utr: null, actualBankMoneyMinor: 0 };
   });
 }
 
@@ -264,16 +285,17 @@ export async function getOwnerHotelEarnings(database, ownerId, { month } = {}) {
       SELECT count(DISTINCT b.id)::int AS stays,
         count(DISTINCT b.id) FILTER (WHERE b.state = 'cancelled')::int AS cancelled,
         coalesce(sum(cardinality(ARRAY(SELECT night FROM jsonb_array_elements(br.nights) night WHERE (night->>'night')::date < coalesce(br.inventory_end,br.check_out)))) FILTER (WHERE br.state IN ('booked', 'stayed', 'no_show')), 0)::int AS room_nights
-      FROM booking b JOIN rentable r ON r.id = b.rentable_id AND r.client_id = ${ownerId}
+      FROM booking b JOIN booking_order bo ON bo.id=b.order_id JOIN rentable r ON r.id = b.rentable_id AND bo.listing_snapshot->>'ownerId' = ${ownerId}
       LEFT JOIN booking_room br ON br.booking_id = b.id
       WHERE b.slot = 'stay' AND b.state <> 'requested' AND to_char(b.local_day, 'YYYY-MM') = ${period}`;
     const [money] = await tx`
       SELECT coalesce(sum(pa.actual_minor) FILTER (WHERE pa.component = 'rent'), 0)::text AS room,
         coalesce(sum(pa.actual_minor) FILTER (WHERE pa.component = 'tax'), 0)::text AS gst,
-        coalesce(sum((SELECT coalesce(sum(ra.expected_minor), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
+        coalesce(sum((SELECT coalesce(sum(CASE WHEN f.state='succeeded' THEN ra.actual_minor ELSE ra.expected_minor END), 0) FROM refund_allocation ra JOIN refund f ON f.id = ra.refund_id
           WHERE ra.payment_allocation_id = pa.id AND f.state <> 'failed')), 0)::text AS refunded
       FROM payment_allocation pa JOIN booking b ON b.id = pa.booking_id AND b.slot = 'stay'
-      JOIN rentable r ON r.id = b.rentable_id AND r.client_id = ${ownerId}
+      JOIN booking_order bo ON bo.id=b.order_id
+      JOIN rentable r ON r.id = b.rentable_id AND bo.listing_snapshot->>'ownerId' = ${ownerId}
       JOIN payment_transaction t ON t.id = pa.transaction_id AND t.environment::text = ${environment}
       -- Story 2.2: the guest service fee is Rentra's money, not the owner's revenue or refunds.
       WHERE to_char(b.local_day, 'YYYY-MM') = ${period} AND pa.component IN ('rent', 'tax')`;
@@ -283,7 +305,7 @@ export async function getOwnerHotelEarnings(database, ownerId, { month } = {}) {
       ORDER BY pr.payout_date DESC, pr.created_at DESC LIMIT 26`;
     const [destination] = await tx`SELECT * FROM payout_destination WHERE client_id = ${ownerId} AND state = 'verified' ORDER BY version DESC LIMIT 1`;
     return {
-      month: period, environment,
+      month: period, environment, payoutMode: await resolvePayoutMode(tx, ownerId), gate: PAYOUT_GATE,
       summary: { stays: stats.stays, roomNights: stats.room_nights, cancelled: stats.cancelled,
         roomMinor: n(money.room), gstMinor: n(money.gst), refundedMinor: n(money.refunded) },
       nextPayout: { date: next.payoutDate, ...next.totals, held: next.held.length,

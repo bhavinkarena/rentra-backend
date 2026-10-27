@@ -18,10 +18,10 @@ export async function seedFinanceFixture(sql, f) {
       };
       const [order] =
         await tx`INSERT INTO booking_order(reference,customer_id,rentable_id,currency,time_zone,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,amount_deposit_minor,idempotency_key,request_hash,state,payment_mode,visit_provenance,created_at)
-      VALUES (${key},${customer.id},${f.listing},'INR','Asia/Kolkata','v1','v1','{}',${JSON.stringify(snapshot)}::text::jsonb,100000,8000,0,${key},${'a'.repeat(64)},'completed',${mode},${environment === 'live' ? 'real' : 'test'},${options.orderCreatedAt ?? new Date().toISOString()}) RETURNING id`;
+      VALUES (${key},${customer.id},${f.listing},'INR','Asia/Kolkata','v1','v1','{}',${JSON.stringify(snapshot)}::text::jsonb,100000,8000,0,${key},${'a'.repeat(64)},${options.orderState ?? 'completed'},${mode},${environment === 'live' ? 'real' : 'test'},${options.orderCreatedAt ?? new Date().toISOString()}) RETURNING id`;
       const [visit] =
         await tx`INSERT INTO booking(reference,rentable_id,customer_id,order_id,item_position,local_day,slot,state,starts_at,ends_at,currency,time_zone,amount_rent_minor,amount_fee_minor,amount_deposit_minor,payment_mode,visit_provenance,units_booked,guests)
-      VALUES (${key.slice(0, 16)},${f.listing},${customer.id},${order.id},1,current_date-1,'day','completed',now()-interval '1 day',now()-interval '16 hours','INR','Asia/Kolkata',100000,8000,0,${mode},${environment === 'live' ? 'real' : 'test'},1,2) RETURNING id`;
+      VALUES (${key.slice(0, 16)},${f.listing},${customer.id},${order.id},1,current_date-1,'day',${options.bookingState ?? 'completed'},${options.startsAt ?? new Date(Date.now() - 86400000).toISOString()},${options.endsAt ?? new Date(Date.now() - 57600000).toISOString()},'INR','Asia/Kolkata',100000,8000,0,${mode},${environment === 'live' ? 'real' : 'test'},1,2) RETURNING id`;
       const [payment] =
         await tx`INSERT INTO payment_order(booking_order_id,provider,environment,mode,currency,purpose,expected_minor,idempotency_key,request_hash,state)
       VALUES (${order.id},${provider},${environment},${mode},'INR','full',108000,${key},${'b'.repeat(64)},'succeeded') RETURNING id`;

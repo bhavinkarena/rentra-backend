@@ -1,3 +1,4 @@
+import { resolvePayoutMode } from './payout-modes.js';
 import 'server-only';
 import { z } from 'zod';
 import { badRequest, forbidden, notFound } from '@/utils/apiError.js';
@@ -42,7 +43,7 @@ export async function authorize(tx, actor) {
 // Never use the property's current owner for historical financial access.
 export function ledger(tx) {
   return tx`SELECT pa.id,pa.booking_id,pa.component,pa.actual_minor::text,pa.simulated_minor::text,pa.created_at,
-    b.order_id,b.reference,b.rentable_id,b.state booking_state,b.amount_rent_minor::text quote_rent_minor,
+    rentra_payout_booking_supported(b.id) booking_supported,rentra_payout_rent_capture_count(b.id,t.environment::text) rent_capture_count,b.order_id,b.reference,b.rentable_id,b.state booking_state,b.amount_rent_minor::text quote_rent_minor,
     bo.listing_snapshot->>'title' title, r.client_id current_owner_id,
     (SELECT c.vertical_code FROM category c WHERE c.id=r.category_id) vertical,
     CASE WHEN p.client_id IS NOT NULL AND bo.listing_snapshot->>'ownerId' IS NOT NULL AND p.client_id::text<>bo.listing_snapshot->>'ownerId' THEN NULL
@@ -106,9 +107,12 @@ export function allocation(row, actor) {
     )
       held += funded;
     else if (['pending', 'processing'].includes(row.payout_status)) pending += funded;
-    if (!['completed','no_show'].includes(row.booking_state)) {
-      pending += remaining;
-      if (remaining) reasons.push('Visit not completed; no payout eligibility.');
+    if (row.booking_supported !== true) {
+      held += remaining;
+      if (remaining) reasons.push('Confirmed booking or policy-settled cancellation evidence unavailable.');
+    } else if (row.vertical === 'hotel' && Number(row.rent_capture_count) !== 1) {
+      held += remaining;
+      if (remaining) reasons.push('Multiple captures require finance reconciliation.');
     } else if (!row.owner_id || !row.owner_active || row.current_destination_state !== 'verified') {
       held += remaining;
       if (remaining)
@@ -207,6 +211,7 @@ async function readStatement(tx, actor, chosen) {
     }
   }
   return {
+    payoutMode: await resolvePayoutMode(tx, owner || null),
     filters,
     properties,
     asOf: new Date().toISOString(),
@@ -238,7 +243,7 @@ export async function financeAllocation(database, actor, id) {
     const [row] =
       await tx`SELECT l.* FROM (${ledger(tx)}) l WHERE l.id=${id} AND (${actor.kind === 'admin'} OR (l.owner_id=${actor.id} AND l.component='rent'))`;
     if (!row) throw notFound();
-    return allocation(row, actor);
+    return { ...allocation(row, actor), payoutMode: await resolvePayoutMode(tx, row.owner_id) };
   });
 }
 function payoutEnvironment(tx) {

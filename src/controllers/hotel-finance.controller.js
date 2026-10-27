@@ -1,3 +1,4 @@
+import { listPayoutModes, payoutModeCommand } from '@/services/finance/payout-modes.js';
 import { sql } from '@/config/database.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import {
@@ -39,7 +40,13 @@ export const payoutRunExecute = asyncHandler(async (req, res) =>
   ok(res, await executePayoutRun(sql, (await bookingActor('admin')).id, req.body)),
 );
 export const payoutRunSettle = asyncHandler(async (req, res) =>
-  ok(res, await settlePayoutRun(sql, (await bookingActor('admin')).id, { runId: req.params.id, utr: req.body?.utr })),
+  ok(
+    res,
+    await settlePayoutRun(sql, (await bookingActor('admin')).id, {
+      runId: req.params.id,
+      utr: req.body?.utr,
+    }),
+  ),
 );
 export const payoutRunsList = asyncHandler(async (_req, res) =>
   ok(res, await listPayoutRuns(sql, (await bookingActor('admin')).id)),
@@ -52,4 +59,11 @@ export const hotelAnalytics = asyncHandler(async (req, res) =>
 export const serviceFees = asyncHandler(async (_req, res) => ok(res, await listServiceFees(sql)));
 export const serviceFeeChange = asyncHandler(async (req, res) =>
   ok(res, await changeServiceFee(sql, { adminId: req.admin.id, input: req.body, ip: req.ip })),
+);
+
+export const payoutModes = asyncHandler(async (_req, res) =>
+  ok(res, await listPayoutModes(sql, await bookingActor('admin'))),
+);
+export const payoutModeSave = asyncHandler(async (req, res) =>
+  ok(res, await payoutModeCommand(sql, await bookingActor('admin'), req.body)),
 );
