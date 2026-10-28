@@ -1,4 +1,5 @@
 import { resolvePayoutMode } from './payout-modes.js';
+import { fixtureSummaries } from './payout-transfer-fixtures.js';
 import 'server-only';
 import { z } from 'zod';
 import { badRequest, forbidden, notFound } from '@/utils/apiError.js';
@@ -201,6 +202,8 @@ async function readStatement(tx, actor, chosen) {
     await tx`SELECT DISTINCT l.rentable_id id,l.title FROM (${ledger(tx)}) l WHERE l.created_at>=${start}::timestamptz AND l.created_at<${end}::timestamptz AND l.environment=${filters.environment} AND (${owner}='' OR l.owner_id=${owner}) ORDER BY l.title,l.rentable_id LIMIT 1000`;
   // The platform fee is the guest's payment to Rentra, not owner money.
   const items = rows.map((r) => allocation(r, actor)).filter((item) => actor.kind !== 'owner' || item.component !== 'fee');
+  const fixtures = await fixtureSummaries(tx, items.map(item => item.id));
+  for (const item of items) item.fixture = fixtures.find(f => f.sourceId === item.id) ?? null;
   const totals = Object.fromEntries(keys.map((k) => [k, 0n]));
   const visits = new Set();
   for (const item of items) {
@@ -243,7 +246,8 @@ export async function financeAllocation(database, actor, id) {
     const [row] =
       await tx`SELECT l.* FROM (${ledger(tx)}) l WHERE l.id=${id} AND (${actor.kind === 'admin'} OR (l.owner_id=${actor.id} AND l.component='rent'))`;
     if (!row) throw notFound();
-    return { ...allocation(row, actor), payoutMode: await resolvePayoutMode(tx, row.owner_id) };
+    return { ...allocation(row, actor), fixture: (await fixtureSummaries(tx, [row.id]))[0] ?? null,
+      payoutMode: await resolvePayoutMode(tx, row.owner_id) };
   });
 }
 function payoutEnvironment(tx) {

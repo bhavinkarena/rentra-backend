@@ -547,6 +547,13 @@
       "when": 1790591507015,
       "tag": "0077_payout_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1790591508015,
+      "tag": "0078_payout_transfer_fixture",
+      "breakpoints": true
     }
   ]
 }
