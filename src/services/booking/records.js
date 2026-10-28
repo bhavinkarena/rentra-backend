@@ -212,7 +212,7 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     const [{now}] = await tx`SELECT clock_timestamp() now`;
     const rows = await tx`SELECT b.id,b.reference,b.state,b.local_day,b.slot,b.guests,b.starts_at,b.ends_at,b.hours_known,
       b.amount_rent_minor,b.amount_fee_minor,b.amount_deposit_minor,b.created_at,b.confirmed_at,b.cancelled_at,b.updated_at,b.lifecycle_version,b.visit_provenance,
-      b.slot_snapshot,b.resource_id,rs.name AS resource_name,b.slot_snapshot->'activity' AS activity
+      b.cancelled_by_kind,b.cancellation_reason,b.slot_snapshot,b.resource_id,rs.name AS resource_name,b.slot_snapshot->'activity' AS activity
       FROM booking b LEFT JOIN rentable_resource rs ON rs.id=b.resource_id
       WHERE b.order_id=${order.id} ORDER BY b.item_position NULLS LAST,b.local_day,b.id`;
     const [{ vertical }] = await tx`SELECT c.vertical_code AS vertical FROM rentable r JOIN category c ON c.id=r.category_id WHERE r.id=${order.rentable_id}`;
@@ -223,6 +223,8 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       includedGuests:row.slot_snapshot?.includedGuests??null,
       // BOOK-05/08: an arrival that started and was never checked in can be reported as a no-show.
       ...(actor.kind === 'owner' ? { noShowEligible: row.state === 'confirmed' && row.hours_known && new Date(row.starts_at) <= new Date(now) } : {}),
+      // Story 2.15: when the host cancelled, the guest sees the host's reason.
+      ...(row.cancelled_by_kind === 'client' && row.state === 'cancelled' ? { hostCancellationReason: row.cancellation_reason ?? null } : {}),
       version: row.lifecycle_version, provenance: row.visit_provenance,
       label: visitLabel({ ...row, slot_snapshot: { activity: row.activity }, time_zone: order.time_zone }),
       // Time-booked visits (courts): which court and activity. Null for slot visits.

@@ -293,7 +293,25 @@ router.post(
   formFields(),
   listings.submit,
 );
-router.get('/listings/:id/pause-preview', requireActiveClient, validate({ params: listingIdParam }), listings.pausePreview);
+router.get(
+  '/listings/:id/pause-preview',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  listings.pausePreview,
+);
+router.get(
+  '/listings/:id/cancel-upcoming',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  listings.cancelUpcomingPreview,
+);
+router.post(
+  '/listings/:id/cancel-upcoming',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  formFields(),
+  listings.cancelUpcoming,
+);
 router.post('/listings/:id/pause', requireActiveClient, formFields(), listings.togglePause);
 
 /* ---------------------------------------------------------------- *

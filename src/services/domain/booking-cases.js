@@ -70,8 +70,10 @@ export function uncancellableReason(visit, now) {
  */
 export function caseEntitlement(visit, basis, now) {
   if (basis === 'full' && visit.slot === 'stay') {
-    // Hotel stay: the room and its tax were captured as separate components.
-    return { rent: Number(visit.slot_snapshot.roomMinor), tax: Number(visit.slot_snapshot.taxMinor), fee: 0, deposit: 0, rate: 1, tier: null };
+    // Hotel stay: room, tax and (since Story 2.2) the guest service fee were captured as separate
+    // components. A full entitlement returns all of them (FR-7), still capped by what was captured.
+    return { rent: Number(visit.slot_snapshot.roomMinor), tax: Number(visit.slot_snapshot.taxMinor),
+      fee: Number(visit.amount_fee_minor ?? visit.slot_snapshot.feeMinor ?? 0), deposit: 0, rate: 1, tier: null };
   }
   if (basis === 'full') {
     return {

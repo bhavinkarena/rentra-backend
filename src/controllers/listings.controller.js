@@ -47,6 +47,10 @@ import { ownerPropertyOverview } from '@/services/auth/property-overview.js';
 import { propertyPolicyHistory } from '@/services/booking/property-policy.js';
 import { sql } from '@/config/database.js';
 import { resolveServiceFee } from '@/services/finance/service-fee.js';
+import {
+  ownerCancelUpcoming,
+  previewOwnerCancelUpcoming,
+} from '@/services/booking/owner-cancel-upcoming.js';
 
 /** The partner's own listings. Ownership is enforced by passing the client id. */
 export const summary = asyncHandler(async (req, res) =>
@@ -142,6 +146,13 @@ export const submit = (req, res, next) => {
   return submitAction(req, res, next);
 };
 export const togglePause = runAction(toggleListingPause);
+/** Story 2.15: pause and cancel every upcoming stay, previewed first. */
+export const cancelUpcomingPreview = asyncHandler(async (req, res) =>
+  ok(res, await previewOwnerCancelUpcoming(sql, req.user.id, req.params.id)),
+);
+export const cancelUpcoming = asyncHandler(async (req, res) =>
+  ok(res, await ownerCancelUpcoming(sql, req.user.id, { ...req.body, rentableId: req.params.id })),
+);
 /** Story 2.14: what pausing keeps, before the owner confirms. */
 export const pausePreview = asyncHandler(async (req, res) =>
   ok(res, await ownerPausePreview(sql, req.user.id, req.params.id)),

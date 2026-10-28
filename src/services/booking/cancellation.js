@@ -193,11 +193,11 @@ export async function previewCancellation(database,session,input,env=process.env
  * cancellation record and its lifecycle event. Shared by the guest's own
  * cancellation and by a booking change (Phase 10).
  */
-export async function applyCancellation(tx, order, preview, value, { actorKind, reason, idempotencyKey, requestHash, customerId }) {
+export async function applyCancellation(tx, order, preview, value, { actorKind, reason, idempotencyKey, requestHash, customerId, refundReason }) {
   const id=randomUUID();
   // The refund reason is a category key for finance; the visit keeps the guest's own words.
   const departing=value.operation==='early_departure';
-  const refundIds=await createRefundObligations(tx, preview.visits, { reason:departing?'Customer early departure':'Customer visit cancellation', idempotencyKey:id, requestHash });
+  const refundIds=await createRefundObligations(tx, preview.visits, { reason:refundReason ?? (departing?'Customer early departure':'Customer visit cancellation'), idempotencyKey:id, requestHash });
   const partial=preview.visits.some(v=>v.partial);
   const snapshot={...publicPreview(preview),id,refundIds,...(departing?{departedAt:preview.requestedAt}:{cancelledAt:new Date().toISOString()}),...(partial?{roomIds:value.roomIds}:{})};
   const saveReceipt=()=>tx`INSERT INTO booking_cancellation(id,order_id,customer_id,idempotency_key,request_hash,snapshot)

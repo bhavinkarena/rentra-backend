@@ -758,8 +758,8 @@ export async function ownerPausePreview(database, ownerId, id) {
     ...(await pauseImpact(database, id)),
     choices: [
       { key: 'stop_new', available: true },
-      // Cancelling upcoming stays with their full refund is Story 2.15 and not offered yet.
-      { key: 'cancel_upcoming', available: false },
+      // Story 2.15: previewed separately at /cancel-upcoming (full refund of what was paid).
+      { key: 'cancel_upcoming', available: true },
     ],
   };
 }

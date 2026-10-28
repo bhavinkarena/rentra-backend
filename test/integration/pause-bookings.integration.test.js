@@ -137,7 +137,7 @@ test(
         preview.choices.map((c) => [c.key, c.available]),
         [
           ['stop_new', true],
-          ['cancel_upcoming', false],
+          ['cancel_upcoming', true],
         ],
       );
 
