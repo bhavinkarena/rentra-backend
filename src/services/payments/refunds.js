@@ -4,6 +4,7 @@ import { lifecycle } from '../booking/checkout.js';
 import { quoteDigest } from '../booking/quotes.js';
 import { razorpayTestAdapter, assertRefund, ProviderError } from './razorpay-test.js';
 import { resolvePinnedPaymentConfiguration } from './gateway-settings.js';
+import { initiationDisabled } from '../finance/initiation-switch.js';
 
 async function refundScope(database,id) {
   const [row]=await database`SELECT r.*,t.provider_payment_id,b.rentable_id,b.id order_id,e.credential_key_id,e.snapshot
@@ -20,14 +21,18 @@ export async function reconcileRefund(database,id,options={}) {
   if(scope.state==='succeeded') return;
   await resolvePinnedPaymentConfiguration(database,scope.snapshot);
   const provider=razorpayTestAdapter(scope.credential_key_id,options);
+  // Story 2.21: with initiation disabled an undispatched refund stays pending; dispatched ones are only read.
+  const held=!options.lookupOnly&&initiationDisabled(options.env??process.env);
   const send=await withListingInventory(database,scope.rentable_id,async tx=>{
     await tx`INSERT INTO refund_execution(refund_id) VALUES(${id}) ON CONFLICT DO NOTHING`;
+    if(held) return (await tx`SELECT dispatched_at FROM refund_execution WHERE refund_id=${id}`)[0].dispatched_at?false:'held';
     // One durable claim: missing/failed network responses are lookup-only forever.
     const [claimed]=await tx`UPDATE refund_execution SET dispatched_at=clock_timestamp(),next_check_at=clock_timestamp()+interval '1 minute'
       WHERE refund_id=${id} AND dispatched_at IS NULL RETURNING refund_id`;
     if(claimed) await tx`UPDATE refund SET state='processing' WHERE id=${id} AND state<>'succeeded'`;
     return Boolean(claimed) && !options.lookupOnly;
   });
+  if(send==='held') return;
   let remote;
   try {
     remote=send?await provider.createRefund(scope):await provider.findRefund(scope);

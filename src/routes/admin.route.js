@@ -354,6 +354,7 @@ router.get('/payments/finance/payouts/:id', finance.payout);
 router.get('/payments/finance/payouts', finance.payouts);
 router.get('/payments/finance', finance.statement);
 // Hotel plan, Phase 4: commission rules and tax slabs.
+router.get('/payments/release-gates', hotelFinance.releaseGates);
 router.get('/payments/payout-modes', hotelFinance.payoutModes);
 router.post('/payments/payout-modes', hotelFinance.payoutModeSave);
 router.get('/payments/owner-recoveries', hotelFinance.ownerRecoveries);

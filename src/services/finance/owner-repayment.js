@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { badRequest, conflict, notFound, unavailable, unprocessable } from '@/utils/apiError.js';
 import { authorize } from './payout-modes.js';
+import { assertInitiationEnabled } from './initiation-switch.js';
 import { facts } from './owner-recovery.js';
 import { issueNotice, noticeView } from './owner-repayment-notice.js';
 import { withListingInventory } from '../booking/inventory.js';
@@ -155,6 +156,7 @@ export async function createRepaymentLink(database, actor, sourceId, input, opts
     return { ...(await current(tx)), scope: await scopeOf(tx, sourceId) };
   });
   if (pre.replay) return pre.replay;
+  assertInitiationEnabled(opts.env ?? process.env); // Story 2.21: replays still answer; no new order.
   const rzp = provider(opts);
   // Replacing: the old order must show no authorized or captured payment.
   if (pre.open) await assertNoPayment(rzp, pre.open);

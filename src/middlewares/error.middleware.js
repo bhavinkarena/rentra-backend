@@ -40,6 +40,7 @@ const DOMAIN_ERRORS = {
   CHECKOUT_FORBIDDEN: [403, 'That checkout belongs to someone else.'],
   PAYMENTS_NOT_CONFIGURED: [503, 'Payments are not switched on yet.'],
   PAYMENT_CREDENTIALS_MISSING: [503, 'Payments are not switched on yet.'],
+  FINANCE_INITIATION_DISABLED: [503, 'New payments, refunds and payouts are paused by the finance team.'],
   INVALID_EVENT: [400, 'Invalid event.'],
   INVALID_SIGNATURE: [400, 'Invalid event.'],
   EVENT_ID_CONFLICT: [400, 'Invalid event.'],

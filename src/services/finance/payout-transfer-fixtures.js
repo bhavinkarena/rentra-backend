@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { conflict, forbidden, notFound, unprocessable } from '@/utils/apiError.js';
 import { lockPayoutPolicy, resolvePayoutMode } from './payout-modes.js';
+import { assertInitiationEnabled } from './initiation-switch.js';
 
 const uuid = z.string().uuid();
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -102,7 +103,7 @@ export async function previewPayoutTransfer(database, actor, input, provider) {
   return locked(database, actor, parsed.data.sourceId, async (tx, review) => ({ ...review, actualBankMinor: '0', fundingAuthority: 'unset' }));
 }
 const reserveSchema = z.object({ sourceId: uuid, requestKey: uuid, previewHash: z.string().length(64).optional(), accepted: z.boolean().optional() }).strict();
-export async function reservePayoutTransfer(database, actor, input, provider) {
+export async function reservePayoutTransfer(database, actor, input, provider, env = process.env) {
   adapter(provider);
   const parsed = reserveSchema.safeParse(input);
   if (!parsed.success) throw unprocessable({ fixture: 'Choose a source and a scoped request key.' });
@@ -115,6 +116,7 @@ export async function reservePayoutTransfer(database, actor, input, provider) {
     }
     requireEligible(review);
     consent(review, value);
+    assertInitiationEnabled(env); // Story 2.21: replays answer above; no new reservation.
     const [existing] = await tx`SELECT id FROM payout_transfer_fixture WHERE source_id=${value.sourceId}`;
     if (existing) throw conflict('PAYOUT_FIXTURE_EXISTS','This source already has one fixture operation.');
     const t = review.terms;
@@ -145,7 +147,7 @@ async function operation(database, actor, id) {
     return row;
   });
 }
-export async function dispatchPayoutTransfer(database, actor, id, input = {}, provider) {
+export async function dispatchPayoutTransfer(database, actor, id, input = {}, provider, env = process.env) {
   const fixture = adapter(provider);
   const parsed = dispatchSchema.safeParse(input);
   if (!parsed.success) throw unprocessable({ fixture: 'Provide a valid fixture confirmation.' });
@@ -153,6 +155,7 @@ export async function dispatchPayoutTransfer(database, actor, id, input = {}, pr
   const claim = scope.dispatched_at ? { row: scope, send: false } : await locked(database, actor, scope.source_id, async (tx, review) => {
     const [row] = await tx`SELECT * FROM payout_transfer_fixture WHERE id=${id} FOR UPDATE`;
     if (row.dispatched_at) return { row, send: false };
+    assertInitiationEnabled(env); // Story 2.21: already-dispatched operations above are lookup-only.
     requireEligible(review);
     const t = review.terms;
     if (row.destination_id !== t.destinationId || row.destination_version !== t.destinationVersion || String(row.expected_minor) !== t.expectedMinor)

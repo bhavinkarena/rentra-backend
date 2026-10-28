@@ -1,3 +1,4 @@
+import { readReleaseGates } from '@/services/finance/release-gates.js';
 import { listPayoutModes, payoutModeCommand } from '@/services/finance/payout-modes.js';
 import {
   assignOwnerRecovery,
@@ -128,4 +129,9 @@ export const ownerRecoveryNoticeReceipt = asyncHandler(async (req, res) =>
     noStore(res),
     await confirmNoticeReceipt(sql, await bookingActor('admin'), req.params.sourceId, req.body),
   ),
+);
+
+/** Story 2.21: read-only financial release gates. */
+export const releaseGates = asyncHandler(async (_req, res) =>
+  ok(noStore(res), await readReleaseGates(sql, await bookingActor('admin'))),
 );

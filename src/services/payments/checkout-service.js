@@ -8,6 +8,7 @@ import { requireNewPaymentConfiguration, resolvePinnedPaymentConfiguration } fro
 import { registeredPaymentProvider } from './provider-registry.js';
 import { razorpayTestAdapter, assertOrder, verifyCheckoutSignature } from './razorpay-test.js';
 import { paymentScope, settleVerifiedPayment } from './settlement.js';
+import { assertInitiationEnabled } from '../finance/initiation-switch.js';
 
 function adapter(scope, options) {
   registeredPaymentProvider(scope.provider, scope.environment);
@@ -32,6 +33,7 @@ export async function startCheckoutPayment(database, session, orderId, options =
     const scope = await paymentScope(tx, status.paymentOrderId);
     await resolvePinnedPaymentConfiguration(tx, scope.snapshot);
     if (scope.execution_state !== 'ready') return { scope, send:false };
+    assertInitiationEnabled(env); // Story 2.21: no new provider order while the switch is on.
     // Story 2.14: a paused or restricted property dispatches no new payment in any vertical; the
     // hold stays until it expires or the owner resumes. A payment already dispatched is only read,
     // and a capture that still lands while paused is not confirmed (settlement refunds it).
