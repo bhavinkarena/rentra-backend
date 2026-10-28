@@ -19,7 +19,7 @@ export async function resolvePayoutMode(tx, ownerId = null) {
     globalMode: global?.mode ?? 'auto', globalVersion: global?.version ?? 0, ownerVersion: owner?.version ?? 0 };
 }
 
-async function authorize(tx, actor, write = false) {
+export async function authorize(tx, actor, write = false) {
   if (actor?.kind !== 'admin' || !uuid.safeParse(actor.id).success) throw forbidden();
   const [admin] = await tx`SELECT permissions FROM admin_user WHERE id=${actor.id} AND is_active FOR SHARE`;
   const allowed = cap => admin && (admin.permissions == null || admin.permissions.includes(`admin.payments.${cap}`));

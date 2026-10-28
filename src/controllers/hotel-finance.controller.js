@@ -1,4 +1,9 @@
 import { listPayoutModes, payoutModeCommand } from '@/services/finance/payout-modes.js';
+import {
+  assignOwnerRecovery,
+  listRecoveryCandidates,
+  previewOwnerRecovery,
+} from '@/services/finance/owner-recovery.js';
 import { sql } from '@/config/database.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import {
@@ -66,4 +71,22 @@ export const payoutModes = asyncHandler(async (_req, res) =>
 );
 export const payoutModeSave = asyncHandler(async (req, res) =>
   ok(res, await payoutModeCommand(sql, await bookingActor('admin'), req.body)),
+);
+
+// Story 2.17: Test-only owner recovery obligations (admin.payments.*).
+const noStore = (res) => res.set('Cache-Control', 'private, no-store');
+export const ownerRecoveries = asyncHandler(async (_req, res) =>
+  ok(noStore(res), await listRecoveryCandidates(sql, await bookingActor('admin'))),
+);
+export const ownerRecovery = asyncHandler(async (req, res) =>
+  ok(
+    noStore(res),
+    await previewOwnerRecovery(sql, await bookingActor('admin'), req.params.sourceId),
+  ),
+);
+export const ownerRecoveryAssign = asyncHandler(async (req, res) =>
+  ok(
+    noStore(res),
+    await assignOwnerRecovery(sql, await bookingActor('admin'), req.params.sourceId, req.body),
+  ),
 );
