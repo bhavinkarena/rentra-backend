@@ -502,6 +502,12 @@ router.get('/earnings', requireActiveClient, finance.earnings);
 router.get('/earnings/print', requireActiveClient, finance.earningsPrint);
 router.get('/repayments', requireActiveClient, finance.repayments);
 router.post('/repayments/:id/verify', requireActiveClient, finance.repaymentVerify);
+router.post(
+  '/repayments/notices/:recoveryId/view',
+  requireActiveClient,
+  finance.repaymentNoticeView,
+);
+router.post('/repayments/notices/:recoveryId/ack', requireActiveClient, finance.repaymentNoticeAck);
 router.use('/disputes', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   next();

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { badRequest, conflict, notFound, unavailable, unprocessable } from '@/utils/apiError.js';
 import { authorize } from './payout-modes.js';
 import { facts } from './owner-recovery.js';
+import { issueNotice, noticeView } from './owner-repayment-notice.js';
 import { withListingInventory } from '../booking/inventory.js';
 import {
   razorpayTestAdapter,
@@ -175,6 +176,8 @@ export async function createRepaymentLink(database, actor, sourceId, input, opts
       if (now.open) await tx`UPDATE owner_repayment SET state='replaced',settled_at=now() WHERE id=${now.open.id} AND state='open'`;
       const [link] = await tx`INSERT INTO owner_repayment(id,recovery_id,owner_id,amount_minor,provider_order_id,actor_id,request_key,request_hash)
         VALUES (${id},${now.row.recoveryId},${now.row.ownerId},${amount},${order.id},${actor.id},${value.requestKey},${requestHash}) RETURNING *`;
+      // Story 2.19: the first link issues the notice; a replacement never touches it.
+      await issueNotice(tx, now.row.recoveryId, now.row.ownerId);
       await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after",reason)
         VALUES ('admin',${actor.id},'owner_repayment',${link.id},${now.open ? 'owner_repayment_replaced' : 'owner_repayment_created'},
           ${now.open ? JSON.stringify(view(now.open)) : null}::text::jsonb,${JSON.stringify(view(link))}::text::jsonb,'Test repayment link')`;
@@ -195,13 +198,17 @@ async function assertNoPayment(rzp, link) {
 
 export async function listOwnerRepayments(database, ownerId, opts = {}) {
   const env = opts.env ?? process.env;
-  const rows = await database`SELECT r.*,bo.reference booking_ref FROM owner_repayment r
-    JOIN owner_recovery o ON o.id=r.recovery_id JOIN payment_allocation pa ON pa.id=o.source_id
+  const rows = await database`SELECT r.*,bo.reference booking_ref,
+    n.id notice_id,n.issued_at notice_issued_at,n.received_at notice_received_at,
+    n.received_via notice_received_via,n.reminder_at notice_reminder_at,n.due_at notice_due_at,n.version notice_version,
+    (n.reminder_at IS NOT NULL AND now()>=n.reminder_at) notice_reminder_due,
+    EXISTS(SELECT 1 FROM owner_repayment_notice_event e WHERE e.notice_id=n.id AND e.type='owner_ack') notice_acknowledged FROM owner_repayment r
+    JOIN owner_recovery o ON o.id=r.recovery_id LEFT JOIN owner_repayment_notice n ON n.recovery_id=r.recovery_id JOIN payment_allocation pa ON pa.id=o.source_id
     JOIN booking b ON b.id=pa.booking_id JOIN booking_order bo ON bo.id=b.order_id
     WHERE r.owner_id=${ownerId} AND r.state<>'replaced' ORDER BY r.created_at DESC LIMIT 100`;
   // Checkout needs the public Test key id only; the secret never leaves the server.
   const keyId = /^rzp_test_[A-Za-z0-9]+$/.test(env.RAZORPAY_KEY_ID?.trim() ?? '') ? env.RAZORPAY_KEY_ID.trim() : null;
-  return { environment: 'test', keyId, items: rows.map((r) => ({ ...view(r), bookingRef: r.booking_ref })) };
+  return { environment: 'test', keyId, items: rows.map((r) => ({ ...view(r), bookingRef: r.booking_ref, notice: noticeView(r) })) };
 }
 
 const verifySchema = z.object({ paymentId: z.string().regex(/^pay_[A-Za-z0-9]+$/),

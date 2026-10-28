@@ -371,6 +371,10 @@ router.post(
   '/payments/owner-recoveries/:sourceId/repayment-link/resolve',
   hotelFinance.ownerRecoveryRepaymentResolve,
 );
+router.post(
+  '/payments/owner-recoveries/:sourceId/notice-receipt',
+  hotelFinance.ownerRecoveryNoticeReceipt,
+);
 router.get('/payments/service-fee', hotelFinance.serviceFees);
 router.post('/payments/service-fee', formFields(), hotelFinance.serviceFeeChange);
 router.get('/payments/hotel-commission', hotelFinance.commission);

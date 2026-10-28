@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { authorize } from './payout-modes.js';
 import { withListingInventory } from '../booking/inventory.js';
+import { noticeView } from './owner-repayment-notice.js';
 
 // Story 2.17 (Test only): owner responsibility for guest rent refunds that completed after a
 // succeeded payout fixture. Records the obligation; never moves money or touches refunds/fixtures.
@@ -16,7 +17,11 @@ export async function facts(tx, sourceId = null) {
     coalesce(rf.refunded,0)::text refunded,coalesce(rf.reserved,0)::text reserved,
     o.id recovery_id,o.version,o.obligation_minor::text assigned,o.reserved_minor::text assigned_reserved,
     o.recovered_minor::text recovered,o.reason,o.updated_at,
-    l.id link_id,l.state link_state,l.amount_minor::text link_amount,l.excess_minor::text link_excess
+    l.id link_id,l.state link_state,l.amount_minor::text link_amount,l.excess_minor::text link_excess,
+    n.id notice_id,n.issued_at notice_issued_at,n.received_at notice_received_at,
+    n.received_via notice_received_via,n.reminder_at notice_reminder_at,n.due_at notice_due_at,n.version notice_version,
+    (n.reminder_at IS NOT NULL AND now()>=n.reminder_at) notice_reminder_due,
+    EXISTS(SELECT 1 FROM owner_repayment_notice_event e WHERE e.notice_id=n.id AND e.type='owner_ack') notice_acknowledged
     FROM payout_transfer_fixture f
     JOIN payment_allocation pa ON pa.id=f.source_id JOIN booking b ON b.id=pa.booking_id
     JOIN booking_order bo ON bo.id=b.order_id JOIN "user" u ON u.id=f.owner_id
@@ -24,6 +29,8 @@ export async function facts(tx, sourceId = null) {
     -- Story 2.18: the latest Test repayment link for the recovery (open one first).
     LEFT JOIN LATERAL (SELECT * FROM owner_repayment r WHERE r.recovery_id=o.id
       ORDER BY (r.state='open') DESC,r.created_at DESC LIMIT 1) l ON true
+    -- Story 2.19: the recovery's repayment notice (receipt milestones).
+    LEFT JOIN owner_repayment_notice n ON n.recovery_id=o.id
     -- Only refunds created after the fixture was reserved (f.created_at) count. The 0078 guard fixed
     -- expected_minor at reserve time net of refunds existing then; counting those again would double count.
     -- Refunds created between reserve and verified_at are the owner's (dispatch refuses them today anyway).
@@ -44,6 +51,7 @@ export async function facts(tx, sourceId = null) {
       recoveredMinor: recovered.toString(), obligationMinor: owed.toString(),
       outstandingMinor: (outstanding > 0n ? outstanding : 0n).toString(),
       link: row.link_id ? { id: row.link_id, state: row.link_state, amountMinor: row.link_amount, excessMinor: row.link_excess } : null,
+      notice: noticeView(row),
       reservedMinor: row.reserved, version: row.version ?? 0, recoveryId: row.recovery_id,
       assignedMinor: row.assigned, assignedReservedMinor: row.assigned_reserved, reason: row.reason, updatedAt: row.updated_at,
     };

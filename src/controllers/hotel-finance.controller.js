@@ -9,6 +9,7 @@ import {
   createRepaymentLink,
   resolveRepaymentLink,
 } from '@/services/finance/owner-repayment.js';
+import { confirmNoticeReceipt } from '@/services/finance/owner-repayment-notice.js';
 import { sql } from '@/config/database.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import {
@@ -119,5 +120,12 @@ export const ownerRecoveryRepaymentResolve = asyncHandler(async (req, res) =>
     await resolveRepaymentLink(sql, await bookingActor('admin'), req.params.sourceId, req.body, {
       fetcher: testTransport(),
     }),
+  ),
+);
+/** Story 2.19: finance admin confirms when the owner actually received the repayment notice. */
+export const ownerRecoveryNoticeReceipt = asyncHandler(async (req, res) =>
+  ok(
+    noStore(res),
+    await confirmNoticeReceipt(sql, await bookingActor('admin'), req.params.sourceId, req.body),
   ),
 );

@@ -5,6 +5,8 @@ import {
 } from '@/services/finance/owner-earnings.js';
 import { statementFilters } from '@/services/finance/statements.js';
 import { listOwnerRepayments, verifyOwnerRepayment } from '@/services/finance/owner-repayment.js';
+import { recordOwnerNoticeEvent } from '@/services/finance/owner-repayment-notice.js';
+import { getSession } from '@/services/auth/dal.js';
 import { sql } from '@/config/database.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import {
@@ -91,3 +93,20 @@ export const repaymentVerify = asyncHandler(async (req, res) => {
     }),
   );
 });
+
+/** Story 2.19: the owner's explicit POST that they saw / acknowledged a repayment notice. */
+const noticeEvent = (type) =>
+  asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    const owner = await bookingActor('owner');
+    const session = await getSession();
+    ok(
+      res,
+      await recordOwnerNoticeEvent(sql, owner.id, req.params.recoveryId, type, req.body, {
+        sessionId: session?.sessionId,
+        userAgent: req.get?.('user-agent'),
+      }),
+    );
+  });
+export const repaymentNoticeView = noticeEvent('portal_view');
+export const repaymentNoticeAck = noticeEvent('owner_ack');
