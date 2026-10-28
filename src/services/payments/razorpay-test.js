@@ -106,6 +106,13 @@ export function razorpayTestAdapter(keyId, { env = process.env, fetcher = fetch 
       if (result.id !== paymentId) throw new ProviderError('PROVIDER_PAYMENT_MISMATCH');
       return result;
     },
+    /** Story 2.18: every payment on an order, any amount. Each item is checked on its own. */
+    async orderPayments(orderId) {
+      if (!/^order_[A-Za-z0-9]+$/.test(orderId ?? '')) throw new ProviderError('INVALID_ORDER_ID');
+      const result = await request(`orders/${orderId}/payments`);
+      if (!Array.isArray(result.items)) throw new ProviderError('PROVIDER_PAYMENT_MISMATCH');
+      return result.items.filter(p => /^pay_[A-Za-z0-9]+$/.test(p?.id ?? '') && p.order_id === orderId);
+    },
     async payments(expected) {
       if (!/^order_[A-Za-z0-9]+$/.test(expected.provider_order_id ?? '')) throw new ProviderError('INVALID_ORDER_ID');
       const result = await request(`orders/${expected.provider_order_id}/payments`);

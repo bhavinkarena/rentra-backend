@@ -10,16 +10,20 @@ import { withListingInventory } from '../booking/inventory.js';
 const uuid = z.string().uuid();
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-async function facts(tx, sourceId = null) {
+export async function facts(tx, sourceId = null) {
   const rows = await tx`SELECT f.id fixture_id,f.source_id,f.owner_id,f.expected_minor::text paid,
     u.name owner_name,u.email owner_email,bo.reference booking_ref,
     coalesce(rf.refunded,0)::text refunded,coalesce(rf.reserved,0)::text reserved,
     o.id recovery_id,o.version,o.obligation_minor::text assigned,o.reserved_minor::text assigned_reserved,
-    o.recovered_minor::text recovered,o.reason,o.updated_at
+    o.recovered_minor::text recovered,o.reason,o.updated_at,
+    l.id link_id,l.state link_state,l.amount_minor::text link_amount,l.excess_minor::text link_excess
     FROM payout_transfer_fixture f
     JOIN payment_allocation pa ON pa.id=f.source_id JOIN booking b ON b.id=pa.booking_id
     JOIN booking_order bo ON bo.id=b.order_id JOIN "user" u ON u.id=f.owner_id
     LEFT JOIN owner_recovery o ON o.source_id=f.source_id
+    -- Story 2.18: the latest Test repayment link for the recovery (open one first).
+    LEFT JOIN LATERAL (SELECT * FROM owner_repayment r WHERE r.recovery_id=o.id
+      ORDER BY (r.state='open') DESC,r.created_at DESC LIMIT 1) l ON true
     -- Only refunds created after the fixture was reserved (f.created_at) count. The 0078 guard fixed
     -- expected_minor at reserve time net of refunds existing then; counting those again would double count.
     -- Refunds created between reserve and verified_at are the owner's (dispatch refuses them today anyway).
@@ -31,12 +35,15 @@ async function facts(tx, sourceId = null) {
     ORDER BY f.verified_at DESC LIMIT 200`;
   return rows.map((row) => {
     const paid = BigInt(row.paid), refunded = BigInt(row.refunded), recovered = BigInt(row.recovered ?? 0);
-    const owed = (refunded < paid ? refunded : paid) - recovered;
+    // Story 2.18: obligation is gross; outstanding = assigned obligation - recovered (never below 0).
+    const owed = refunded < paid ? refunded : paid, outstanding = BigInt(row.assigned ?? 0) - recovered;
     const view = {
       sourceId: row.source_id, fixtureId: row.fixture_id, ownerId: row.owner_id,
       ownerName: row.owner_name, ownerEmail: row.owner_email, bookingRef: row.booking_ref,
       environment: 'test', currency: 'INR', paidMinor: row.paid, refundedAfterMinor: row.refunded,
-      recoveredMinor: recovered.toString(), obligationMinor: (owed > 0n ? owed : 0n).toString(),
+      recoveredMinor: recovered.toString(), obligationMinor: owed.toString(),
+      outstandingMinor: (outstanding > 0n ? outstanding : 0n).toString(),
+      link: row.link_id ? { id: row.link_id, state: row.link_state, amountMinor: row.link_amount, excessMinor: row.link_excess } : null,
       reservedMinor: row.reserved, version: row.version ?? 0, recoveryId: row.recovery_id,
       assignedMinor: row.assigned, assignedReservedMinor: row.assigned_reserved, reason: row.reason, updatedAt: row.updated_at,
     };

@@ -4,6 +4,7 @@ import {
   earningsFilters,
 } from '@/services/finance/owner-earnings.js';
 import { statementFilters } from '@/services/finance/statements.js';
+import { listOwnerRepayments, verifyOwnerRepayment } from '@/services/finance/owner-repayment.js';
 import { sql } from '@/config/database.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import {
@@ -71,4 +72,22 @@ export const commissionInvoice = asyncHandler(async (req, res) => {
 export const hotelAnalytics = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'private, no-store');
   ok(res, await getOwnerHotelAnalytics(sql, (await bookingActor('owner')).id, req.query));
+});
+
+const testTransport = () =>
+  process.env.NODE_ENV === 'test' ? globalThis.__rentraPaymentFetcher : undefined;
+/** Story 2.18: the owner's own Test repayment links. */
+export const repayments = asyncHandler(async (_req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  ok(res, await listOwnerRepayments(sql, (await bookingActor('owner')).id));
+});
+export const repaymentVerify = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  const owner = await bookingActor('owner');
+  ok(
+    res,
+    await verifyOwnerRepayment(sql, owner.id, req.params.id, req.body, {
+      fetcher: testTransport(),
+    }),
+  );
 });

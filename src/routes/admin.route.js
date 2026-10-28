@@ -359,6 +359,18 @@ router.post('/payments/payout-modes', hotelFinance.payoutModeSave);
 router.get('/payments/owner-recoveries', hotelFinance.ownerRecoveries);
 router.get('/payments/owner-recoveries/:sourceId', hotelFinance.ownerRecovery);
 router.post('/payments/owner-recoveries/:sourceId', hotelFinance.ownerRecoveryAssign);
+router.post(
+  '/payments/owner-recoveries/:sourceId/repayment-link',
+  hotelFinance.ownerRecoveryRepaymentLink,
+);
+router.post(
+  '/payments/owner-recoveries/:sourceId/repayment-link/check',
+  hotelFinance.ownerRecoveryRepaymentCheck,
+);
+router.post(
+  '/payments/owner-recoveries/:sourceId/repayment-link/resolve',
+  hotelFinance.ownerRecoveryRepaymentResolve,
+);
 router.get('/payments/service-fee', hotelFinance.serviceFees);
 router.post('/payments/service-fee', formFields(), hotelFinance.serviceFeeChange);
 router.get('/payments/hotel-commission', hotelFinance.commission);

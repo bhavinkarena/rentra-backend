@@ -4,6 +4,11 @@ import {
   listRecoveryCandidates,
   previewOwnerRecovery,
 } from '@/services/finance/owner-recovery.js';
+import {
+  checkRepaymentLink,
+  createRepaymentLink,
+  resolveRepaymentLink,
+} from '@/services/finance/owner-repayment.js';
 import { sql } from '@/config/database.js';
 import { bookingActor } from '@/services/booking/record-page.js';
 import {
@@ -74,6 +79,8 @@ export const payoutModeSave = asyncHandler(async (req, res) =>
 );
 
 // Story 2.17: Test-only owner recovery obligations (admin.payments.*).
+const testTransport = () =>
+  process.env.NODE_ENV === 'test' ? globalThis.__rentraPaymentFetcher : undefined;
 const noStore = (res) => res.set('Cache-Control', 'private, no-store');
 export const ownerRecoveries = asyncHandler(async (_req, res) =>
   ok(noStore(res), await listRecoveryCandidates(sql, await bookingActor('admin'))),
@@ -88,5 +95,29 @@ export const ownerRecoveryAssign = asyncHandler(async (req, res) =>
   ok(
     noStore(res),
     await assignOwnerRecovery(sql, await bookingActor('admin'), req.params.sourceId, req.body),
+  ),
+);
+export const ownerRecoveryRepaymentLink = asyncHandler(async (req, res) =>
+  ok(
+    noStore(res),
+    await createRepaymentLink(sql, await bookingActor('admin'), req.params.sourceId, req.body, {
+      fetcher: testTransport(),
+    }),
+  ),
+);
+export const ownerRecoveryRepaymentCheck = asyncHandler(async (req, res) =>
+  ok(
+    noStore(res),
+    await checkRepaymentLink(sql, await bookingActor('admin'), req.params.sourceId, {
+      fetcher: testTransport(),
+    }),
+  ),
+);
+export const ownerRecoveryRepaymentResolve = asyncHandler(async (req, res) =>
+  ok(
+    noStore(res),
+    await resolveRepaymentLink(sql, await bookingActor('admin'), req.params.sourceId, req.body, {
+      fetcher: testTransport(),
+    }),
   ),
 );

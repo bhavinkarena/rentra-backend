@@ -500,6 +500,8 @@ router.get('/finance/hotel-analytics', requireActiveClient, finance.hotelAnalyti
 router.get('/finance', requireActiveClient, finance.statement);
 router.get('/earnings', requireActiveClient, finance.earnings);
 router.get('/earnings/print', requireActiveClient, finance.earningsPrint);
+router.get('/repayments', requireActiveClient, finance.repayments);
+router.post('/repayments/:id/verify', requireActiveClient, finance.repaymentVerify);
 router.use('/disputes', (_req, res, next) => {
   res.set('Cache-Control', 'private, no-store');
   next();
