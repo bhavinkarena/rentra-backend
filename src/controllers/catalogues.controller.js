@@ -3,7 +3,11 @@ import { bookingActor } from '@/services/booking/record-page.js';
 import { listCatalogues, readCatalogue, catalogueCommand } from '@/services/catalogues/service.js';
 import { listVerticals, verticalCommand } from '@/services/catalogues/verticals.js';
 import { listLandmarks, landmarkCommand } from '@/services/catalogues/landmarks.js';
-import { listBetaGuests, betaGuestCommand, claimBetaPass } from '@/services/catalogues/beta-guests.js';
+import {
+  listBetaGuests,
+  betaGuestCommand,
+  claimBetaPass,
+} from '@/services/catalogues/beta-guests.js';
 import { getSession } from '@/services/auth/dal.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok } from '@/utils/respond.js';

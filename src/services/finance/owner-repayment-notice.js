@@ -80,7 +80,8 @@ async function ownerEvent(database, ownerId, recoveryId, type, input, ctx = {}) 
   if (!parsed.success) throw unprocessable({ requestKey: 'Reload and try again.' });
   const { requestKey } = parsed.data, requestHash = digest({ recoveryId, type });
   return database.begin(async (tx) => {
-    // Lock order everywhere: owner_recovery first, then the notice.
+    // Lock order everywhere: owner "user" row, then owner_recovery, then the notice (Story 2.20).
+    await tx`SELECT 1 FROM "user" WHERE id=${ownerId} FOR UPDATE`;
     await tx`SELECT 1 FROM owner_recovery WHERE id=${recoveryId} AND owner_id=${ownerId} FOR UPDATE`;
     const [notice] = await tx`SELECT * FROM owner_repayment_notice WHERE recovery_id=${recoveryId} AND owner_id=${ownerId} FOR UPDATE`;
     if (!notice) throw notFound();
@@ -108,6 +109,7 @@ async function adminConfirm(database, actor, sourceId, input) {
   const value = parsed.data, requestHash = digest({ sourceId, ...value });
   return database.begin(async (tx) => {
     await authorize(tx, actor, true);
+    await tx`SELECT 1 FROM "user" WHERE id=(SELECT owner_id FROM owner_recovery WHERE source_id=${sourceId}) FOR UPDATE`;
     await tx`SELECT 1 FROM owner_recovery WHERE source_id=${sourceId} FOR UPDATE`;
     const [notice] = await tx`SELECT n.* FROM owner_repayment_notice n JOIN owner_recovery o ON o.id=n.recovery_id
       WHERE o.source_id=${sourceId} FOR UPDATE OF n`;

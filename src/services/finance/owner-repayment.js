@@ -52,8 +52,12 @@ async function classify(read) {
   }
 }
 
-/** Lock order everywhere: owner_recovery FOR UPDATE first, then owner_repayment. */
+/**
+ * Lock order everywhere: owner "user" row FOR UPDATE, then owner_recovery, then owner_repayment.
+ * Story 2.20: admission holds the owner row FOR SHARE while it reads owner_repayment_overdue.
+ */
 async function lockLink(tx, linkId) {
+  await tx`SELECT 1 FROM "user" WHERE id=(SELECT owner_id FROM owner_repayment WHERE id=${linkId}) FOR UPDATE`;
   const [rec] = await tx`SELECT * FROM owner_recovery WHERE id=(SELECT recovery_id FROM owner_repayment WHERE id=${linkId}) FOR UPDATE`;
   const [link] = await tx`SELECT * FROM owner_repayment WHERE id=${linkId} FOR UPDATE`;
   return { rec, link };
@@ -170,6 +174,7 @@ export async function createRepaymentLink(database, actor, sourceId, input, opts
       await authorize(tx, actor, true);
       const replay = await replayed(tx);
       if (replay) return replay;
+      await tx`SELECT 1 FROM "user" WHERE id=(SELECT owner_id FROM owner_recovery WHERE id=${pre.row.recoveryId}) FOR UPDATE`;
       await tx`SELECT 1 FROM owner_recovery WHERE id=${pre.row.recoveryId} FOR UPDATE`;
       const now = await current(tx);
       if (now.row.outstandingMinor !== amount || (now.open?.id ?? null) !== (pre.open?.id ?? null)) throw changed();
@@ -196,6 +201,14 @@ async function assertNoPayment(rzp, link) {
   if ((await orderState(rzp, link)).busy) throw inFlight();
 }
 
+/** Story 2.20: one owner-wide figure for both banners (earnings and listings dashboard). */
+export async function ownerRepaymentStatus(database, ownerId) {
+  const [row] = await database`SELECT owner_repayment_overdue(${ownerId}) overdue,
+    (SELECT coalesce(sum(obligation_minor-recovered_minor),0)::text FROM owner_recovery
+      WHERE owner_id=${ownerId} AND obligation_minor>recovered_minor) outstanding`;
+  return { overdue: row.overdue, outstandingMinor: row.outstanding };
+}
+
 export async function listOwnerRepayments(database, ownerId, opts = {}) {
   const env = opts.env ?? process.env;
   const rows = await database`SELECT r.*,bo.reference booking_ref,
@@ -208,7 +221,8 @@ export async function listOwnerRepayments(database, ownerId, opts = {}) {
     WHERE r.owner_id=${ownerId} AND r.state<>'replaced' ORDER BY r.created_at DESC LIMIT 100`;
   // Checkout needs the public Test key id only; the secret never leaves the server.
   const keyId = /^rzp_test_[A-Za-z0-9]+$/.test(env.RAZORPAY_KEY_ID?.trim() ?? '') ? env.RAZORPAY_KEY_ID.trim() : null;
-  return { environment: 'test', keyId, items: rows.map((r) => ({ ...view(r), bookingRef: r.booking_ref, notice: noticeView(r) })) };
+  const { overdue, outstandingMinor } = await ownerRepaymentStatus(database, ownerId);
+  return { environment: 'test', keyId, overdue, outstandingMinor, items: rows.map((r) => ({ ...view(r), bookingRef: r.booking_ref, notice: noticeView(r) })) };
 }
 
 const verifySchema = z.object({ paymentId: z.string().regex(/^pay_[A-Za-z0-9]+$/),
@@ -270,6 +284,7 @@ export async function checkRepaymentLink(database, actor, sourceId, opts = {}) {
     : null;
   return withListingInventory(database, pre.scope.rentable_id, async (tx) => {
     await authorize(tx, actor, true);
+    await tx`SELECT 1 FROM "user" WHERE id=(SELECT owner_id FROM owner_recovery WHERE id=${pre.rec.id}) FOR UPDATE`;
     await tx`SELECT 1 FROM owner_recovery WHERE id=${pre.rec.id} FOR UPDATE`;
     const settled = [];
     for (const { link, paymentId } of found) {

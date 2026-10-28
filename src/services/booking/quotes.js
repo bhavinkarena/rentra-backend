@@ -210,10 +210,16 @@ export function hourlyInputsQuery(tx, listing) {
 
 /** New quotes need an active owner and a public vertical; existing bookings are not affected. */
 export async function requireBookableListing(tx, listing) {
+  // Story 2.20: hold the owner row so a receipt/settlement writer (owner row FOR UPDATE first) cannot race this read.
+  // Read-only snapshots (search, public grids) cannot lock; they never admit a booking.
+  if (!isReadOnlyInventory(tx, listing.id)) await tx`SELECT 1 FROM "user" WHERE id=${listing.client_id} FOR SHARE`;
   const [row] = await tx`SELECT
     EXISTS (SELECT 1 FROM "user" WHERE id=${listing.client_id} AND role='client' AND account_status='active') AS owner_active,
-    EXISTS (SELECT 1 FROM category c JOIN vertical v ON v.code=c.vertical_code WHERE c.id=${listing.category_id} AND ${visibleVertical(tx)}) AS vertical_public`;
+    EXISTS (SELECT 1 FROM category c JOIN vertical v ON v.code=c.vertical_code WHERE c.id=${listing.category_id} AND ${visibleVertical(tx)}) AS vertical_public,
+    owner_repayment_overdue(${listing.client_id}) AS overdue`;
   if (!row.owner_active || !row.vertical_public) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
+  // Story 2.20: evaluated in this transaction; covers quote, hold (both models) and held-term revalidation.
+  if (row.overdue) throw new BookingQuoteError('OWNER_REPAYMENT_OVERDUE', 'This property is not taking bookings right now.');
 }
 
 async function currentInputs(tx, listing, selection, variables) {
@@ -324,6 +330,7 @@ async function currentCalendarInputs(tx, listing, dates, variables) {
     SELECT clock_timestamp() AS now,
       EXISTS(SELECT 1 FROM "user" WHERE id=${listing.client_id}
         AND role='client' AND account_status='active') AS owner_active,
+      owner_repayment_overdue(${listing.client_id}) AS overdue,
       COALESCE((SELECT json_agg(r ORDER BY r.slot) FROM (
         SELECT slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${listing.id}
       ) r), '[]'::json) AS rates,
@@ -332,6 +339,7 @@ async function currentCalendarInputs(tx, listing, dates, variables) {
         WHERE rentable_id=${listing.id} AND day BETWEEN ${dates[0]} AND ${dates.at(-1)}
       ) o), '[]'::json) AS explicit`;
   if (!inputs.owner_active) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
+  if (inputs.overdue) throw new BookingQuoteError('OWNER_REPAYMENT_OVERDUE', 'This property is not taking bookings right now.');
   // prepareInventoryCheck treats expired holds as free in the read-only snapshot.
   const payment = await getPaymentConfiguration(tx, variables);
   return { now: inputs.now, rates: inputs.rates, overrides: inputs.explicit, payment, fee: await resolveServiceFee(tx, listing.client_id, inputs.now) };

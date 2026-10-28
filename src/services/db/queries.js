@@ -536,7 +536,7 @@ export async function getNextAvailableDates({ rentableId, days = 60, limit = 3 }
       Object.entries(result.days).filter(([, entry]) => entry[slot === 'full_day' ? 'full' : slot]).slice(0, limit).map(([date]) => date),
     ]));
   } catch (error) {
-    if (['42P01','42703','INVENTORY_NOT_READY','INVENTORY_REMEDIATION_REQUIRED','SCHEDULE_UNAVAILABLE','LISTING_UNAVAILABLE','UNSUPPORTED_INVENTORY'].includes(error.code)) return { day: [], night: [], full_day: [] };
+    if (['42P01','42703','INVENTORY_NOT_READY','INVENTORY_REMEDIATION_REQUIRED','SCHEDULE_UNAVAILABLE','LISTING_UNAVAILABLE','OWNER_REPAYMENT_OVERDUE','UNSUPPORTED_INVENTORY'].includes(error.code)) return { day: [], night: [], full_day: [] };
     throw error;
   }
 }

@@ -21,7 +21,8 @@ export async function facts(tx, sourceId = null) {
     n.id notice_id,n.issued_at notice_issued_at,n.received_at notice_received_at,
     n.received_via notice_received_via,n.reminder_at notice_reminder_at,n.due_at notice_due_at,n.version notice_version,
     (n.reminder_at IS NOT NULL AND now()>=n.reminder_at) notice_reminder_due,
-    EXISTS(SELECT 1 FROM owner_repayment_notice_event e WHERE e.notice_id=n.id AND e.type='owner_ack') notice_acknowledged
+    EXISTS(SELECT 1 FROM owner_repayment_notice_event e WHERE e.notice_id=n.id AND e.type='owner_ack') notice_acknowledged,
+    (n.due_at<=now() AND o.obligation_minor-o.recovered_minor>0) IS TRUE overdue
     FROM payout_transfer_fixture f
     JOIN payment_allocation pa ON pa.id=f.source_id JOIN booking b ON b.id=pa.booking_id
     JOIN booking_order bo ON bo.id=b.order_id JOIN "user" u ON u.id=f.owner_id
@@ -51,7 +52,7 @@ export async function facts(tx, sourceId = null) {
       recoveredMinor: recovered.toString(), obligationMinor: owed.toString(),
       outstandingMinor: (outstanding > 0n ? outstanding : 0n).toString(),
       link: row.link_id ? { id: row.link_id, state: row.link_state, amountMinor: row.link_amount, excessMinor: row.link_excess } : null,
-      notice: noticeView(row),
+      notice: noticeView(row), overdue: row.overdue,
       reservedMinor: row.reserved, version: row.version ?? 0, recoveryId: row.recovery_id,
       assignedMinor: row.assigned, assignedReservedMinor: row.assigned_reserved, reason: row.reason, updatedAt: row.updated_at,
     };
@@ -117,6 +118,8 @@ export async function assignOwnerRecovery(database, actor, sourceId, input) {
         throw conflict('RECOVERY_CHANGED', 'Refund or recovery figures changed. Review the current figures again.');
       if (row.obligationMinor === '0' || (row.assignedMinor === row.obligationMinor && row.assignedReservedMinor === row.reservedMinor))
         throw conflict('NOTHING_TO_ASSIGN', 'There is no new verified obligation to assign.');
+      // Story 2.20 lock order: owner "user" row, then owner_recovery.
+      await tx`SELECT 1 FROM "user" WHERE id=${row.ownerId} FOR UPDATE`;
       const [previous] = await tx`SELECT * FROM owner_recovery WHERE source_id=${sourceId} FOR UPDATE`;
       const [saved] = previous
         ? await tx`UPDATE owner_recovery SET obligation_minor=${row.obligationMinor},reserved_minor=${row.reservedMinor},

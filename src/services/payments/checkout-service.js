@@ -36,6 +36,8 @@ export async function startCheckoutPayment(database, session, orderId, options =
     // hold stays until it expires or the owner resumes. A payment already dispatched is only read,
     // and a capture that still lands while paused is not confirmed (settlement refunds it).
     if (listing.status !== 'live') throw new CheckoutError('LISTING_UNAVAILABLE');
+    // Story 2.20: no new provider order while the owner's Test repayment is overdue; in-flight orders are only read.
+    if ((await tx`SELECT owner_repayment_overdue(id) o FROM "user" WHERE id=${listing.client_id} FOR SHARE`)[0]?.o) throw new CheckoutError('OWNER_REPAYMENT_OVERDUE');
     await tx`SELECT pg_advisory_xact_lock(73420,1)`;
     await requireNewPaymentConfiguration(tx, { expectedVersion:scope.config_version }, env);
     const [current] = await tx`SELECT state,hold_expires_at>clock_timestamp() active FROM booking_order WHERE id=${orderId}`;

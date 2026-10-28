@@ -40,6 +40,8 @@ test(
       await fixture.drop();
     });
     const { sql } = fixture;
+    // Current admission code runs on the 0075 schema first; stub the 0083 rule until migration.
+    await sql`CREATE FUNCTION owner_repayment_overdue(uuid) RETURNS boolean LANGUAGE sql AS 'SELECT false'`;
     globalThis.__rentraSql = sql;
     Object.assign(process.env, {
       DATABASE_URL: fixture.url,
@@ -150,6 +152,7 @@ test(
     const journal = JSON.parse(
       await readFile(new URL('../../drizzle/meta/_journal.json', import.meta.url), 'utf8'),
     );
+    await sql`DROP FUNCTION owner_repayment_overdue(uuid)`;
     await migrateWithDrizzle(fixture.url, journal.entries[75].when);
     assert.deepEqual(
       (

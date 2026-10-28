@@ -162,9 +162,12 @@ export async function getHotelAvailability(database, { rentableId, checkIn, chec
   return withListingSnapshot(database, rentableId, async (tx, listing) => {
     const data = await loadHotel(tx, listing, checkIn, checkOut, new Date(now));
     const { startsAt } = stayInstants({ checkIn, checkOut, ...data.hotel });
+    // Story 2.20: an overdue owner shows no bookable rooms; the reason stays generic for guests.
+    const [{ stopped }] = await tx`SELECT owner_repayment_overdue(${listing.client_id}) stopped`;
     return {
       checkIn, checkOut, nights: nights.length, rooms: split?.length ?? 1, party: split,
       roomTypes: data.roomTypes.map((roomType) => {
+        if (stopped) return { id: roomType.id, name: roomType.name, available: 0, reason: 'NOT_BOOKABLE', plans: [] };
         const { available, reason } = availabilityFor(data, roomType, nights);
         const party = split ?? [{ adults: Math.min(roomType.baseOccupancy, roomType.maxAdults), childAges: [] }];
         return {

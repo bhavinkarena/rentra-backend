@@ -103,7 +103,9 @@ export const evidenceVideo = asyncHandler(async (req, res) => {
 });
 
 /** Stories 1.6/1.7: the signed-in reviewer's own alerts. */
-export const alerts = asyncHandler(async (req, res) => ok(res, await listAdminAlerts(sql, req.admin.id)));
+export const alerts = asyncHandler(async (req, res) =>
+  ok(res, await listAdminAlerts(sql, req.admin.id)),
+);
 export const readAlert = asyncHandler(async (req, res) =>
   ok(res, await markAdminAlertRead(sql, { adminId: req.admin.id, alertId: req.params.alertId })),
 );

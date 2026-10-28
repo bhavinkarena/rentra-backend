@@ -149,8 +149,14 @@ const ADVISORY_CODES = [
   'INVENTORY_REMEDIATION_REQUIRED',
   'SCHEDULE_UNAVAILABLE',
   'LISTING_UNAVAILABLE',
+  'OWNER_REPAYMENT_OVERDUE',
   'UNSUPPORTED_INVENTORY',
 ];
+/** Story 2.20: an overdue owner reads as "not taking bookings"; owner debt is never named. */
+const advisoryMessage = (error, fallback) =>
+  error.code === 'OWNER_REPAYMENT_OVERDUE'
+    ? 'This place is not taking bookings right now.'
+    : fallback;
 /** Selection problems a guest can fix (wrong activity, too many players, unpriced). */
 const TIME_SELECTION_CODES = [
   'ACTIVITY_UNAVAILABLE',
@@ -184,7 +190,7 @@ async function hourlyAvailability(req, res, listingId) {
       timeZone: BOOKING_POLICY.timeZone,
       advisory: true,
       days: {},
-      message: 'The venue needs to confirm its booking hours.',
+      message: advisoryMessage(error, 'The venue needs to confirm its booking hours.'),
     });
   }
 }
@@ -220,7 +226,7 @@ export const times = asyncHandler(async (req, res) => {
       timeZone: BOOKING_POLICY.timeZone,
       advisory: true,
       times: [],
-      message: 'The venue needs to confirm its booking hours.',
+      message: advisoryMessage(error, 'The venue needs to confirm its booking hours.'),
     });
   }
 });
@@ -271,6 +277,7 @@ export const availability = asyncHandler(async (req, res) => {
       'INVENTORY_REMEDIATION_REQUIRED',
       'SCHEDULE_UNAVAILABLE',
       'LISTING_UNAVAILABLE',
+      'OWNER_REPAYMENT_OVERDUE',
       'UNSUPPORTED_INVENTORY',
     ].includes(error.code);
 
@@ -282,7 +289,7 @@ export const availability = asyncHandler(async (req, res) => {
       timeZone: BOOKING_POLICY.timeZone,
       advisory: true,
       days: {},
-      message: 'The owner needs to confirm the booking calendar.',
+      message: advisoryMessage(error, 'The owner needs to confirm the booking calendar.'),
     });
   }
 });
@@ -293,18 +300,34 @@ export const suggest = asyncHandler(async (req, res) =>
 );
 
 /** Inventory and party problems a guest can fix by changing dates, rooms or guests. */
-const STAY_CHOICE_CODES = ['ROOMS_INVALID', 'SOLD_OUT', 'ROOM_UNAVAILABLE', 'MIN_NIGHTS', 'CLOSED', 'OCCUPANCY', 'DATES_INVALID', 'OUTSIDE_BOOKING_WINDOW', 'NOT_BOOKABLE'];
+const STAY_CHOICE_CODES = [
+  'ROOMS_INVALID',
+  'SOLD_OUT',
+  'ROOM_UNAVAILABLE',
+  'MIN_NIGHTS',
+  'CLOSED',
+  'OCCUPANCY',
+  'DATES_INVALID',
+  'OUTSIDE_BOOKING_WINDOW',
+  'NOT_BOOKABLE',
+];
 
 async function hotelRef(code) {
   const ref = await getListingRefByCode(code);
   if (!ref) throw notFound('LISTING_NOT_FOUND', 'Not found.');
-  if (ref.rentalUnit !== 'night') throw badRequest('UNSUPPORTED_INVENTORY', 'This listing is not a hotel.');
+  if (ref.rentalUnit !== 'night')
+    throw badRequest('UNSUPPORTED_INVENTORY', 'This listing is not a hotel.');
   return ref;
 }
 
 function stayError(error) {
-  if (error instanceof HotelError && error.code === 'NOT_FOUND') return notFound('LISTING_NOT_FOUND', 'Not found.');
-  if (error instanceof HotelError) return conflict(STAY_CHOICE_CODES.includes(error.code) ? error.code : 'STAY_UNAVAILABLE', error.message);
+  if (error instanceof HotelError && error.code === 'NOT_FOUND')
+    return notFound('LISTING_NOT_FOUND', 'Not found.');
+  if (error instanceof HotelError)
+    return conflict(
+      STAY_CHOICE_CODES.includes(error.code) ? error.code : 'STAY_UNAVAILABLE',
+      error.message,
+    );
   return unavailable('AVAILABILITY_UNAVAILABLE', 'Rooms are temporarily unavailable.');
 }
 
@@ -315,13 +338,21 @@ function stayError(error) {
 export const rooms = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'no-store');
   const { filters, errors } = parseDiscoveryQuery({ ...req.query, vertical: 'hotel' });
-  if (errors.length || !filters.checkin) throw badRequest('BAD_STAY', errors[0] ?? 'Choose check-in and check-out dates.');
+  if (errors.length || !filters.checkin)
+    throw badRequest('BAD_STAY', errors[0] ?? 'Choose check-in and check-out dates.');
   const ref = await hotelRef(req.params.code);
   try {
-    return ok(res, await getHotelAvailability(sql, {
-      rentableId: ref.id, checkIn: filters.checkin, checkOut: filters.checkout,
-      rooms: filters.rooms, adults: filters.adults, childAges: filters.children,
-    }));
+    return ok(
+      res,
+      await getHotelAvailability(sql, {
+        rentableId: ref.id,
+        checkIn: filters.checkin,
+        checkOut: filters.checkout,
+        rooms: filters.rooms,
+        adults: filters.adults,
+        childAges: filters.children,
+      }),
+    );
   } catch (error) {
     throw stayError(error);
   }

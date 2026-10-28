@@ -52,6 +52,9 @@ export async function decideBookingRequest(database, ownerId, { orderId, approve
       throw new InventoryError('LISTING_PAUSED', 'Bookings are paused. Resume bookings to accept this request, or decline it.');
     if (approve && listing.status !== 'live')
       throw new InventoryError('APPROVAL_UNAVAILABLE', 'This property is not taking bookings right now. You can still decline the request.');
+    // Story 2.20: an overdue Test repayment stops approvals on every listing; declining stays open.
+    if (approve && (await tx`SELECT owner_repayment_overdue(${ownerId}) o`)[0].o)
+      throw new InventoryError('OWNER_REPAYMENT_OVERDUE', 'New bookings are stopped because a Test repayment is overdue. You can still decline the request.');
     if (approve) {
       const [visit] = await tx`SELECT min(starts_at) starts_at FROM booking WHERE order_id=${orderId}`;
       let payBy;

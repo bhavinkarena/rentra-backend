@@ -59,7 +59,7 @@ async function hasBookableDate(database, properties) {
         }
       }
     } catch (error) {
-      if (!['SCHEDULE_UNAVAILABLE','INVENTORY_NOT_READY','LISTING_UNAVAILABLE','ACTIVITY_UNAVAILABLE','PRICE_MISSING'].includes(error.code)) throw error;
+      if (!['SCHEDULE_UNAVAILABLE','INVENTORY_NOT_READY','LISTING_UNAVAILABLE','OWNER_REPAYMENT_OVERDUE','ACTIVITY_UNAVAILABLE','PRICE_MISSING'].includes(error.code)) throw error;
     }
   }
   return null;

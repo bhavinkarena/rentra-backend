@@ -6,6 +6,7 @@ import { getListingByCode } from '../services/db/queries.js';
 import { saveBookingConfiguration } from '../services/booking/owner-settings.js';
 import { visitMoneyMinor } from '../services/domain/booking-money.js';
 import { z } from 'zod';
+import { ownerRepaymentStatus } from '../services/finance/owner-repayment.js';
 import { unprocessable } from '../utils/apiError.js';
 import {
   createListingFromBasics,
@@ -53,9 +54,18 @@ import {
 } from '@/services/booking/owner-cancel-upcoming.js';
 
 /** The partner's own listings. Ownership is enforced by passing the client id. */
-export const summary = asyncHandler(async (req, res) =>
-  ok(res, await getClientListingSummary(req.user.id)),
-);
+export const summary = asyncHandler(async (req, res) => {
+  const [data, debt] = await Promise.all([
+    getClientListingSummary(req.user.id),
+    ownerRepaymentStatus(sql, req.user.id),
+  ]);
+  // Story 2.20: derived owner-wide restriction for the dashboard banner.
+  return ok(res, {
+    ...data,
+    repaymentOverdue: debt.overdue,
+    repaymentOutstandingMinor: debt.outstandingMinor,
+  });
+});
 
 export const page = asyncHandler(async (req, res) =>
   ok(res, await getClientListingsPage(req.user.id, req.valid?.query ?? req.query)),
@@ -196,7 +206,10 @@ export const pricePreview = asyncHandler(async (req, res) => {
     .parse(req.body);
   // Story 2.2: the owner previews what guests pay with the fee in force for this owner.
   const fee = await resolveServiceFee(sql, req.user.id);
-  return ok(res, { ...visitMoneyMinor({ baseRentMinor: input.rentMinor, depositMinor: 0, feeBps: fee.bps }), feeBps: fee.bps });
+  return ok(res, {
+    ...visitMoneyMinor({ baseRentMinor: input.rentMinor, depositMinor: 0, feeBps: fee.bps }),
+    feeBps: fee.bps,
+  });
 });
 
 export const photoSign = policyAction(signPhoto);

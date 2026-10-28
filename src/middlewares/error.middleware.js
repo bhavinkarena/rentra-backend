@@ -28,6 +28,8 @@ const DOMAIN_ERRORS = {
   INVENTORY_REMEDIATION_REQUIRED: [409, 'The owner needs to confirm the booking calendar.'],
   SCHEDULE_UNAVAILABLE: [409, 'The owner needs to confirm the booking calendar.'],
   LISTING_UNAVAILABLE: [409, 'This place is not taking bookings right now.'],
+  // Story 2.20: guests must not learn about owner debt; owners see it on their banners.
+  OWNER_REPAYMENT_OVERDUE: [409, 'This property is not taking bookings right now.'],
   LISTING_PAUSED: [409, 'Bookings are paused. Resume bookings to accept this request, or decline it.'],
   APPROVAL_UNAVAILABLE: [409, 'This property is not taking bookings right now. You can still decline the request.'],
   UNSUPPORTED_INVENTORY: [409, 'This place is not taking bookings right now.'],
@@ -57,6 +59,8 @@ const INFRA_ERRORS = {
   LIMIT_UNEXPECTED_FILE: [400, 'UNEXPECTED_FILE', 'Unexpected file field.'],
   ECONNREFUSED: [503, 'DATABASE_UNAVAILABLE', 'Temporarily unavailable. Please try again.'],
   ETIMEDOUT: [503, 'UPSTREAM_TIMEOUT', 'Temporarily unavailable. Please try again.'],
+  // Story 2.20: the 0083 booking_order backstop trigger (custom SQLSTATE); never names owner debt.
+  RN001: [409, 'LISTING_UNAVAILABLE', 'This property is not taking bookings right now.'],
 };
 
 export function notFoundHandler(req, res) {
@@ -87,7 +91,9 @@ export function errorHandler(error, req, res, next) {
   const domain = DOMAIN_ERRORS[error?.code];
   if (domain) {
     const [status, message] = domain;
-    return fail(res, { status, code: error.code, message });
+    // Story 2.20: the public code never names owner debt.
+    const code = error.code === 'OWNER_REPAYMENT_OVERDUE' ? 'LISTING_UNAVAILABLE' : error.code;
+    return fail(res, { status, code, message });
   }
 
   const infra = INFRA_ERRORS[error?.code];
