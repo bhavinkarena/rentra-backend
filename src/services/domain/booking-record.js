@@ -2,6 +2,11 @@ export const bookingMoney = value => value == null ? 'Not recorded' : new Intl.N
 export function bookingTime(value, timeZone = 'Asia/Kolkata') {
   return value ? new Intl.DateTimeFormat('en-IN', { timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : 'Exact hours not recorded';
 }
+// Story 2.16: mirror the frontend money labels (Rentra/lib/domain/owner-earnings.js).
+const ENVIRONMENT = { test: 'Test', simulated: 'Simulation', legacy_unknown: 'Legacy' };
+const GUEST_PAYMENT = { paid: 'Paid in full', partial: 'Part paid', unpaid: 'Not paid' };
+const REFUND = { none: 'No refunds', in_progress: 'Refund in progress', needs_review: 'Refund needs review', refunded: 'Refunded' };
+const PAYOUT = { not_started: 'Not started', scheduled: 'Scheduled', processing: 'Processing', needs_check: 'Being checked', paid: 'Paid', failed: 'Failed', on_hold: 'On hold' };
 const SLOT_LABELS = { day: 'Day visit', night: 'Overnight', full_day: 'Full day' };
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -68,11 +73,24 @@ export function bookingSummary(record) {
     if (d?.gstin) lines.push(`GST invoice to: ${d.businessName} (GSTIN ${d.gstin})`);
   }
   lines.push('', `Accepted rent: ${bookingMoney(record.rentMinor)}; fee: ${bookingMoney(record.feeMinor)}; separate deposit: ${bookingMoney(record.depositMinor)}`, '', 'PAYMENT RECORDS');
-  for (const p of record.payments) lines.push(`${p.provider} ${p.environment} | ${p.state} | ${p.providerOrderId || 'Provider reference pending'}`,
-    `Verified ${p.environment} capture: ${bookingMoney(p.capturedMinor)}; ${p.environment} refunded: ${bookingMoney(p.refundedMinor)}; actual bank collection: ${bookingMoney(p.actualBankMinor)}`);
-  if (!record.payments.length) lines.push('No verified payment record. Historical reported amounts are not proof of collection.');
-  for (const p of record.payments) for (const refund of p.refunds || []) lines.push(`${p.environment} refund ${refund.state}: requested ${bookingMoney(refund.expectedMinor)}; completed ${bookingMoney(refund.actualMinor)}${p.environment === 'test' ? '; actual bank refund: ₹0' : ''}`);
-  if (record.payments.some(p => p.environment === 'test')) lines.push('TEST PAYMENT: no actual bank money was collected by the Test gateway.');
+  const payments = record.payments ?? [];
+  const notLive = 'Not applicable (not live)';
+  if (record.guestPayment) {
+    // Owner: guest summary and own payout state only, never provider internals.
+    const g = record.guestPayment, label = ENVIRONMENT[g.environment];
+    lines.push(`Guest payment${label ? ` (${label})` : ''}: ${GUEST_PAYMENT[g.state] ?? 'Not recorded'}; received ${bookingMoney(g.receivedMinor)} of ${bookingMoney(g.dueMinor)}`,
+      `Guest refunds: ${REFUND[g.refund.state] ?? 'Not recorded'}; requested ${bookingMoney(g.refund.requestedMinor)}; refunded ${bookingMoney(g.refund.refundedMinor)}`);
+    if (g.mixedEnvironments) lines.push('Other test payments exist.');
+    for (const v of record.visits) lines.push(`Your payout ${v.reference}: ${PAYOUT[v.payout?.state] ?? 'Not recorded'}${v.payout?.amountMinor != null ? ` ${bookingMoney(v.payout.amountMinor)}` : ''}${ENVIRONMENT[v.payout?.environment] ? ` (${ENVIRONMENT[v.payout.environment]})` : ''}`);
+  } else {
+    for (const p of payments) lines.push(`${p.provider} ${p.environment}${ENVIRONMENT[p.environment] ? ` (${ENVIRONMENT[p.environment]})` : ''} | ${p.state} | ${p.providerOrderId || 'Provider reference pending'}`,
+      `Verified ${p.environment} capture: ${bookingMoney(p.capturedMinor)}${p.simulatedMinor != null ? `; Simulation amount (not money): ${bookingMoney(p.simulatedMinor)}` : ''}; ${p.environment} refunded: ${bookingMoney(p.refundedMinor)}; actual bank collection: ${p.environment !== 'live' ? notLive : bookingMoney(p.actualBankMinor)}`);
+    if (!payments.length) lines.push('No verified payment record. Historical reported amounts are not proof of collection.');
+    for (const p of payments) for (const refund of p.refunds || []) lines.push(`${p.environment} refund ${refund.state}: requested ${bookingMoney(refund.expectedMinor)}; completed ${bookingMoney(refund.actualMinor)}${p.environment !== 'live' ? `; actual bank refund: ${notLive}` : ''}`);
+  }
+  const environments = record.guestPayment ? [record.guestPayment.environment] : payments.map(p => p.environment);
+  if (environments.includes('test')) lines.push('TEST PAYMENT: no actual bank money was collected by the Test gateway.');
+  if (environments.includes('simulated')) lines.push('SIMULATION: no money was collected.');
   lines.push('', `Cancellation: ${record.policy.cancellationTier || 'Not recorded'}; policy ${record.policy.version || 'Not recorded'}`, ...record.policy.houseRules);
   // Arrival/contact instructions remain on the authenticated page, not in a portable receipt.
   return lines.join('\n') + '\n';

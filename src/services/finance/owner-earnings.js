@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { badRequest } from '@/utils/apiError.js';
 import { authorize, ledger } from './statements.js';
 import { maskedDestination } from '../domain/payout-destinations.js';
+import { payoutStates, NOT_STARTED } from './payout-state.js';
 
 const monthNow = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 7);
 export function earningsFilters(query = {}) {
@@ -71,6 +72,7 @@ export async function readOwnerEarnings(tx, actor, chosen, { all = false } = {})
     tx`SELECT DISTINCT l.rentable_id id,l.title FROM (${ledger(tx)}) l WHERE l.owner_id=${actor.id} AND l.component='rent' ORDER BY l.title,l.rentable_id`,
     ownerPayoutStatus(tx,actor),
   ]);
+  const payouts = await payoutStates(tx, rows.map(r => r.id));
   return {
     filters, pages, count: summary.count, timeZone: 'Asia/Kolkata', currency: 'INR', asOf: new Date().toISOString(),
     basis: 'Rent recorded in this IST calendar month, with current visit and refund outcomes.',
@@ -84,6 +86,7 @@ export async function readOwnerEarnings(tx, actor, chosen, { all = false } = {})
       refundedMinor:r.refunded_minor, refundPendingMinor:r.refund_pending_minor,
       recordedAt:new Date(r.recorded_at).toISOString(), earningLineIds:r.earning_line_ids,
       bookingLinkAvailable:r.booking_link_available,
+      payoutState:(payouts.get(r.id) ?? NOT_STARTED).state,
     })),
   };
 }

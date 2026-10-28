@@ -15,6 +15,7 @@ import { normalizePublicPhotos } from '../domain/listing-content.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
 import { visitEvidenceRecords } from './visit-evidence.js';
 import { casesForOrder } from './booking-cases.js';
+import { payoutStates, NOT_STARTED } from '../finance/payout-state.js';
 
 export class BookingRecordError extends Error {
   constructor() { super('Booking not found or unavailable'); this.code = 'BOOKING_NOT_FOUND'; }
@@ -238,9 +239,11 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       if (actor.kind !== 'customer') visit.incidents = records.incidents.get(visit.id) ?? [];
       visit.reviewEligible = visit.state === 'completed' && visit.provenance === 'real' && visit.evidence.some(p => p.kind === 'complete' && p.nature === 'actual');
     }
-    const payments = await tx`SELECT p.id,p.provider,p.environment,p.mode,p.state,p.purpose,p.provider_order_id,p.expected_minor,
-      coalesce((SELECT sum(t.captured_minor) FROM payment_transaction t JOIN payment_attempt a ON a.id=t.attempt_id
-        WHERE a.payment_order_id=p.id AND t.kind='capture' AND t.outcome='succeeded' AND t.verified_at IS NOT NULL),0)::text captured_minor,
+    let payments = await tx`SELECT p.id,p.provider,p.environment,p.mode,p.state,p.purpose,p.provider_order_id,p.expected_minor,
+      (SELECT sum(t.captured_minor) FROM payment_transaction t JOIN payment_attempt a ON a.id=t.attempt_id
+        WHERE a.payment_order_id=p.id AND t.kind='capture' AND t.outcome='succeeded' AND t.verified_at IS NOT NULL)::text captured_minor,
+      (SELECT sum(t.simulated_minor) FROM payment_transaction t JOIN payment_attempt a ON a.id=t.attempt_id
+        WHERE a.payment_order_id=p.id AND t.kind='simulated' AND t.outcome='succeeded' AND t.verified_at IS NOT NULL)::text simulated_minor,
       coalesce((SELECT sum(f.actual_minor) FROM refund f JOIN payment_transaction t ON t.id=f.transaction_id JOIN payment_attempt a ON a.id=t.attempt_id
         WHERE a.payment_order_id=p.id AND f.state='succeeded'),0)::text refunded_minor,
       (SELECT jsonb_agg(jsonb_build_object('state',f.state,'expectedMinor',f.expected_minor,'actualMinor',f.actual_minor,'providerRefundId',f.provider_refund_id,'needsReview',EXISTS(SELECT 1 FROM refund_execution e WHERE e.refund_id=f.id AND e.failure_code IS NOT NULL)))
@@ -281,16 +284,44 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     } : null;
     const rebookHref = actor.kind === 'customer' ? await hourlyRebookHref(tx, order.id) : null;
     const earningLines = actor.kind==='owner' ? await tx`SELECT l.id,l.booking_id FROM (${ledger(tx)}) l WHERE l.order_id=${order.id} AND l.owner_id=${actor.id} AND l.component='rent' ORDER BY l.created_at,l.id` : [];
-    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note,earningLines:earningLines.map(r=>({id:r.id,visitId:r.booking_id}))}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(stay ? { stay } : {}), ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.rentMinor,0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+v.feeMinor,0)}:{}),
+    const sum = (list, pick) => list.reduce((n, x) => n + (pick(x) ?? 0), 0);
+    if (actor.kind === 'owner') {
+      const payouts = await payoutStates(tx, visits.map(v => v.id));
+      for (const visit of visits) visit.payout = payouts.get(visit.id) ?? NOT_STARTED;
+    }
+    // Story 2.16: the owner sees whether the guest paid and how refunds stand, never provider internals.
+    const guestPayment = () => {
+      // Sums stay within the latest payment's environment; other environments are only flagged.
+      const environment = payments.at(-1)?.environment ?? null;
+      const all = payments;
+      payments = payments.filter(p => p.environment === environment);
+      const paid = payments.filter(p => p.captured_minor != null || p.simulated_minor != null);
+      const refunds = payments.flatMap(p => p.refunds || []);
+      // The amount the guest was asked to pay (covers hotel tax too); retries repeat it, never add to it.
+      const due = payments.length ? Math.max(...payments.map(p => Number(p.expected_minor))) : null;
+      const receivedMinor = paid.length ? sum(paid, p => Number(p.captured_minor ?? 0) + Number(p.simulated_minor ?? 0)) : null;
+      const open = refunds.filter(f => f.state !== 'failed' || f.needsReview);
+      return {
+        state: receivedMinor == null ? 'unpaid' : due != null && receivedMinor >= due ? 'paid' : 'partial',
+        environment, mixedEnvironments: all.length !== payments.length, dueMinor: due, receivedMinor,
+        refund: {
+          state: open.some(f => f.needsReview || f.state === 'unknown') ? 'needs_review'
+            : open.some(f => ['requested', 'processing'].includes(f.state)) ? 'in_progress' : open.length ? 'refunded' : 'none',
+          requestedMinor: sum(open, f => Number(f.expectedMinor)),
+          refundedMinor: sum(refunds.filter(f => f.state === 'succeeded'), f => Number(f.actualMinor)),
+        },
+      };
+    };
+    return { ...orderDTO(order), ...(actor.kind==='owner'?{ownerNote:order.owner_note,earningLines:earningLines.map(r=>({id:r.id,visitId:r.booking_id}))}:{}), vertical, ...(rebookHref ? { rebookHref } : {}), ...(relationships ? {relationships} : {}), visits, arrival, cases, ...(stay ? { stay } : {}), ...(actor.kind==='owner'?{rentMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+(v.rentMinor??0),0),feeMinor:visits.filter(v=>v.state!=='cancelled').reduce((n,v)=>n+(v.feeMinor??0),0)}:{}),
       contact: actor.kind==='customer' || operationalContact ? { name: order.listing_snapshot?.contact?.name || null, phone: order.listing_snapshot?.contact?.phone || null } : { name:null,phone:null,withheld:true },
       purpose: order.listing_snapshot?.purpose || null,
       policy: { publications: order.policy_snapshot?.publications || null, version: order.policy_version, cancellationTier: order.policy_snapshot?.cancellationTier || null,
         houseRules: houseRuleLines(order.policy_snapshot?.houseRules) },
       events: events.map(row => ({ kind: /^depart_[a-f0-9]{32}$/.test(row.kind) ? 'rooms_departed_early' : /^cancel_[a-f0-9]{32}$/.test(row.kind) ? 'visits_cancelled' : /^refund_[a-f0-9]{32}$/.test(row.kind) ? 'test_refund_processed'
         : /^visit_[a-f0-9]{32}$/.test(row.kind) ? (['handover','return','complete'].includes(row.phase) ? `visit_${row.phase}_recorded` : 'visit_evidence_recorded') : row.kind, at: instant(row.created_at) })),
-      payments: payments.map(p => ({ id: p.id, provider: p.provider, environment: p.environment, state: p.state, purpose: p.purpose,
-        providerOrderId: p.provider_order_id, expectedMinor: amount(p.expected_minor), capturedMinor: amount(p.captured_minor),
-        refundedMinor: amount(p.refunded_minor), actualBankMinor: p.environment === 'live' && p.mode === 'real' ? amount(p.captured_minor) : 0,
-        refunds: p.refunds || [], recoverable: p.recoverable })) };
+      ...(actor.kind === 'owner' ? { guestPayment: guestPayment() } : { payments: payments.map(p => ({ id: p.id, provider: p.provider, environment: p.environment, state: p.state, purpose: p.purpose,
+        providerOrderId: p.provider_order_id, expectedMinor: amount(p.expected_minor), capturedMinor: amount(p.captured_minor), simulatedMinor: amount(p.simulated_minor),
+        refundedMinor: amount(p.refunded_minor), actualBankMinor: p.environment === 'live' && p.mode === 'real' ? amount(p.captured_minor) : null,
+        refunds: p.refunds || [], recoverable: p.recoverable })) }) };
   });
 }

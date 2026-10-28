@@ -54,8 +54,12 @@ export const configuration = asyncHandler(async (_req, res) => {
 export const saveConfiguration = runAction(savePaymentGatewaySettings);
 
 /** CP19: payment investigation, separate from gateway settings. */
-export const orders = asyncHandler(async (req, res) => ok(res, await adminPaymentList(req.query)));
+export const orders = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  return ok(res, await adminPaymentList(req.query));
+});
 export const order = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
   const found = await adminPaymentDetail(req.params.id);
   if (!found) throw notFound('PAYMENT_NOT_FOUND', 'Not found.');
   return ok(res, found);
@@ -63,8 +67,12 @@ export const order = asyncHandler(async (req, res) => {
 export const reconcile = runAction(reconcileAdminPayment);
 
 /** CP20: refund operations queue, detail and guarded commands. */
-export const refunds = asyncHandler(async (req, res) => ok(res, await adminRefundList(req.query)));
+export const refunds = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  return ok(res, await adminRefundList(req.query));
+});
 export const refundDetail = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
   const found = await adminRefundDetail(req.params.id);
   if (!found) throw notFound('REFUND_NOT_FOUND', 'Not found.');
   return ok(res, found);

@@ -53,13 +53,15 @@ const kindOf = (req) => {
   return kind;
 };
 
-export const history = asyncHandler(async (req, res) =>
-  ok(res, await bookingHistoryPage(kindOf(req), req.query)),
-);
+export const history = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  return ok(res, await bookingHistoryPage(kindOf(req), req.query));
+});
 
-export const detail = asyncHandler(async (req, res) =>
-  ok(res, await bookingRecordPage(kindOf(req), req.params.id)),
-);
+export const detail = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  return ok(res, await bookingRecordPage(kindOf(req), req.params.id));
+});
 
 /**
  * The printable summary. `?calendar=1` returns the .ics calendar variant.
