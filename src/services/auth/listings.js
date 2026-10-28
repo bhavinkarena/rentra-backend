@@ -12,6 +12,7 @@ import { changePropertyPolicy } from '../booking/property-policy.js';
 import { changeHourlyRates } from '../booking/hourly-rates.js';
 import { saveVenueResources } from '../booking/venue.js';
 import { saveHotelProfile, saveHotelRates, saveHotelRooms } from '../booking/hotel-setup.js';
+import { pauseImpact } from '../booking/pause-impact.js';
 import {
   rentable, rentableAmenity, documents, users,
   category, city, area,
@@ -678,6 +679,15 @@ export async function submitListing(_prev, formData) {
 export async function toggleListingPause(_prev, formData) {
   const { user, listing } = await load(String(formData.get('id')));
 
+  // Story 2.14: an explicit action and the version the owner previewed. A repeated
+  // "pause" after success is a no-op instead of resuming; a changed property is refused.
+  const action = String(formData.get('action') || '');
+  if (action && !['pause', 'resume'].includes(action)) return { errors: { _: 'Choose pause or resume.' } };
+  if (action && listing.status === (action === 'pause' ? 'paused' : 'live'))
+    return { ok: true, status: listing.status, pausedUntil: listing.pausedUntil ?? null, replayed: true };
+  const expected = formData.get('expectedVersion');
+  if (expected != null && expected !== '' && Number(expected) !== listing.lifecycleVersion)
+    return { errors: { _: 'This property changed. Reload and preview again.' }, stale: true };
   const target = ownerPauseTarget(listing.status);
   if (target.error) return { errors: { _: target.error } };
   // PROP-05: an optional IST end date; the worker resumes on that day.
@@ -692,18 +702,26 @@ export async function toggleListingPause(_prev, formData) {
   // committed since then wins, and the owner is told to reload.
   const [moved] = await db.update(rentable).set({
     status: target.next, priorStatus: listing.status, pausedUntil: until || null, updatedAt: new Date(),
-  }).where(and(eq(rentable.id, listing.id), eq(rentable.status, listing.status)))
+  }).where(and(eq(rentable.id, listing.id), eq(rentable.status, listing.status),
+    eq(rentable.lifecycleVersion, listing.lifecycleVersion)))
     .returning({ id: rentable.id });
   if (!moved) {
-    const [now] = await db.select({ status: rentable.status }).from(rentable)
+    const [now] = await db.select({ status: rentable.status, pausedUntil: rentable.pausedUntil }).from(rentable)
       .where(eq(rentable.id, listing.id));
-    return { errors: { _: ownerPauseTarget(now?.status).error ?? 'This property changed. Reload and try again.' } };
+    // A concurrent identical request already did it: report that, not a conflict.
+    if (action && now?.status === target.next)
+      return { ok: true, status: now.status, pausedUntil: now.pausedUntil ?? null, replayed: true };
+    return { errors: { _: ownerPauseTarget(now?.status).error ?? 'This property changed. Reload and try again.' }, stale: true };
   }
 
   await audit({
     actorType: 'client', actorId: user.id, entity: 'rentable',
     entityId: listing.id, action: target.next === 'paused' ? 'listing_paused' : 'listing_resumed',
-    before: { status: listing.status }, after: { status: target.next, pausedUntil: until || null }, ip: await clientIp(),
+    before: { status: listing.status },
+    // Story 2.14: stop-new-only, with what it left in place at that moment.
+    after: { status: target.next, pausedUntil: until || null,
+      ...(target.next === 'paused' ? { mode: 'stop_new', retained: await retainedCounts(listing.id) } : {}) },
+    ip: await clientIp(),
   });
 
   // Pausing removes the listing from every surface that lists it, so this is
@@ -711,6 +729,39 @@ export async function toggleListingPause(_prev, formData) {
   revalidateListing(listing, { statusChanged: true });
 
   return { ok: true, status: target.next, pausedUntil: until || null };
+}
+
+async function retainedCounts(rentableId) {
+  // The pause is already committed; a failed count must not skip the audit or cache refresh.
+  const impact = await pauseImpact(sql, rentableId).catch(() => null);
+  if (!impact) return null;
+  return {
+    confirmedStays: impact.confirmedStays.total,
+    pendingRequests: impact.pendingRequests.length,
+    awaitingPayment: impact.awaitingPayment.length,
+  };
+}
+
+/** Story 2.14: what pausing would keep, for the owner's confirmation step. */
+export async function ownerPausePreview(database, ownerId, id) {
+  const [row] = await database`SELECT id, status::text AS status, lifecycle_version, paused_until FROM rentable
+    WHERE id=${id} AND client_id=${ownerId}`;
+  if (!row) throw notFound('LISTING_NOT_FOUND', 'That listing does not exist.');
+  const target = ownerPauseTarget(row.status);
+  return {
+    status: row.status,
+    version: row.lifecycle_version,
+    pausedUntil: row.paused_until,
+    canPause: target.next === 'paused',
+    canResume: target.next === 'live',
+    blockedReason: target.error ?? null,
+    ...(await pauseImpact(database, id)),
+    choices: [
+      { key: 'stop_new', available: true },
+      // Cancelling upcoming stays with their full refund is Story 2.15 and not offered yet.
+      { key: 'cancel_upcoming', available: false },
+    ],
+  };
 }
 
 /** PROP-05 worker job: owner pauses whose end date has arrived take bookings again. */

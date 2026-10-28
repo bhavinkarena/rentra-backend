@@ -28,6 +28,8 @@ const DOMAIN_ERRORS = {
   INVENTORY_REMEDIATION_REQUIRED: [409, 'The owner needs to confirm the booking calendar.'],
   SCHEDULE_UNAVAILABLE: [409, 'The owner needs to confirm the booking calendar.'],
   LISTING_UNAVAILABLE: [409, 'This place is not taking bookings right now.'],
+  LISTING_PAUSED: [409, 'Bookings are paused. Resume bookings to accept this request, or decline it.'],
+  APPROVAL_UNAVAILABLE: [409, 'This property is not taking bookings right now. You can still decline the request.'],
   UNSUPPORTED_INVENTORY: [409, 'This place is not taking bookings right now.'],
   DATES_UNAVAILABLE: [409, 'Those dates have just been taken.'],
   HOLD_EXPIRED: [410, 'Your hold expired. Please pick your dates again.'],

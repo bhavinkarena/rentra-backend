@@ -27,6 +27,7 @@ import {
   uploadOwnershipDocument,
   submitListing,
   toggleListingPause,
+  ownerPausePreview,
 } from '@/services/auth/listings.js';
 import {
   getClientListingSummary,
@@ -141,6 +142,10 @@ export const submit = (req, res, next) => {
   return submitAction(req, res, next);
 };
 export const togglePause = runAction(toggleListingPause);
+/** Story 2.14: what pausing keeps, before the owner confirms. */
+export const pausePreview = asyncHandler(async (req, res) =>
+  ok(res, await ownerPausePreview(sql, req.user.id, req.params.id)),
+);
 
 export const type = runAction(saveType);
 export const removeDraft = runAction(deleteDraft);

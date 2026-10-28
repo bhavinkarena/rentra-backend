@@ -32,6 +32,10 @@ export async function startCheckoutPayment(database, session, orderId, options =
     const scope = await paymentScope(tx, status.paymentOrderId);
     await resolvePinnedPaymentConfiguration(tx, scope.snapshot);
     if (scope.execution_state !== 'ready') return { scope, send:false };
+    // Story 2.14: a paused or restricted property dispatches no new payment in any vertical; the
+    // hold stays until it expires or the owner resumes. A payment already dispatched is only read,
+    // and a capture that still lands while paused is not confirmed (settlement refunds it).
+    if (listing.status !== 'live') throw new CheckoutError('LISTING_UNAVAILABLE');
     await tx`SELECT pg_advisory_xact_lock(73420,1)`;
     await requireNewPaymentConfiguration(tx, { expectedVersion:scope.config_version }, env);
     const [current] = await tx`SELECT state,hold_expires_at>clock_timestamp() active FROM booking_order WHERE id=${orderId}`;

@@ -293,6 +293,7 @@ router.post(
   formFields(),
   listings.submit,
 );
+router.get('/listings/:id/pause-preview', requireActiveClient, validate({ params: listingIdParam }), listings.pausePreview);
 router.post('/listings/:id/pause', requireActiveClient, formFields(), listings.togglePause);
 
 /* ---------------------------------------------------------------- *

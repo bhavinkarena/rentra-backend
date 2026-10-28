@@ -11,7 +11,7 @@ import { BOOKING_POLICY } from '../domain/booking-policy.js';
  */
 export async function listBookingRequests(database, ownerId) {
   const rows = await database`SELECT o.id, o.reference, o.hold_expires_at, o.amount_rent_minor::text rent_minor, o.created_at,
-      r.id rentable_id, r.title, u.name customer_name,
+      r.id rentable_id, r.title, r.status::text listing_status, u.name customer_name,
       min(b.starts_at) starts_at, max(b.ends_at) ends_at, max(b.guests) guests, count(b.id)::int visits,
       (array_agg(b.slot::text ORDER BY b.starts_at))[1] slot
     FROM booking_order o JOIN rentable r ON r.id=o.rentable_id JOIN "user" u ON u.id=o.customer_id
@@ -26,6 +26,9 @@ export async function listBookingRequests(database, ownerId) {
     startsAt: new Date(row.starts_at).toISOString(), endsAt: new Date(row.ends_at).toISOString(),
     rentMinor: row.rent_minor, requestedAt: new Date(row.created_at).toISOString(),
     respondBy: new Date(row.hold_expires_at).toISOString(),
+    // Story 2.14: while paused the owner can only decline.
+    canApprove: row.listing_status === 'live',
+    approveBlocked: row.listing_status === 'live' ? null : row.listing_status === 'paused' ? 'paused' : 'unavailable',
   }));
 }
 
@@ -44,6 +47,11 @@ export async function decideBookingRequest(database, ownerId, { orderId, approve
       throw new InventoryError('REQUEST_CLOSED', 'This request was already answered or has expired.');
     }
     const [{ now }] = await tx`SELECT clock_timestamp() AS now`;
+    // Story 2.14: a paused (or restricted) property takes no new approvals; declining stays open.
+    if (approve && listing.status === 'paused')
+      throw new InventoryError('LISTING_PAUSED', 'Bookings are paused. Resume bookings to accept this request, or decline it.');
+    if (approve && listing.status !== 'live')
+      throw new InventoryError('APPROVAL_UNAVAILABLE', 'This property is not taking bookings right now. You can still decline the request.');
     if (approve) {
       const [visit] = await tx`SELECT min(starts_at) starts_at FROM booking WHERE order_id=${orderId}`;
       let payBy;
