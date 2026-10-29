@@ -32,10 +32,10 @@ export function savedListingHref(path, selection) {
   // The same parameters a venue search card links with, so the time picker pre-fills.
   if (selection.kind === 'hourly') return `${path}?${new URLSearchParams({ activity: selection.activity, date: selection.date,
     duration: String(selection.durationMinutes), players: String(selection.guests), ...(selection.start ? { start: selection.start } : {}), ...(selection.resourceId ? { court: selection.resourceId } : {}) })}`;
-  return `${path}?${new URLSearchParams({ dates: selection.dates.join(','), slot: selection.slot, guests: String(selection.guests) })}`;
+  return `${path}?${new URLSearchParams({ dates: selection.dates.join(','), slot: selection.slot, guests: String(selection.guests), ...(selection.pets ? { pets: String(selection.pets) } : {}) })}`;
 }
 export function selectionFromSavedUrl(search, rentableId) {
   const query = new URLSearchParams(search);
   if (!query.has('dates')) return null;
-  return validSavedSelection({ rentableId, dates: query.get('dates').split(','), slot: query.get('slot'), guests: Number(query.get('guests')) }, rentableId);
+  return validSavedSelection({ rentableId, dates: query.get('dates').split(','), slot: query.get('slot'), guests: Number(query.get('guests')), ...(query.get('pets') ? { pets: Number(query.get('pets')) } : {}) }, rentableId);
 }

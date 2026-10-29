@@ -8,8 +8,13 @@ import { createDisposableDatabase } from '../helpers/disposable-db.js';
 import { seedReviewFixture, seedConfirmedBooking } from '../helpers/listing-review-fixture.js';
 import { fileBackedRazorpay, providerCaptures } from '../helpers/fake-razorpay.mjs';
 import { createBookingQuote } from '../../src/services/booking/quotes.js';
+import { searchDiscovery } from '../../src/services/db/discovery.js';
+import { parseDiscoveryQuery } from '../../src/services/domain/discovery.js';
 import { openBookingDates } from '../../src/services/booking/owner-settings.js';
-import { createCheckoutHold } from '../../src/services/booking/checkout.js';
+import {
+  createCheckoutHold,
+  releaseUnstartedCheckout,
+} from '../../src/services/booking/checkout.js';
 import {
   decideBookingRequest,
   listBookingRequests,
@@ -96,6 +101,72 @@ test(
           env,
         );
       };
+
+      // Story 3.9: declared pets need the guest's confirmation at hold; the order keeps the declaration.
+      const petDay = addLocalDays(propertyToday(), 14);
+      await openBookingDates(sql, f.owner, { rentableId: f.listing, from: petDay, to: petDay });
+      await sql`UPDATE rentable SET pet_policy=${sql.json({ status: 'allowed', maxPets: 2, types: ['dog'], maxSize: 'any', fee: { unit: 'per_stay', amount: 500 } })}, pet_policy_version=2 WHERE id=${f.listing}`;
+      const petQuote = await createBookingQuote(
+        sql,
+        { rentableId: f.listing, dates: [petDay], slot: 'day', guests: 2, pets: 1 },
+        { customerId: booked.customer, variables: env },
+      );
+      assert.equal(petQuote.visits[0].petMinor, 50000);
+      const petHold = (petsConfirmed) =>
+        createCheckoutHold(
+          sql,
+          session,
+          {
+            rentableId: f.listing,
+            quoteId: petQuote.id,
+            hash: petQuote.hash,
+            version: petQuote.version,
+            idempotencyKey: randomUUID(),
+            accepted: true,
+            ...(petsConfirmed ? { petsConfirmed } : {}),
+          },
+          env,
+        );
+      await assert.rejects(petHold(), { code: 'PETS_UNCONFIRMED' });
+      const petHeld = await petHold(true);
+      const [petOrder] =
+        await sql`SELECT policy_snapshot, amount_rent_minor FROM booking_order WHERE id=${petHeld.orderId}`;
+      assert.deepEqual(petOrder.policy_snapshot.pets, {
+        count: 1,
+        confirmed: true,
+        confirmation: 'My pets are dogs',
+        unit: 'per_stay',
+        amount: 500,
+        totalMinor: 50000,
+      });
+      assert.equal(petOrder.policy_snapshot.petPolicy.version, 2);
+      const [petVisit] =
+        await sql`SELECT slot_snapshot FROM booking WHERE order_id=${petHeld.orderId}`;
+      assert.equal(petVisit.slot_snapshot.petMinor, 50000);
+      await releaseUnstartedCheckout(sql, session, petHeld.orderId, env);
+      // Farm search: pets hide listings whose effective policy refuses them (saved, SQL NULL or JSON null + legacy flag).
+      const found = async (pets) =>
+        (
+          await searchDiscovery(parseDiscoveryQuery({ pets: String(pets) }).filters, null, sql)
+        ).items.some((i) => i.id === f.listing);
+      assert.equal(await found(0), true);
+      assert.equal(await found(2), true);
+      assert.equal(await found(3), false, 'over maxPets');
+      await sql`UPDATE rentable SET pet_policy='null'::jsonb, house_rules=house_rules || '{"petsAllowed":true}'::jsonb WHERE id=${f.listing}`;
+      assert.equal(await found(1), true, 'JSON null falls back to the legacy yes (1 pet)');
+      assert.equal(await found(2), false);
+      await sql`UPDATE rentable SET house_rules=house_rules || '{"petsAllowed":false}'::jsonb WHERE id=${f.listing}`;
+      assert.equal(await found(1), false, 'legacy no');
+      await sql`UPDATE rentable SET pet_policy=${sql.json({ status: 'not_allowed' })} WHERE id=${f.listing}`;
+      await assert.rejects(
+        createBookingQuote(
+          sql,
+          { rentableId: f.listing, dates: [petDay], slot: 'day', guests: 2, pets: 1 },
+          { customerId: booked.customer, variables: env },
+        ),
+        { code: 'PETS_NOT_ALLOWED' },
+      );
+      await sql`UPDATE rentable SET pet_policy=NULL WHERE id=${f.listing}`;
 
       // Instant book is the default for every property.
       const [{ instant_book }] = await sql`SELECT instant_book FROM rentable WHERE id=${f.listing}`;

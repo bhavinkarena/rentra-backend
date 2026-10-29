@@ -82,6 +82,8 @@ export function parseDiscoveryQuery(input = {}, today = propertyToday()) {
     slot: choose('slot', ['day', 'night', 'full_day'], 'night'),
     guests: number('guests', 1, 1, 500), min: number('min', null, 0, 100000000), max: number('max', null, 0, 100000000),
     bedrooms: number('bedrooms', null, 1, 50),
+    // Story 3.9: ordinary pets in the party (farm/villa and hotel; venues ignore it).
+    pets: number('pets', 0, 0, 5),
     verified: choose('verified', ['1'], ''),
     cancellation: choose('cancellation', ['flexible', 'moderate', 'strict'], ''),
     sort: 'recommended', page: number('page', 1, 1, 1000000),
@@ -139,6 +141,7 @@ export function parseDiscoveryQuery(input = {}, today = propertyToday()) {
     filters.mode = 'single';
     filters.guests = filters.players ?? 1;
     filters.bedrooms = null;
+    filters.pets = 0;
   }
   const amenityInput = input.amenities;
   if (filters.q.length > 100) errors.push('Use at most 100 characters for location or place.');
@@ -181,14 +184,15 @@ export function discoveryQuery(filters, changes = {}) {
   const timeBooked = values.vertical && values.vertical !== DEFAULT_VERTICAL && !stay;
   if (timeBooked || stay) params.set('vertical', values.vertical);
   const keys = stay
-    ? ['q', 'city', 'area', 'near', 'category', 'checkin', 'checkout', 'rooms', 'adults', 'children', 'min', 'max', 'freecancel', 'breakfast', 'couples', 'localid', 'rating', 'verified', 'sort', 'page', 'amenities']
+    ? ['q', 'city', 'area', 'near', 'category', 'checkin', 'checkout', 'rooms', 'adults', 'children', 'pets', 'min', 'max', 'freecancel', 'breakfast', 'couples', 'localid', 'rating', 'verified', 'sort', 'page', 'amenities']
     : timeBooked
     ? ['q', 'city', 'area', 'category', 'date', 'start', 'duration', 'players', 'indoor', 'min', 'max', 'verified', 'cancellation', 'sort', 'page', 'amenities']
-    : ['q', 'city', 'area', 'category', 'mode', 'slot', 'guests', 'min', 'max', 'bedrooms', 'verified', 'cancellation', 'sort', 'page', 'dates', 'amenities'];
+    : ['q', 'city', 'area', 'category', 'mode', 'slot', 'guests', 'pets', 'min', 'max', 'bedrooms', 'verified', 'cancellation', 'sort', 'page', 'dates', 'amenities'];
   if (timeBooked && values.dates?.length && values.date == null) values.date = values.dates[0];
   for (const key of keys) {
     let value = values[key];
     if (stay && ((key === 'rooms' && value === 1) || (key === 'adults' && value === 2))) continue;
+    if (key === 'pets' && !value) continue;
     if (Array.isArray(value)) value = value.join(',');
     if (value !== '' && value != null) params.set(key, String(value));
   }

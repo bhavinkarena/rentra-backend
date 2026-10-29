@@ -90,3 +90,12 @@ test('search cards include ordered public galleries for both verticals', async (
     assert.equal(card.photoCount, 2);
   }
 });
+
+test('Story 3.9: pets are a 0-5 party param kept for stays and dropped for venues', () => {
+  assert.equal(parseDiscoveryQuery({ pets: '2' }).filters.pets, 2);
+  assert.equal(parseDiscoveryQuery({ vertical: 'hotel', pets: '1' }).filters.pets, 1);
+  assert.equal(parseDiscoveryQuery({}).filters.pets, 0);
+  assert.equal(parseDiscoveryQuery({ pets: '6' }).errors.length, 1);
+  assert.match(discoveryQuery(parseDiscoveryQuery({ pets: '2' }).filters), /pets=2/);
+  assert.doesNotMatch(discoveryQuery(parseDiscoveryQuery({}).filters), /pets/);
+});

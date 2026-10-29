@@ -51,7 +51,14 @@ export async function getDiscoveryRegistry(database = sql) {
   return value;
 }
 
-const unavailable = new Set(['INVENTORY_NOT_READY', 'INVENTORY_REMEDIATION_REQUIRED', 'SCHEDULE_UNAVAILABLE', 'LISTING_UNAVAILABLE', 'OWNER_REPAYMENT_OVERDUE', 'UNSUPPORTED_INVENTORY', 'SLOT_UNAVAILABLE', 'CAPACITY_EXCEEDED', 'AVAILABILITY_CONFLICT', 'NOT_FOUND']);
+/**
+ * Story 3.9: the effective pet policy (saved, else the legacy yes/no flag, which allows 1) takes `pets`.
+ * Mirrors effectivePetPolicy + petProblem; the quote still decides.
+ */
+const petsFit = (database, legacy, pets) => database`(CASE WHEN r.pet_policy IS NULL OR jsonb_typeof(r.pet_policy)<>'object' THEN COALESCE((${legacy})='true', false) AND ${pets}::int <= 1
+  ELSE r.pet_policy->>'status'='allowed' AND (r.pet_policy->>'maxPets')::int >= ${pets}::int END)`;
+
+const unavailable = new Set(['INVENTORY_NOT_READY', 'INVENTORY_REMEDIATION_REQUIRED', 'SCHEDULE_UNAVAILABLE', 'LISTING_UNAVAILABLE', 'OWNER_REPAYMENT_OVERDUE', 'UNSUPPORTED_INVENTORY', 'SLOT_UNAVAILABLE', 'CAPACITY_EXCEEDED', 'AVAILABILITY_CONFLICT', 'NOT_FOUND', 'PETS_NOT_ALLOWED', 'PETS_OVER_LIMIT']);
 
 /**
  * Story 3.1: a zero-result page also carries `meta.inventory`, the live count for the
@@ -138,6 +145,7 @@ async function searchDiscoveryResults(filters, route = null, database = sql, reg
         AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area}) AND (${!category} OR cat.slug=${category})
         AND (${!filters.q} OR a.name ILIKE ${term} OR c.name ILIKE ${term} OR r.title ILIKE ${term})
         AND (${!filters.cancellation} OR r.cancellation_tier::text=${filters.cancellation})
+        AND (${!filters.pets} OR ${petsFit(database, database`r.house_rules->>'petsAllowed'`, filters.pets)})
         AND NOT EXISTS (SELECT 1 FROM unnest(${amenities}::text[]) wanted(slug) WHERE NOT EXISTS (
           SELECT 1 FROM rentable_amenity ra JOIN amenity am ON am.id=ra.amenity_id
           WHERE ra.rentable_id=r.id AND am.slug=wanted.slug AND am.is_active=true))
@@ -148,7 +156,7 @@ async function searchDiscoveryResults(filters, route = null, database = sql, reg
         if (filters.verified === '1' && !row.physically_verified) return null;
         let selection = null, totals = null;
         if (filters.dates.length) {
-          selection = { rentableId: row.id, dates: filters.dates, slot: filters.slot, guests: filters.guests };
+          selection = { rentableId: row.id, dates: filters.dates, slot: filters.slot, guests: filters.guests, ...(filters.pets ? { pets: filters.pets } : {}) };
           try { totals = (await previewBookingQuote(database, selection)).totals; }
           catch (error) {
             if (error instanceof RangeError || unavailable.has(error.code)) return null;
@@ -293,7 +301,7 @@ async function searchHotels({ filters, city, area, category, amenities, policy, 
   const rows = await database`
     SELECT r.id,r.slug,r.public_code,r.title,r.highlight,r.photos,r.created_at,r.rating_avg,r.review_count,
       (r.verified_at IS NOT NULL AND EXISTS (SELECT 1 FROM verification_visit vv WHERE vv.rentable_id=r.id AND vv.mode='physical' AND vv.outcome='passed' AND vv.completed_at IS NOT NULL)) AS physically_verified,
-      a.name AS area_name,c.name AS city_name,cat.name AS category_name,hp.star_rating,hp.policies,
+      a.name AS area_name,c.name AS city_name,cat.name AS category_name,hp.star_rating,hp.policies,r.pet_policy,
       ${HOTEL_FROM_MINOR(database)} AS from_minor,
       hp.show_exact_address,r.location,a.centre
     FROM rentable r JOIN hotel_profile hp ON hp.rentable_id=r.id
@@ -306,6 +314,7 @@ async function searchHotels({ filters, city, area, category, amenities, policy, 
       AND (${!landmark} OR (c.id=${landmark?.cityId ?? null}::uuid AND r.location IS NOT NULL))
       AND (${!filters.q} OR a.name ILIKE ${term} OR c.name ILIKE ${term} OR r.title ILIKE ${term})
       AND (${!couples} OR hp.policies->>'couples'='true') AND (${!localId} OR hp.policies->>'localId'='true')
+      AND (${!filters.pets} OR ${petsFit(database, database`hp.policies->>'pets'`, filters.pets)})
       AND (${!filters.rating} OR r.rating_avg>=${filters.rating || 0}::numeric)
       AND (${filters.verified !== '1'} OR (r.verified_at IS NOT NULL AND EXISTS (SELECT 1 FROM verification_visit vv
         WHERE vv.rentable_id=r.id AND vv.mode='physical' AND vv.outcome='passed' AND vv.completed_at IS NOT NULL)))
@@ -326,8 +335,8 @@ async function searchHotels({ filters, city, area, category, amenities, policy, 
   const candidates = landmark ? rows.filter(row => row.distance_km != null && row.distance_km <= NEAR_KM) : rows;
   const dated = Boolean(filters.checkin);
   const stay = dated ? { checkIn: filters.checkin, checkOut: filters.checkout, rooms: filters.rooms, adults: filters.adults, childAges: filters.children } : null;
-  const offers = dated ? await hotelSearchOffers(database, candidates.map(row => ({ id: row.id })), {
-    ...stay, freeCancel: filters.freecancel === '1', breakfast: filters.breakfast === '1',
+  const offers = dated ? await hotelSearchOffers(database, candidates.map(row => ({ id: row.id, pet_policy: row.pet_policy })), {
+    ...stay, pets: filters.pets, freeCancel: filters.freecancel === '1', breakfast: filters.breakfast === '1',
   }) : null;
   const guests = `${filters.adults} adult${filters.adults === 1 ? '' : 's'}${filters.children.length ? `, ${filters.children.length} child${filters.children.length === 1 ? '' : 'ren'}` : ''}`;
   const cards = [];
@@ -339,7 +348,7 @@ async function searchHotels({ filters, city, area, category, amenities, policy, 
     const perNight = offer ? price / offer.nights / filters.rooms : price;
     if (filters.min != null && perNight < filters.min || filters.max != null && perNight > filters.max) continue;
     const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME, title: row.title, place: `${row.area_name}, ${row.city_name}` });
-    const query = stay ? `?${new URLSearchParams({ checkin: stay.checkIn, checkout: stay.checkOut, rooms: String(stay.rooms), adults: String(stay.adults), ...(stay.childAges.length ? { children: stay.childAges.join(',') } : {}) })}` : '';
+    const query = stay ? `?${new URLSearchParams({ checkin: stay.checkIn, checkout: stay.checkOut, rooms: String(stay.rooms), adults: String(stay.adults), ...(stay.childAges.length ? { children: stay.childAges.join(',') } : {}), ...(filters.pets ? { pets: String(filters.pets) } : {}) })}` : '';
     cards.push({
       id: row.id, vertical: STAY_VERTICAL, rentalUnit: 'night', href: `${listingPath(row.slug, row.public_code)}${query}`, selection: stay,
       title: row.title, area: `${row.area_name}, ${row.city_name}`, highlight: row.highlight, categoryName: row.category_name,

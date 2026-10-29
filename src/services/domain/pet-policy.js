@@ -1,3 +1,4 @@
+import { allocateByWeights } from './booking-money.js';
 /**
  * Story 3.8: ordinary pet policy for a stay listing (farm/villa and hotel).
  * { status: 'allowed'|'not_allowed', maxPets: 1..5, types: ['dog'|'cat'|'small_other'], maxSize: 'small'|'medium'|'any',
@@ -14,7 +15,8 @@ export const LEGACY_ALLOWED = Object.freeze({ status: 'allowed', maxPets: 1, typ
 
 /** The saved policy, or the one derived from the legacy yes/no flag when none is saved. */
 export function effectivePetPolicy(petPolicy, legacyAllowed) {
-  if (petPolicy) return petPolicy;
+  // A JSON null in the column is "no saved policy", like SQL NULL (the search filter agrees).
+  if (petPolicy && typeof petPolicy === 'object') return petPolicy;
   return legacyAllowed ? structuredClone(LEGACY_ALLOWED) : { status: 'not_allowed' };
 }
 
@@ -41,11 +43,9 @@ export function normalizePetPolicy(policy) {
     fee: { unit: policy.fee.unit, amount: policy.fee.amount } };
 }
 
-/** Guests see the limits but not the fee until Story 3.9 charges it. */
+/** What guests see: since Story 3.9 charges the fee, the whole policy (not allowed stays bare). */
 export function publicPetPolicy(policy) {
-  if (policy?.status !== 'allowed') return { status: 'not_allowed' };
-  const { fee: _fee, ...rest } = policy;
-  return rest;
+  return policy?.status === 'allowed' ? policy : { status: 'not_allowed' };
 }
 
 const NOUN = { dog: ['dog', 'dogs'], cat: ['cat', 'cats'], small_other: ['small pet', 'small pets'] };
@@ -65,10 +65,55 @@ export function petFeeText(fee) {
   return `₹${fee.amount.toLocaleString('en-IN')} ${UNIT[fee.unit]}`;
 }
 
-/** Guest line (no fee), or with { fee: true } the owner preview line. */
+/** Guest line (with the fee when the policy carries one, Story 3.9), or with { fee: true } the owner preview line. */
 export function petPolicyLine(policy, { fee = false } = {}) {
   if (policy?.status !== 'allowed') return 'No pets';
-  if (!fee) return `Pets allowed: ${limits(policy)}`;
+  if (!fee) return `Pets allowed: ${limits(policy)}${policy.fee ? ` · ${petFeeText(policy.fee)}` : ''}`;
   const text = limits(policy, ', ');
   return `${text[0].toUpperCase()}${text.slice(1)} · ${petFeeText(policy.fee)}`;
+}
+
+/** Story 3.9: why `pets` cannot be booked under `policy`, as { code, message }, or null. */
+export function petProblem(policy, pets) {
+  if (pets != null && (!Number.isInteger(pets) || pets < 0 || pets > 5)) return { code: 'PETS_INVALID', message: 'Choose 0–5 pets.' };
+  if (!pets) return null;
+  if (policy?.status !== 'allowed') return { code: 'PETS_NOT_ALLOWED', message: 'This stay doesn’t allow pets' };
+  if (pets > policy.maxPets) return { code: 'PETS_OVER_LIMIT', message: `Up to ${policy.maxPets} ${policy.maxPets === 1 ? 'pet' : 'pets'}` };
+  return null;
+}
+
+const PER_UNIT = ['per_night', 'per_pet_night'];
+/**
+ * Story 3.9: the pet charge in paise split over `units` (hotel nights or farm booked dates):
+ * per-unit fees on every unit; once-only fees (per_stay, per_pet) spread over the units by largest
+ * remainder (earlier units take the extra paise), so cancelling one farm visit refunds only its share.
+ * Call after petProblem.
+ */
+export function petChargeParts(policy, pets, units) {
+  const parts = Array(units).fill(0);
+  if (!pets || policy?.status !== 'allowed' || policy.fee.unit === 'free' || !units) return parts;
+  const once = policy.fee.amount * 100 * (policy.fee.unit.startsWith('per_pet') ? pets : 1);
+  if (PER_UNIT.includes(policy.fee.unit)) return parts.fill(once);
+  return allocateByWeights(once, parts.map(() => 1));
+}
+
+export const petChargeMinor = (policy, pets, units) => petChargeParts(policy, pets, units).reduce((a, b) => a + b, 0);
+
+/** The one confirmation a guest ticks, from the listing's own rule ("My pets are dogs or cats under 25 kg"). */
+export function petConfirmationText(policy) {
+  const nouns = list(PET_TYPES.filter((t) => policy.types.includes(t)).map((t) => NOUN[t][1]));
+  return ['My pets are', nouns, SIZE[policy.maxSize]].filter(Boolean).join(' ');
+}
+
+/**
+ * Story 3.9: the quote's pet declaration, or {} for zero pets so old quotes keep their shape and digest.
+ * Throws a { code, message } refusal through `fail`.
+ */
+export function petDeclaration(policy, pets, units, fail) {
+  const problem = petProblem(policy, pets);
+  if (problem) throw fail(problem.code, problem.message);
+  if (!pets) return {};
+  const parts = petChargeParts(policy, pets, units);
+  return { pets: { count: pets, confirmed: false, confirmation: petConfirmationText(policy), unit: policy.fee.unit, amount: policy.fee.amount,
+    totalMinor: parts.reduce((a, b) => a + b, 0) }, parts };
 }

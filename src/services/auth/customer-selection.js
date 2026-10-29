@@ -1,7 +1,7 @@
 import 'server-only';
 import { SignJWT, jwtVerify } from 'jose';
 import { z } from 'zod';
-import { bookingSelectionSchema } from '../schemas/zod/booking.js';
+import { bookingSelectionSchema, petsSchema } from '../schemas/zod/booking.js';
 
 /** A hotel search the guest was pricing before login (hotel plan, Phase 7): dates and party only. */
 const stayIntentSchema = z.object({
@@ -10,6 +10,7 @@ const stayIntentSchema = z.object({
   rooms: z.number().int().min(1).max(8), adults: z.number().int().min(1).max(48),
   children: z.array(z.number().int().min(0).max(17)).max(16).default([]),
   replacesOrderId: z.string().uuid().optional(),
+  pets: petsSchema,
 }).strict();
 export const loginSelectionSchema = z.union([stayIntentSchema, bookingSelectionSchema]);
 

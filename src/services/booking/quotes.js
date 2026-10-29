@@ -8,7 +8,7 @@ import { CANCELLATION_TIERS, CANCELLATION_TIERS_HOURLY } from '../domain/pricing
 import { bookingModel } from '../domain/verticals.js';
 import { HourlyError, buildHourlyVisit, priceHourlyVisit } from '../domain/hourly.js';
 import { BOOKING_POLICY } from '../domain/booking-policy.js';
-import { effectivePetPolicy, publicPetPolicy } from '../domain/pet-policy.js';
+import { effectivePetPolicy, petDeclaration, publicPetPolicy } from '../domain/pet-policy.js';
 import { resolveServiceFee } from '../finance/service-fee.js';
 import { listingCancellationPolicy } from '../domain/cancellation-policy.js';
 import { addLocalDays, buildVisitIntervals, propertyToday } from '../domain/booking-dates.js';
@@ -144,12 +144,19 @@ function quoteFor(selection, listing, inputs, publications) {
 
 /**
  * Story 3.8: the accepted pet policy and its version, only when pets are allowed, so quotes for
- * not-allowed listings keep their digest. Story 3.9 charges from it.
+ * not-allowed listings keep their digest. Unchanged by 3.9 (no fee), so pet-free quotes keep the
+ * pre-3.9 shape and digest; the fee lives in the `pets` declaration when pets are declared.
  */
 export function petPolicyStamp(petPolicy, version, legacyAllowed) {
   const policy = effectivePetPolicy(petPolicy, legacyAllowed);
-  // No fee in the guest payload until Story 3.9 charges it; the version still moves with a fee change.
-  return policy.status === 'allowed' ? { petPolicy: { version: Number(version ?? 1), policy: publicPetPolicy(policy) } } : {};
+  if (policy.status !== 'allowed') return {};
+  const { fee: _fee, ...limits } = publicPetPolicy(policy);
+  return { petPolicy: { version: Number(version ?? 1), policy: limits } };
+}
+
+/** Story 3.9: the listing's pet declaration for `pets` over `units` (or {} for none); refuses invalid / not-allowed / over-limit. */
+export function petTerms(petPolicy, legacyAllowed, pets, units) {
+  return petDeclaration(effectivePetPolicy(petPolicy, legacyAllowed), pets, units, (code, message) => new BookingQuoteError(code, message));
 }
 
 /** The same immutable inputs drive a persisted quote and each calendar price. */
@@ -162,6 +169,11 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
   if (!schedule?.enabled || !rate) throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This slot is not offered.');
   if (schedule.capacity > listing.capacity || selection.guests > schedule.capacity) throw new BookingQuoteError('CAPACITY_EXCEEDED', 'The guest count exceeds this slot’s capacity.');
   const visits = buildVisitIntervals({ ...selection, schedule, now, ...config });
+  // Story 3.9: each booked date is one pet "night", whatever the slot length.
+  const petsLegacy = listing.house_rules?.petsAllowed === true;
+  const petStamp = petPolicyStamp(listing.pet_policy, listing.pet_policy_version, petsLegacy);
+  const { parts: petMinors = [], ...pets } = petTerms(listing.pet_policy, petsLegacy, selection.pets, selection.dates.length);
+  if (!selection.pets) { const { pets: _none, ...rest } = selection; selection = rest; }
   const byDate = {};
   for (const row of overrides) {
     const date = dayKey(row.day);
@@ -173,6 +185,7 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
     overridesByDate: byDate,
     weekendDays: config.weekendDays,
     feeBps: fee.bps,
+    petMinors,
   });
   // Older pricing saved one day type as 0; never sell those visits for nothing.
   if (price.visits.some((visit) => visit.baseRentMinor <= 0)) throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This slot is not offered on that day.');
@@ -185,7 +198,7 @@ export function prepareQuote(selection, listing, rates, overrides, payment, now,
     cancellation: { bands: CANCELLATION_TIERS[listing.cancellation_tier].bands.map(band=>[...band]), noShow: CANCELLATION_TIERS[listing.cancellation_tier].noShow, feeOnFullRefund: listing.cancellation_tier === 'flexible' },
     pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee', illustrativeAdvanceBps: BOOKING_POLICY.illustrativeAdvanceBps, depositCollectedOnline: false },
     depositScope: 'per_visit', taxPolicy: 'not_configured', timeZone: config.timeZone,
-    ...petPolicyStamp(listing.pet_policy, listing.pet_policy_version, listing.house_rules?.petsAllowed === true),
+    ...petStamp, ...pets,
   };
   // Public quotes remain available while payments are disabled. No credentials
   // or operational credential error details are returned to a browsing guest.

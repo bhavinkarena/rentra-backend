@@ -2,6 +2,7 @@ import 'server-only';
 import { allocateOrderFee } from '../domain/booking-money.js';
 import { resolveServiceFee } from '../finance/service-fee.js';
 import { z } from 'zod';
+import { petsSchema } from '../schemas/zod/booking.js';
 import { currentPolicyReferences } from '../content/service.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
 import { HOTEL_POLICY, HotelError } from '../domain/hotel.js';
@@ -33,6 +34,7 @@ export const staySelectionSchema = z.object({
   rooms: z.array(room).min(1).max(HOTEL_POLICY.maxRooms),
   // Phase 10: this stay replaces a confirmed stay at the same hotel (change dates or rooms).
   replacesOrderId: z.string().uuid().optional(),
+  pets: petsSchema,
 }).strict();
 
 /** Guest details collected at checkout. GSTIN is optional; when given, the business name is required. */
@@ -50,10 +52,14 @@ export const stayDetailsSchema = z.object({
 function stayTerms(stay, payment, publications, names = {}, fee = { bps: 0, source: 'default', settingId: null }, pets = {}) {
   const roomMinor = stay.totals.roomMinor;
   const taxMinor = stay.totals.taxMinor;
+  // Story 3.9: the trip-level pet charge is its own component, inside the fee base, outside tax.
+  const petMinor = stay.totals.petMinor ?? 0;
   // Story 2.2: the guest-paid service fee on rooms and their extras, never on tax, rounded once
-  // per stay and split over rooms. Room+tax amounts (and so the owner's share) are unchanged.
-  const roomFees = allocateOrderFee(stay.lines.map((line) => line.roomMinor), fee.bps);
-  const feeMinor = roomFees.reduce((sum, value) => sum + value, 0);
+  // per stay and split over rooms (and the pet charge). Room+tax amounts (and so the owner's share) are unchanged.
+  const fees = allocateOrderFee([...stay.lines.map((line) => line.roomMinor), ...(petMinor ? [petMinor] : [])], fee.bps);
+  const roomFees = fees.slice(0, stay.lines.length);
+  const pet = petMinor ? { petMinor, petFeeMinor: fees.at(-1) } : {};
+  const feeMinor = fees.reduce((sum, value) => sum + value, 0);
   const stayMinor = stay.totals.totalMinor;
   const totalMinor = stayMinor + feeMinor;
   const nights = stay.lines[0].nights.length;
@@ -62,19 +68,23 @@ function stayTerms(stay, payment, publications, names = {}, fee = { bps: 0, sour
     startsAt: stay.startsAt, endsAt: stay.endsAt, blockedStartAt: stay.startsAt, blockedEndAt: stay.endsAt,
     rooms: stay.lines.map((line, index) => ({ roomTypeId: line.roomTypeId, name: names[line.roomTypeId] ?? 'Room', ratePlanId: line.ratePlanId, adults: line.adults,
       childAges: line.childAges, plan: line.plan, roomMinor: line.roomMinor, taxMinor: line.taxMinor, feeMinor: roomFees[index], totalMinor: line.totalMinor })),
-    rentMinor: stayMinor, roomMinor, taxMinor, feeMinor, totalMinor, depositMinor: 0, illustrativeAdvanceMinor: totalMinor,
+    rentMinor: stayMinor, roomMinor, taxMinor, ...pet, feeMinor, totalMinor, depositMinor: 0, illustrativeAdvanceMinor: totalMinor,
   };
   const paymentSnapshot = {
     version: payment.version, provider: payment.provider, environment: payment.environment, mode: payment.mode,
     enabled: payment.enabled, collectionPurpose: 'full', expectedMinor: totalMinor, actualCollectedMinor: 0,
     collectionPolicyVersion: HOTEL_POLICY.version, remainingMinor: 0,
-    allocations: [{ date: stay.checkIn, rentMinor: roomMinor, taxMinor, feeMinor, depositMinor: 0 }],
+    // The ledger has no pet component (no migration in 3.9): pet money is captured as rent, with its
+    // own amount recorded here and on the visit, and refunded by its own rule (cancellation.js).
+    allocations: [{ date: stay.checkIn, rentMinor: roomMinor + petMinor, taxMinor, feeMinor, depositMinor: 0, ...pet }],
   };
   const policy = { version: HOTEL_POLICY.version, kind: 'stay', publications, hold: { minutes: HOTEL_POLICY.holdMinutes },
-    pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee' }, ...pets };
+    pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee' }, ...pets,
+    ...(stay.pets ? { pets: stay.pets } : {}) };
   return {
     visits: [visit], payment: paymentSnapshot, policy,
-    totals: { rentMinor: stayMinor, feeMinor, depositMinor: 0, totalMinor, roomMinor, taxMinor, illustrativeAdvanceMinor: totalMinor },
+    totals: { rentMinor: stayMinor, feeMinor, depositMinor: 0, totalMinor, roomMinor, taxMinor, illustrativeAdvanceMinor: totalMinor,
+      ...(petMinor ? { petMinor } : {}) },
     // The stay's own hash covers rooms, plans, nights and money; payment, policy and fee are added.
     hash: quoteDigest({ stay: stay.hash, paymentVersion: payment.version, provider: payment.provider, publications, feeBps: fee.bps, ...pets }),
   };

@@ -7,6 +7,12 @@ export const cancellationTierEnum = z.enum(['flexible', 'moderate', 'strict']);
 
 export const localDateSchema = z.string().refine(isLocalDate, 'Pick a valid calendar date');
 
+/**
+ * Story 3.9: 0-5 pets; absent means none, so pet-free selections keep their old shape. The range is
+ * checked by the quote (petProblem) so a bad value is PETS_INVALID, not a generic selection error.
+ */
+export const petsSchema = z.unknown().optional();
+
 /** Canonical one-listing slot selection; prices and customer identity come from the server. */
 export const slotSelectionSchema = z.object({
   rentableId: z.string().uuid(),
@@ -16,6 +22,8 @@ export const slotSelectionSchema = z.object({
     .transform((dates) => [...dates].sort()),
   slot: slotEnum,
   guests: z.number().int().min(1).max(500),
+  // Story 3.9: ordinary pets declared for the trip (assistance animals are never counted).
+  pets: petsSchema,
 }).strict();
 
 const slugSchema = z.string().max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);

@@ -712,11 +712,173 @@ test(
         };
         await sql`UPDATE rentable SET pet_policy=${JSON.stringify(policy)}::text::jsonb, pet_policy_version=7 WHERE id=${h.hotel}`;
         const allowed = await quoteFor();
+        // Story 3.9 keeps this stamp fee-free, so pet-free quotes keep the pre-3.9 shape and digest.
         assert.deepEqual(allowed.pets, {
           version: 7,
           policy: { status: 'allowed', maxPets: 2, types: ['dog'], maxSize: 'medium' },
         });
         assert.notEqual(allowed.hash, before.hash);
+      } finally {
+        await sql`UPDATE rentable SET pet_policy=NULL WHERE id=${h.hotel}`;
+      }
+    });
+
+    await t.test('Story 3.9: the trip-level pet fee: quote, hold, and refunds', async () => {
+      const policy = {
+        status: 'allowed',
+        maxPets: 1,
+        types: ['dog', 'cat'],
+        maxSize: 'medium',
+        fee: { unit: 'per_pet_night', amount: 300 },
+      };
+      const setPolicy = (value, version = 3) =>
+        sql`UPDATE rentable SET pet_policy=${JSON.stringify(value)}::text::jsonb, pet_policy_version=${version} WHERE id=${h.hotel}`;
+      const pctPolicy = {
+        version: 1,
+        windows: [{ hoursBefore: 0, pct: 50 }],
+        atOrAfterCheckInPct: 0,
+        earlyDeparture: { offered: false, pct: 0 },
+      };
+      await setPolicy(policy);
+      try {
+        const session = await guest();
+        const quoteOf = (dates, pets, count = 1, plan = h.deluxeBase) =>
+          createStayQuote(
+            sql,
+            {
+              rentableId: h.hotel,
+              ...dates,
+              rooms: rooms(count, plan),
+              ...(pets == null ? {} : { pets }),
+            },
+            { customerId: session.userId },
+          );
+        const hold = (quote, petsConfirmed, count = 1) =>
+          createCheckoutHold(
+            sql,
+            session,
+            {
+              rentableId: h.hotel,
+              quoteId: quote.id,
+              hash: quote.hash,
+              version: quote.version,
+              idempotencyKey: randomUUID(),
+              accepted: true,
+              stay: { guestNames: Array.from({ length: count }, (_, i) => `Guest ${i + 1}`) },
+              ...(petsConfirmed ? { petsConfirmed } : {}),
+            },
+            env,
+          );
+        let payments = 0;
+        const paid = async (quote, count = 1) => {
+          const held = await hold(quote, true, count);
+          const started = await startCheckoutPayment(sql, session, held.orderId, opts);
+          const id = `pay_HOTELPETS${++payments}`;
+          providerCaptures(providerFile, started.providerOrderId, id);
+          await verifyCheckoutPayment(
+            sql,
+            session,
+            { orderId: held.orderId, paymentId: id, signature: sign(started.providerOrderId, id) },
+            opts,
+          );
+          const [visit] = await sql`SELECT id FROM booking WHERE order_id=${held.orderId}`;
+          const rows =
+            await sql`SELECT id FROM booking_room WHERE booking_id=${visit.id} ORDER BY id`;
+          return { held, visit, rooms: rows.map((r) => r.id) };
+        };
+        const cancel = ({ held, visit }, roomIds) =>
+          previewCancellation(
+            sql,
+            session,
+            { orderId: held.orderId, visitIds: [visit.id], ...(roomIds ? { roomIds } : {}) },
+            env,
+          );
+
+        // Pets 0: the same digest as no pets at all, and no pet block.
+        const dates = stay(2);
+        const plain = await quoteOf(dates, 0);
+        assert.equal((await quoteOf(dates)).hash, plain.hash, 'zero pets keeps the digest');
+        assert.equal(plain.totals.petMinor, undefined);
+        // 2 nights × 1 pet × ₹300: trip-level, inside the fee base, outside rooms and tax.
+        const quote = await quoteOf(dates, 1);
+        assert.equal(quote.totals.petMinor, 60000);
+        assert.equal(quote.visits[0].petMinor, 60000);
+        assert.equal(quote.visits[0].rooms[0].petMinor, undefined, 'not on a room line');
+        assert.equal(quote.totals.roomMinor, plain.totals.roomMinor);
+        assert.equal(quote.totals.taxMinor, plain.totals.taxMinor);
+        assert.equal(
+          quote.totals.feeMinor,
+          Math.floor(((quote.totals.roomMinor + 60000) * 5 + 50) / 100),
+        );
+        assert.equal(
+          quote.totals.totalMinor,
+          quote.totals.roomMinor + quote.totals.taxMinor + 60000 + quote.totals.feeMinor,
+        );
+        await assert.rejects(quoteOf(dates, 2), {
+          code: 'PETS_OVER_LIMIT',
+          message: 'Up to 1 pet',
+        });
+        await assert.rejects(quoteOf(dates, 9), { code: 'PETS_INVALID' });
+        await assert.rejects(hold(quote), { code: 'PETS_UNCONFIRMED' });
+
+        // Free whole cancel: the whole pet fee comes back.
+        const free = await paid(quote);
+        const [order] =
+          await sql`SELECT guest_details, policy_snapshot FROM booking_order WHERE id=${free.held.orderId}`;
+        assert.deepEqual(order.guest_details.pets, {
+          count: 1,
+          confirmation: 'My pets are dogs or cats under 25 kg',
+          confirmed: true,
+          policyVersion: 3,
+        });
+        const parts =
+          await sql`SELECT component::text, actual_minor::int AS amount FROM payment_allocation WHERE booking_id=${free.visit.id} ORDER BY component`;
+        assert.equal(
+          parts.find((p) => p.component === 'rent').amount,
+          quote.totals.roomMinor + 60000,
+          'pet money is captured as rent',
+        );
+        const whole = await cancel(free);
+        assert.equal(whole.visits[0].pet, 60000);
+        assert.equal(whole.refundMinor, quote.totals.totalMinor);
+
+        // Partial cancel (1 of 2 rooms, free): rooms back, pet fee kept (pets still come).
+        const two = await quoteOf(stay(2), 1, 2);
+        const partialStay = await paid(two, 2);
+        const partial = await cancel(partialStay, [partialStay.rooms[0]]);
+        assert.equal(partial.visits[0].pet, 0);
+        assert.ok(partial.refundMinor > 0);
+
+        // Late whole cancel at 50%: the pet fee comes back at the room-rent ratio, floored.
+        await sql`UPDATE rate_plan SET cancellation_policy=${JSON.stringify(pctPolicy)}::text::jsonb WHERE id=${h.deluxeBase}`;
+        try {
+          const late = await paid(await quoteOf(stay(2), 1));
+          const preview = await cancel(late);
+          const visit = preview.visits[0];
+          const [{ room }] =
+            await sql`SELECT sum(amount_room_minor)::int AS room FROM booking_room WHERE booking_id=${late.visit.id}`;
+          assert.equal(visit.pet, Math.floor((60000 * (visit.rent - visit.pet)) / room));
+          assert.equal(visit.pet, 30000);
+          // Everything paid (rooms, tax, pet charge, fee) = refund + charge.
+          const [{ captured }] =
+            await sql`SELECT sum(actual_minor)::int AS captured FROM payment_allocation WHERE booking_id=${late.visit.id}`;
+          assert.equal(visit.refundMinor + visit.chargeMinor, captured);
+        } finally {
+          await sql`UPDATE rate_plan SET cancellation_policy=NULL WHERE id=${h.deluxeBase}`;
+        }
+
+        const stale = await quoteOf(stay(2), 1);
+        await setPolicy({ ...policy, fee: { unit: 'per_pet_night', amount: 400 } }, 3);
+        await assert.rejects(
+          hold(stale, true),
+          { code: 'QUOTE_CHANGED' },
+          'a fee change alone voids a pet quote',
+        );
+        await setPolicy({ status: 'not_allowed' }, 5);
+        await assert.rejects(quoteOf(stay(2), 1), {
+          code: 'PETS_NOT_ALLOWED',
+          message: 'This stay doesn’t allow pets',
+        });
       } finally {
         await sql`UPDATE rentable SET pet_policy=NULL WHERE id=${h.hotel}`;
       }

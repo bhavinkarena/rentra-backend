@@ -19,7 +19,14 @@ export class CheckoutError extends Error {
 const inputSchema = z.object({ rentableId: z.string().uuid(), quoteId: z.string().uuid(),
   hash: z.string().regex(/^[a-f0-9]{64}$/), version: z.number().int().positive(),
   idempotencyKey: z.string().uuid(), accepted: z.literal(true), purpose: z.string().trim().min(3).max(160).optional(),
-  stay: stayDetailsSchema.optional() }).strict();
+  stay: stayDetailsSchema.optional(), petsConfirmed: z.boolean().optional() }).strict();
+
+/** Story 3.9: declared pets need the guest's tick on the listing's own rule before anything is held. */
+function confirmedPets(pets, value) {
+  if (!pets) return null;
+  if (value.petsConfirmed !== true) throw new CheckoutError('PETS_UNCONFIRMED', 'Confirm your pets meet this stay’s pet rules.');
+  return { ...pets, confirmed: true };
+}
 
 export async function lifecycle(tx, orderId, kind, payload = {}) {
   await tx`INSERT INTO booking_lifecycle_event(order_id,kind,payload) VALUES(${orderId},${kind},${JSON.stringify(payload)}::text::jsonb)
@@ -83,6 +90,8 @@ export async function createCheckoutHold(database, session, input, env = process
     const [savedQuote] = await tx`SELECT * FROM booking_quote WHERE id=${value.quoteId} AND rentable_id=${listing.id} AND customer_id=${customer.id}`;
     if (savedQuote?.selection?.kind === 'stay') return holdStay(tx, listing, customer, value, savedQuote, requestHash, env);
     const quote = await revalidateBookingQuote(tx, listing, { ...value, customerId: customer.id }, env);
+    const pets = confirmedPets(quote.policy.pets, value);
+    if (pets) quote.policy = { ...quote.policy, pets };
     // A time-booked visit gets its court now, under the listing mutex: the requested court, else the first free one.
     let court = null;
     if (quote.selection.kind === 'hourly') {
@@ -136,6 +145,8 @@ export async function createCheckoutHold(database, session, input, env = process
 async function holdStay(tx, listing, customer, value, saved, requestHash, env) {
   if (!value.stay) throw new CheckoutError('GUEST_DETAILS_REQUIRED', 'Add the guest details for each room.');
   const quote = await revalidateStayQuote(tx, listing, saved, value);
+  const pets = confirmedPets(quote.policy.pets, value);
+  if (pets) quote.policy = { ...quote.policy, pets };
   if (value.stay.guestNames.length !== quote.stay.lines.length) throw new CheckoutError('GUEST_DETAILS_REQUIRED', 'Add a guest name for each room.');
   await requireNewPaymentConfiguration(tx, { expectedVersion: quote.payment.version }, env);
   const credentials = requirePaymentCredentials(quote.payment.provider, quote.payment.environment, env);
@@ -148,7 +159,9 @@ async function holdStay(tx, listing, customer, value, saved, requestHash, env) {
   const listingSnapshot = { ownerId: listing.client_id, photos: listing.photos ?? [], title: listing.title, publicCode: listing.public_code,
     rentableId: listing.id, purpose: null, contact: { name: customer.name, phone: customer.phone } };
   const details = { ...value.stay, gstin: value.stay.gstin || null, businessName: value.stay.businessName || null,
-    arrivalTime: value.stay.arrivalTime || null, requests: value.stay.requests || null };
+    arrivalTime: value.stay.arrivalTime || null, requests: value.stay.requests || null,
+    // Story 3.9: the declaration as accepted, with the pet policy version it was made under.
+    ...(pets ? { pets: { count: pets.count, confirmation: pets.confirmation, confirmed: true, policyVersion: quote.policy.petPolicy.version } } : {}) };
   await tx`INSERT INTO booking_order(id,reference,customer_id,rentable_id,state,currency,time_zone,quote_id,quote_version,quote_hash,
     quote_expires_at,pricing_version,policy_version,policy_snapshot,listing_snapshot,guest_details,amount_rent_minor,amount_fee_minor,
     amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,idempotency_key,request_hash,hold_expires_at)

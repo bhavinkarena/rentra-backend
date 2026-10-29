@@ -33,7 +33,7 @@ import { availabilityDateRange } from '@/services/domain/booking-availability.js
 import { BOOKING_POLICY } from '@/services/domain/booking-policy.js';
 import { asyncHandler } from '@/utils/asyncHandler.js';
 import { ok, fail } from '@/utils/respond.js';
-import { notFound, badRequest, unavailable, conflict } from '@/utils/apiError.js';
+import { notFound, badRequest, unavailable, conflict, AppError } from '@/utils/apiError.js';
 
 /** Public discovery. No actor, no cookies — safe to cache at the edge. */
 export const listings = asyncHandler(async (req, res) =>
@@ -323,6 +323,9 @@ async function hotelRef(code) {
 function stayError(error) {
   if (error instanceof HotelError && error.code === 'NOT_FOUND')
     return notFound('LISTING_NOT_FOUND', 'Not found.');
+  // Story 3.9: a pet refusal is a 422 the guest fixes by changing the pet count.
+  if (error instanceof HotelError && error.code?.startsWith('PETS_'))
+    return new AppError(error.message, 422, { code: error.code });
   if (error instanceof HotelError)
     return conflict(
       STAY_CHOICE_CODES.includes(error.code) ? error.code : 'STAY_UNAVAILABLE',

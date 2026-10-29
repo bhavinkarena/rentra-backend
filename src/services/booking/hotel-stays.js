@@ -7,6 +7,7 @@ import {
 import { resolveInclusions } from '../domain/hotel-rooms.js';
 import { effectiveChildPolicy } from '../domain/child-policy.js';
 import { quoteDigest } from './quotes.js';
+import { effectivePetPolicy, petChargeMinor, petDeclaration } from '../domain/pet-policy.js';
 import { expireInventoryHolds, withListingSnapshot } from './inventory.js';
 
 /**
@@ -59,7 +60,7 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
   const ids = listings.map((l) => l.id);
   if (!ids.length) return new Map();
   const [profiles, rooms, plans, overrides, nightRows, staleHolds, slabs] = await Promise.all([
-    tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights, p.child_policy, p.child_policy_version,
+    tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights, p.child_policy, p.child_policy_version, p.policies,
         r.cancellation_policy AS hotel_policy
       FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id JOIN category c ON c.id = r.category_id
       WHERE p.rentable_id IN ${tx(ids)} AND c.vertical_code = 'hotel'`,
@@ -116,6 +117,7 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
       overridesByPlan: overridesByHotel.get(listing.id) ?? {},
       nightsByRoom,
       slabs: taxSlabs,
+      petsLegacy: profile.policies?.pets === true,
     });
   }
   return result;
@@ -209,12 +211,15 @@ export async function getHotelAvailability(database, { rentableId, checkIn, chec
   });
 }
 
-function buildQuote(data, { checkIn, checkOut, rooms }, now) {
+function buildQuote(data, { checkIn, checkOut, rooms, pets = 0 }, now) {
   const nights = stayNights(checkIn, checkOut, now);
   if (data.listing.status !== 'live') throw new HotelError('NOT_BOOKABLE', 'This hotel is not taking bookings.');
   if (!Array.isArray(rooms) || rooms.length < 1 || rooms.length > HOTEL_POLICY.maxRooms) {
     throw new HotelError('ROOMS_INVALID', `Choose 1–${HOTEL_POLICY.maxRooms} rooms.`);
   }
+  // Story 3.9: refused before any room work (PETS_INVALID / PETS_NOT_ALLOWED / PETS_OVER_LIMIT).
+  const { pets: petTerms } = petDeclaration(effectivePetPolicy(data.listing.pet_policy, data.petsLegacy), pets, nights.length,
+    (code, message) => new HotelError(code, message));
   const wanted = new Map();
   const lines = rooms.map((room) => {
     const roomType = data.roomTypes.find((row) => row.id === room?.roomTypeId);
@@ -235,15 +240,18 @@ function buildQuote(data, { checkIn, checkOut, rooms }, now) {
   }
   const { startsAt, endsAt } = stayInstants({ checkIn, checkOut, ...data.hotel });
   const totals = ['roomMinor', 'taxMinor', 'totalMinor'].reduce((sum, key) => ({ ...sum, [key]: lines.reduce((acc, line) => acc + line[key], 0) }), {});
-  const content = { version: HOTEL_POLICY.version, rentableId: data.listing.id, checkIn, checkOut, startsAt, endsAt, lines, totals };
+  // Story 3.9: the pet charge is trip-level, not a room's: its own amount in the total, outside every
+  // room line (so a partial room cancel never touches it) and outside the nightly rate and tax.
+  if (petTerms) Object.assign(totals, { petMinor: petTerms.totalMinor, totalMinor: totals.totalMinor + petTerms.totalMinor });
+  const content = { version: HOTEL_POLICY.version, rentableId: data.listing.id, checkIn, checkOut, startsAt, endsAt, lines, totals, ...(petTerms ? { pets: petTerms } : {}) };
   return { ...content, hash: quoteDigest(content) };
 }
 
 /** A priced, availability-checked quote. Not persisted: checkout (Phase 7) stores it with the order. */
-export async function quoteHotelStay(database, { rentableId, checkIn, checkOut, rooms, now = new Date() }) {
+export async function quoteHotelStay(database, { rentableId, checkIn, checkOut, rooms, pets, now = new Date() }) {
   if (!UUID.test(rentableId ?? '')) throw new HotelError('NOT_FOUND', 'Hotel unavailable.');
   return withListingSnapshot(database, rentableId, async (tx, listing) => {
-    const quote = buildQuote(await loadHotel(tx, listing, checkIn, checkOut, new Date(now)), { checkIn, checkOut, rooms }, now);
+    const quote = buildQuote(await loadHotel(tx, listing, checkIn, checkOut, new Date(now)), { checkIn, checkOut, rooms, pets }, now);
     return { ...quote, expiresAt: new Date(new Date(now).getTime() + HOTEL_POLICY.holdMinutes * 60_000).toISOString() };
   });
 }
@@ -274,6 +282,7 @@ export async function holdHotelRooms(tx, listing, { bookingId, quote, guestNames
   const fresh = buildQuote(data, {
     checkIn: quote.checkIn, checkOut: quote.checkOut,
     rooms: quote.lines.map(({ roomTypeId, ratePlanId, adults, childAges }) => ({ roomTypeId, ratePlanId, adults, childAges })),
+    pets: quote.pets?.count ?? 0,
   }, clock);
   if (fresh.hash !== quote.hash) throw new HotelError('QUOTE_CHANGED', 'The price or availability changed. Review the new price.');
   // Room types in ID order, so two holds never take their night rows in opposite orders.
@@ -364,7 +373,7 @@ export function splitParty({ rooms, adults, childAges = [] }) {
  * and breakfast filters. One read for every hotel; prices come from the same
  * functions as the hotel page and the quote, so the card price is the quote.
  */
-export async function hotelSearchOffers(database, listings, { checkIn, checkOut, rooms, adults, childAges = [], freeCancel = false, breakfast = false }, now = new Date()) {
+export async function hotelSearchOffers(database, listings, { checkIn, checkOut, rooms, adults, childAges = [], pets = 0, freeCancel = false, breakfast = false }, now = new Date()) {
   const nights = stayNights(checkIn, checkOut, now);
   const party = splitParty({ rooms, adults, childAges });
   return database.begin('isolation level repeatable read read only', async (tx) => {
@@ -398,6 +407,10 @@ export async function hotelSearchOffers(database, listings, { checkIn, checkOut,
           }
         }
       }
+      // Story 3.9: the card total includes the declared pets' charge (the search filter already dropped refusals).
+      const policy = effectivePetPolicy(data.listing.pet_policy, data.petsLegacy);
+      const petMinor = pets && policy.status === 'allowed' && pets <= policy.maxPets ? petChargeMinor(policy, pets, nights.length) : 0;
+      if (best && petMinor) Object.assign(best, { petMinor, totalMinor: best.totalMinor + petMinor });
       if (best) offers.set(id, best);
     }
     return offers;
@@ -405,6 +418,6 @@ export async function hotelSearchOffers(database, listings, { checkIn, checkOut,
 }
 
 /** A priced, availability-checked stay inside the caller's transaction (checkout quote and hold). */
-export async function stayQuoteIn(tx, listing, { checkIn, checkOut, rooms }, now) {
-  return buildQuote(await loadHotel(tx, listing, checkIn, checkOut, new Date(now)), { checkIn, checkOut, rooms }, now);
+export async function stayQuoteIn(tx, listing, { checkIn, checkOut, rooms, pets }, now) {
+  return buildQuote(await loadHotel(tx, listing, checkIn, checkOut, new Date(now)), { checkIn, checkOut, rooms, pets }, now);
 }

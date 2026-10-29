@@ -51,6 +51,16 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
   const lines = preview.lines;
   if (roomIds && lines.length !== roomIds.length) throw new CheckoutError('ROOM_NOT_CANCELLABLE');
   const rooms = await tx`SELECT id, amount_room_minor::bigint AS room, amount_tax_minor::bigint AS tax FROM booking_room WHERE id IN ${tx(lines.map((line) => line.id))}`;
+  // Story 3.9: the trip-level pet charge. Pets still come while any room stays booked, so a partial
+  // cancel refunds none of it; cancelling every remaining room refunds it (and its fee share) at the
+  // ratio of room rent refunded in this cancellation, floored to the paisa (the rest stays with the owner).
+  const petMinor = Number(visit.policy_snapshot?.pets?.totalMinor ?? 0);
+  const whole = lines.length === preview.bookedRoomCount;
+  const roomsRent = rooms.reduce((sum, row) => sum + Number(row.room), 0);
+  // On a whole cancel the charge also names what is kept of the pet charge and the fee, so
+  // everything paid = refund + charge reconciles.
+  const kept = (pet, fee) => (whole ? petMinor - pet + Number(visit.amount_fee_minor ?? 0) - fee : 0);
+  const petShare = (amount, roomRentRefunded) => (whole && roomsRent > 0 ? Math.floor(amount * roomRentRefunded / roomsRent) : 0);
   let rent = 0, tax = 0;
   for (const line of lines) {
     const row = rooms.find((room) => room.id === line.id);
@@ -62,14 +72,18 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
   // the room (room, tax and its share of the stay fee), split by stable largest remainder.
   if (lines.every((line) => Number.isInteger(line.pct))) {
     const all = await tx`SELECT id, amount_room_minor::bigint AS room FROM booking_room WHERE booking_id=${visit.id} ORDER BY id`;
-    const roomFees = allocateByWeights(Number(visit.amount_fee_minor ?? 0), all.map((row) => Number(row.room)));
+    // The fee also covered the pet charge (its own weight, last), so rooms keep only their own share.
+    const roomFees = allocateByWeights(Number(visit.amount_fee_minor ?? 0), [...all.map((row) => Number(row.room)), ...(petMinor ? [petMinor] : [])]);
     let r = 0, t = 0, f = 0;
     for (const line of lines) {
       const row = rooms.find((room) => room.id === line.id);
       const share = refundOfPaid({ rent: Number(row.room), tax: Number(row.tax), fee: roomFees[all.findIndex((x) => x.id === line.id)] }, line.pct);
       r += share.rent; t += share.tax; f += share.fee;
     }
-    return { rent: r, tax: t, fee: f, deposit: 0, basis: 'full_paid', chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
+    const pet = petShare(petMinor, r);
+    const petFee = petShare(petMinor ? roomFees.at(-1) : 0, r);
+    return { rent: r + pet, tax: t, fee: f + petFee, deposit: 0, ...(petMinor ? { pet } : {}), basis: 'full_paid',
+      chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0) + kept(pet, f + petFee),
       roomDetails: lines.map((line) => ({ id: line.id, pct: line.pct })),
       rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.bookedRoomCount };
   }
@@ -80,11 +94,13 @@ async function stayEntitlement(tx, visit, now, roomIds = null) {
   // rounding never strands paise; otherwise the fee follows the share of stay money refunded.
   const paidFee = Number(visit.amount_fee_minor ?? 0);
   const linesPaid = rooms.reduce((sum, row) => sum + Number(row.room) + Number(row.tax), 0);
-  const fee = lines.length === preview.bookedRoomCount && refunded >= linesPaid ? paidFee
-    : Number(stay.paid) > 0 ? Math.floor(paidFee * refunded / Number(stay.paid)) : 0;
-  return { rent, tax, fee, deposit: 0,
+  const pet = petShare(petMinor, rent);
+  const paidBase = Number(stay.paid) + petMinor;
+  const fee = whole && refunded >= linesPaid && pet === petMinor ? paidFee
+    : paidBase > 0 ? Math.floor(paidFee * (refunded + pet) / paidBase) : 0;
+  return { rent: rent + pet, tax, fee, deposit: 0, ...(petMinor ? { pet } : {}),
     roomDetails: lines.map(line => ({ id: line.id, rule: line.free ? 'free' : line.legacy.lateCharge, freeCancelHours: line.legacy.freeCancelHours, refundMinor: line.refundMinor, chargeMinor: line.chargeMinor })),
-    chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0),
+    chargeMinor: lines.reduce((sum, line) => sum + line.chargeMinor, 0) + kept(pet, fee),
     rooms: lines.length, roomIds: lines.map((line) => line.id), partial: lines.length < preview.bookedRoomCount };
 }
 
