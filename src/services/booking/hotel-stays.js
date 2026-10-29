@@ -22,7 +22,7 @@ const roomTypeOf = (row) => ({
   id: row.id, name: row.name, maxAdults: row.max_adults, maxChildren: row.max_children, maxOccupancy: row.max_occupancy,
   baseOccupancy: row.base_occupancy, roomCount: row.room_count,
   extraAdultMinor: int(row.extra_adult_minor), extraChildMinor: int(row.extra_child_minor),
-  beds: row.beds, extraPlaces: row.extra_places ?? [], sizeSqm: row.size_sqm, view: row.view, amenities: row.amenities ?? [],
+  beds: row.beds, extraPlaces: row.extra_places ?? [], extraAdultIncludesBedding: row.extra_adult_includes_bedding ?? false, sizeSqm: row.size_sqm, view: row.view, amenities: row.amenities ?? [],
 });
 // Story 2.6: a plan uses the hotel default unless the owner chose its own policy.
 const planOf = (row, hotelPolicy) => {
@@ -136,7 +136,8 @@ function priceLine(data, nights, { roomType, plan, adults, childAges }) {
 
 /** Story 3.3: the room as promised at booking; later owner edits never rewrite it. */
 const roomSnapshot = (roomType, plan) => ({
-  name: roomType.name, beds: roomType.beds, extraPlaces: roomType.extraPlaces, sizeSqm: roomType.sizeSqm, view: roomType.view,
+  name: roomType.name, beds: roomType.beds, extraPlaces: roomType.extraPlaces,
+  extraAdultIncludesBedding: roomType.extraAdultIncludesBedding, sizeSqm: roomType.sizeSqm, view: roomType.view,
   amenities: roomType.amenities, baseOccupancy: roomType.baseOccupancy, maxAdults: roomType.maxAdults, maxChildren: roomType.maxChildren,
   inclusions: plan.inclusions,
 });
@@ -151,12 +152,15 @@ const planSnapshot = (plan) => ({
 function partyPrice(data, nights, roomType, plan, party) {
   let roomMinor = 0;
   let taxMinor = 0;
+  const bedding = [];
   for (const guests of party) {
     const price = priceLine(data, nights, { roomType, plan, adults: guests.adults, childAges: guests.childAges });
     roomMinor += price.roomMinor;
     taxMinor += price.taxMinor;
+    // Story 3.4: the guest sees each room's charged bedding next to the plan price.
+    if (price.bedding) bedding.push({ bedding: price.bedding, nights: price.nights.map(({ beddingMinor = 0 }) => ({ beddingMinor })) });
   }
-  return { roomMinor, taxMinor, totalMinor: roomMinor + taxMinor };
+  return { roomMinor, taxMinor, totalMinor: roomMinor + taxMinor, ...(bedding.length ? { bedding } : {}) };
 }
 
 /**

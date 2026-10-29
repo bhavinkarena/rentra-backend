@@ -441,6 +441,93 @@ test(
     });
 
     await t.test(
+      'Story 3.4: bedding per night is inside fee and refund; a bedding price change requotes',
+      async () => {
+        const places = (amount) =>
+          JSON.stringify([{ type: 'extra_bed', count: 1, charge: { mode: 'fixed', amount } }]);
+        await sql`UPDATE room_type SET beds='[{"type":"double","count":1}]'::jsonb, extra_places=${places(500)}::text::jsonb WHERE id=${h.deluxe}`;
+        try {
+          const session = await guest();
+          const dates = stay();
+          const quoteFor = () =>
+            createStayQuote(
+              sql,
+              {
+                rentableId: h.hotel,
+                ...dates,
+                rooms: [
+                  { roomTypeId: h.deluxe, ratePlanId: h.deluxeBase, adults: 3, childAges: [] },
+                ],
+              },
+              { customerId: session.userId },
+            );
+          const hold = (quote) =>
+            createCheckoutHold(
+              sql,
+              session,
+              {
+                rentableId: h.hotel,
+                quoteId: quote.id,
+                hash: quote.hash,
+                version: quote.version,
+                idempotencyKey: randomUUID(),
+                accepted: true,
+                stay: { guestNames: ['Bed Guest'] },
+              },
+              env,
+            );
+          const stale = await quoteFor();
+          await sql`UPDATE room_type SET extra_places=${places(600)}::text::jsonb WHERE id=${h.deluxe}`;
+          await assert.rejects(hold(stale), (error) => error.code === 'QUOTE_CHANGED');
+          const quote = await quoteFor();
+          const held = await hold(quote);
+          const [room] =
+            await sql`SELECT br.nights, br.amount_room_minor::int AS room, br.room_snapshot FROM booking_room br JOIN booking b ON b.id=br.booking_id WHERE b.order_id=${held.orderId}`;
+          assert.deepEqual(
+            room.nights.map((n) => n.beddingMinor),
+            [60000, 60000],
+          );
+          assert.equal(room.room_snapshot.extraPlaces[0].charge.amount, 600);
+          assert.equal(room.room_snapshot.extraAdultIncludesBedding, false);
+          // Base 2 adults + extra adult ₹700 + bedding ₹600, each night.
+          assert.equal(
+            room.room,
+            room.nights.reduce((sum, n) => sum + n.rateMinor, 0),
+          );
+          assert.ok(room.nights.every((n) => n.rateMinor >= 260000 + 70000 + 60000));
+          assert.equal(quote.totals.roomMinor, room.room);
+          assert.equal(quote.totals.feeMinor, Math.floor((quote.totals.roomMinor * 5 + 50) / 100));
+          const started = await startCheckoutPayment(sql, session, held.orderId, opts);
+          providerCaptures(providerFile, started.providerOrderId, 'pay_HOTELBED');
+          await verifyCheckoutPayment(
+            sql,
+            session,
+            {
+              orderId: held.orderId,
+              paymentId: 'pay_HOTELBED',
+              signature: sign(started.providerOrderId, 'pay_HOTELBED'),
+            },
+            opts,
+          );
+          const [visit] = await sql`SELECT id FROM booking WHERE order_id=${held.orderId}`;
+          const preview = await previewCancellation(
+            sql,
+            session,
+            { orderId: held.orderId, visitIds: [visit.id] },
+            env,
+          );
+          assert.equal(
+            preview.refundMinor,
+            quote.totals.totalMinor,
+            'the free refund returns the bedding, its tax and fee',
+          );
+        } finally {
+          await sql`UPDATE room_type SET beds='[]'::jsonb, extra_places='[]'::jsonb WHERE id=${h.deluxe}`;
+        }
+      },
+    );
+
+    await t.test(
       '1,000 concurrent quote+hold attempts on 5 rooms: never more than 5 held',
       async () => {
         const dates = stay(1);

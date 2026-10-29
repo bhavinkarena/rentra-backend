@@ -454,7 +454,8 @@ async function hotelDetail(row) {
         r.location, CASE WHEN p.show_exact_address THEN r.exact_address END AS address
       FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id WHERE p.rentable_id = ${row.id}`,
     sql`SELECT id, name, beds, size_sqm AS "sizeSqm", view, max_adults AS "maxAdults", max_children AS "maxChildren",
-        max_occupancy AS "maxOccupancy", room_count AS "roomCount", amenities, photos, extra_places AS "extraPlaces"
+        max_occupancy AS "maxOccupancy", room_count AS "roomCount", amenities, photos, extra_places AS "extraPlaces",
+        extra_adult_includes_bedding AS "extraAdultIncludesBedding"
       FROM room_type WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
     sql`SELECT id, room_type_id AS "roomTypeId", name, meal_plan AS "mealPlan", free_cancel_hours AS "freeCancelHours", min_nights AS "minNights", inclusions
       FROM rate_plan WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,

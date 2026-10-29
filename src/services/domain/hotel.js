@@ -1,5 +1,6 @@
 import { applyBasisPoints } from './booking-money.js';
 import { refundPct } from './cancellation-policy.js';
+import { beddingPlan, placeNightMinor } from './hotel-rooms.js';
 import { addLocalDays, isLocalDate, parseLocalDate, propertyLocalInstant, propertyToday } from './booking-dates.js';
 
 /**
@@ -82,10 +83,11 @@ export function planNightRate({ plan, basePlan, overrides = {}, night, weekendNi
   const weekend = isWeekendNight(night, weekendNights);
   const own = overrides[night] ?? (weekend ? base.weekendMinor : base.weekdayMinor);
   money(own, 'Rate');
-  if (!plan.derivedFrom) return { rateMinor: own, source: overrides[night] != null ? 'override' : weekend ? 'weekend' : 'weekday' };
+  // roomOnlyMinor: the base plan's own rate that night, the Story 3.4 percentage-bedding base.
+  if (!plan.derivedFrom) return { rateMinor: own, roomOnlyMinor: own, source: overrides[night] != null ? 'override' : weekend ? 'weekend' : 'weekday' };
   const pct = plan.derivedPctBps;
   const adjusted = pct >= 0 ? own + applyBasisPoints(own, pct) : own - applyBasisPoints(own, -pct);
-  return { rateMinor: adjusted + money(plan.derivedPerGuestMinor, 'Per-guest charge') * chargedGuests, source: 'derived' };
+  return { rateMinor: adjusted + money(plan.derivedPerGuestMinor, 'Per-guest charge') * chargedGuests, roomOnlyMinor: own, source: 'derived' };
 }
 
 /** The slab for one room-night's tariff on that night; throws TAX_UNCONFIGURED rather than guessing 0%. */
@@ -104,19 +106,41 @@ export function priceRoomStay({ nights, roomType, plan, basePlan, overrides, hot
   const occupancy = roomOccupancy(roomType, { adults, childAges }, hotel.childFreeAge);
   const extrasMinor = occupancy.extraAdults * money(roomType.extraAdultMinor, 'Extra adult charge')
     + occupancy.extraChildren * money(roomType.extraChildMinor, 'Extra child charge');
+  // Story 3.4: extra sleeping places for adults the beds cannot hold, cheapest per night first.
+  const places = roomType.extraPlaces ?? [];
+  const { charged, unavailable } = beddingPlan({
+    beds: roomType.beds, extraPlaces: places, adults, extraAdults: occupancy.extraAdults,
+    extraAdultMinor: roomType.extraAdultMinor, includesBedding: roomType.extraAdultIncludesBedding,
+  });
+  if (unavailable) throw new HotelError('BEDDING_UNAVAILABLE', `${roomType.name} has no sleeping place for adult ${unavailable}`);
   let roomMinor = 0;
   let taxMinor = 0;
+  const byType = new Map();
   const priced = nights.map((night) => {
-    const { rateMinor: planMinor, source } = planNightRate({ plan, basePlan, overrides, night, weekendNights: hotel.weekendNights, chargedGuests: occupancy.chargedGuests });
-    const rateMinor = planMinor + extrasMinor;
+    const { rateMinor: planMinor, roomOnlyMinor, source } = planNightRate({ plan, basePlan, overrides, night, weekendNights: hotel.weekendNights, chargedGuests: occupancy.chargedGuests });
+    let left = charged;
+    const used = places.map((place, index) => ({ place, index, each: placeNightMinor(place, roomOnlyMinor, applyBasisPoints) }))
+      .sort((a, b) => a.each - b.each)
+      .map(({ place, index, each }) => { const count = Math.min(left, place.count); left -= count; return { place, index, each, count }; })
+      .filter((row) => row.count > 0);
+    const beddingMinor = used.reduce((sum, row) => sum + row.each * row.count, 0);
+    // The line names every place row charged on some night, at its largest nightly count.
+    for (const { place, index, count, each } of used) {
+      if (!each) continue;
+      const row = byType.get(index);
+      if (!row || row.count < count) byType.set(index, { type: place.type, count, mode: place.charge?.mode ?? 'fixed', amount: place.charge?.amount ?? 0 });
+    }
+    const rateMinor = planMinor + extrasMinor + beddingMinor;
     const taxBps = taxBpsFor(rateMinor, night, slabs);
     const tax = applyBasisPoints(rateMinor, taxBps);
     roomMinor += rateMinor;
     taxMinor += tax;
-    return { night, rateMinor, source, taxBps, taxMinor: tax };
+    return { night, rateMinor, source, taxBps, taxMinor: tax, ...(beddingMinor ? { beddingMinor } : {}) };
   });
   if (!Number.isSafeInteger(roomMinor + taxMinor)) throw new RangeError('Amount exceeds safe integer range');
-  return { nights: priced, occupancy, roomMinor, taxMinor, totalMinor: roomMinor + taxMinor };
+  // Only priced bedding changes the quote shape: ₹0 places (pre-3.4 rooms) keep the old digest and no guest label.
+  const bedding = [...byType.values()];
+  return { nights: priced, occupancy, ...(bedding.length ? { bedding } : {}), roomMinor, taxMinor, totalMinor: roomMinor + taxMinor };
 }
 
 /** The guest-facing promise for a plan, from its rules (never free text). */

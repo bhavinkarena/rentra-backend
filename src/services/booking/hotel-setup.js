@@ -62,19 +62,20 @@ export async function saveHotelRooms(database, ownerId, { rentableId, expectedVe
     const saved = [];
     for (const row of input) {
       const values = [row.name, JSON.stringify(row.beds), row.sizeSqm, row.view, row.maxAdults, row.maxChildren, row.maxOccupancy,
-        row.baseOccupancy, row.roomCount, row.extraAdult * 100, row.extraChild * 100, JSON.stringify(row.amenities), row.sortOrder, row.isActive, JSON.stringify(row.extraPlaces)];
-      const [n, beds, size, view, adults, children, occupancy, base, count, extraAdult, extraChild, amenities, sort, active, extra] = values;
+        row.baseOccupancy, row.roomCount, row.extraAdult * 100, row.extraChild * 100, JSON.stringify(row.amenities), row.sortOrder, row.isActive, JSON.stringify(row.extraPlaces), row.extraAdultIncludesBedding];
+      const [n, beds, size, view, adults, children, occupancy, base, count, extraAdult, extraChild, amenities, sort, active, extra, includesBedding] = values;
       try {
         const [room] = row.id
           ? await tx`UPDATE room_type SET name=${n}, beds=${beds}::text::jsonb, size_sqm=${size}, view=${view}, max_adults=${adults},
               max_children=${children}, max_occupancy=${occupancy}, base_occupancy=${base}, room_count=${count},
               extra_adult_minor=${extraAdult}, extra_child_minor=${extraChild}, amenities=${amenities}::text::jsonb, extra_places=${extra}::text::jsonb,
+              extra_adult_includes_bedding=${includesBedding},
               sort_order=${sort}, is_active=${active}, updated_at=now()
             WHERE id=${row.id} AND rentable_id=${rentableId} RETURNING id`
           : await tx`INSERT INTO room_type(rentable_id,name,beds,size_sqm,view,max_adults,max_children,max_occupancy,base_occupancy,
-              room_count,extra_adult_minor,extra_child_minor,amenities,sort_order,is_active,extra_places)
+              room_count,extra_adult_minor,extra_child_minor,amenities,sort_order,is_active,extra_places,extra_adult_includes_bedding)
             VALUES (${rentableId},${n},${beds}::text::jsonb,${size},${view},${adults},${children},${occupancy},${base},${count},
-              ${extraAdult},${extraChild},${amenities}::text::jsonb,${sort},${active},${extra}::text::jsonb) RETURNING id`;
+              ${extraAdult},${extraChild},${amenities}::text::jsonb,${sort},${active},${extra}::text::jsonb,${includesBedding}) RETURNING id`;
         saved.push(room.id);
       } catch (error) {
         if (error.code === '23514' && error.constraint_name === 'room_night_capacity_chk') {
@@ -214,6 +215,7 @@ export async function hotelForEdit(database, rentableId) {
     database`SELECT t.id, t.name, t.beds, t.size_sqm AS "sizeSqm", t.view, t.max_adults AS "maxAdults", t.max_children AS "maxChildren",
         t.max_occupancy AS "maxOccupancy", t.base_occupancy AS "baseOccupancy", t.room_count AS "roomCount",
         (t.extra_adult_minor/100)::int AS "extraAdult", (t.extra_child_minor/100)::int AS "extraChild", t.amenities, t.extra_places AS "extraPlaces",
+        t.extra_adult_includes_bedding AS "extraAdultIncludesBedding",
         t.sort_order AS "sortOrder", t.is_active AS "isActive",
         (SELECT count(*)::int FROM booking_room br WHERE br.room_type_id=t.id AND br.state IN ('held','booked')
           AND br.check_out > (now() AT TIME ZONE 'Asia/Kolkata')::date) AS "upcomingRooms"

@@ -215,7 +215,15 @@ export const hotelRoomSchema = z.object({
   name: roomName,
   beds: z.array(z.object({ type: z.enum(BED_TYPES), count: z.number().int().min(1).max(6) }).strict()).min(1, 'Add the beds').max(4),
   // Story 3.3: extra sleeping places are a physical promise, never a price.
-  extraPlaces: z.array(z.object({ type: z.enum(EXTRA_PLACE_TYPES), count: z.number().int().min(1).max(4) }).strict()).max(2).default([]),
+  // Story 3.4: an optional per-type price per place per night (fixed whole rupees, or % of the room-only rate); none = free.
+  extraPlaces: z.array(z.object({
+    type: z.enum(EXTRA_PLACE_TYPES), count: z.number().int().min(1).max(4),
+    charge: z.discriminatedUnion('mode', [
+      z.object({ mode: z.literal('fixed'), amount: wholeRupees(0, 50000, 'Bedding charge') }).strict(),
+      z.object({ mode: z.literal('percent'), amount: z.number().int('Enter a whole percentage').min(0).max(100, 'Bedding can be at most 100%') }).strict(),
+    ]).optional(),
+  }).strict()).max(2).default([]),
+  extraAdultIncludesBedding: z.boolean().default(false),
   sizeSqm: z.number().int().min(4).max(2000).nullable().default(null),
   view: z.enum(ROOM_VIEWS).nullable().default(null),
   maxAdults: z.number().int().min(1).max(12),

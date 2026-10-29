@@ -596,6 +596,13 @@
       "when": 1790591514015,
       "tag": "0084_room_promises",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1790591515015,
+      "tag": "0085_bedding_charge",
+      "breakpoints": true
     }
   ]
 }

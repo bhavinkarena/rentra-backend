@@ -42,6 +42,8 @@ const deluxe = {
   roomCount: 12,
   extraAdultMinor: 70000,
   extraChildMinor: 40000,
+  beds: [{ type: 'king', count: 1 }],
+  extraPlaces: [{ type: 'extra_bed', count: 1 }],
 };
 const base = { id: 'base', derivedFrom: null, weekdayMinor: 260000, weekendMinor: 300000 };
 const breakfast = { id: 'bf', derivedFrom: 'base', derivedPctBps: 0, derivedPerGuestMinor: 25000 };
@@ -112,10 +114,19 @@ test('plan rates: weekday, weekend, date override, derived plans', () => {
       weekendNights: hotel.weekendNights,
       chargedGuests,
     });
-  assert.deepEqual(rate(base, '2030-01-10'), { rateMinor: 260000, source: 'weekday' });
-  assert.deepEqual(rate(base, '2030-01-11'), { rateMinor: 300000, source: 'weekend' });
+  assert.deepEqual(rate(base, '2030-01-10'), {
+    rateMinor: 260000,
+    roomOnlyMinor: 260000,
+    source: 'weekday',
+  });
+  assert.deepEqual(rate(base, '2030-01-11'), {
+    rateMinor: 300000,
+    roomOnlyMinor: 300000,
+    source: 'weekend',
+  });
   assert.deepEqual(rate(base, '2030-01-10', { '2030-01-10': 340000 }), {
     rateMinor: 340000,
+    roomOnlyMinor: 340000,
     source: 'override',
   });
   assert.equal(rate(breakfast, '2030-01-10').rateMinor, 310000, 'breakfast adds per charged guest');
@@ -367,4 +378,124 @@ test('availability is the tightest night; stop-sell, arrival rules and minimum n
     roomTypeAvailability({ roomCount: 12, nights, nightRows: [], minNights: 4 }).reason,
     'MIN_NIGHTS',
   );
+});
+
+test('Story 3.4: bedding per night only for adults the beds cannot hold', () => {
+  const nights = ['2030-01-10', '2030-01-11']; // weekday, weekend
+  const room = (extra) => ({
+    ...deluxe,
+    beds: [{ type: 'double', count: 1 }],
+    extraAdultMinor: 0,
+    ...extra,
+  });
+  const price = (roomType, adults, plan = base) =>
+    priceRoomStay({
+      nights,
+      roomType,
+      plan,
+      basePlan: base,
+      overrides: {},
+      hotel,
+      slabs,
+      adults,
+      childAges: [],
+    });
+  const bed500 = [{ type: 'extra_bed', count: 1, charge: { mode: 'fixed', amount: 500 } }];
+  // Double, 2 adults: nothing.
+  assert.equal(price(room({ extraPlaces: bed500 }), 2).bedding, undefined);
+  // Double + single, 3 adults: nothing.
+  assert.equal(
+    price(
+      room({
+        beds: [
+          { type: 'double', count: 1 },
+          { type: 'single', count: 1 },
+        ],
+        extraPlaces: bed500,
+      }),
+      3,
+    ).bedding,
+    undefined,
+  );
+  // Double + extra bed ₹500, 3 adults: +50000 each night, taxed.
+  const fixed = price(room({ extraPlaces: bed500 }), 3);
+  assert.deepEqual(
+    fixed.nights.map((n) => [n.rateMinor, n.beddingMinor, n.taxMinor]),
+    [
+      [310000, 50000, 15500],
+      [350000, 50000, 17500],
+    ],
+  );
+  assert.deepEqual(fixed.bedding, [{ type: 'extra_bed', count: 1, mode: 'fixed', amount: 500 }]);
+  // 10% of the room-only rate (derived plan's meals and per-guest charge excluded): 4000 / 6000 → 400 / 600.
+  const pct = { ...base, weekdayMinor: 400000, weekendMinor: 600000 };
+  const tenPct = priceRoomStay({
+    nights,
+    roomType: room({
+      extraPlaces: [{ type: 'extra_bed', count: 1, charge: { mode: 'percent', amount: 10 } }],
+    }),
+    plan: breakfast,
+    basePlan: pct,
+    overrides: {},
+    hotel,
+    slabs,
+    adults: 3,
+    childAges: [],
+  });
+  assert.deepEqual(
+    tenPct.nights.map((n) => n.beddingMinor),
+    [40000, 60000],
+  );
+  // Mattress ₹300 + extra bed ₹500, one needed: the mattress.
+  const cheap = price(
+    room({
+      extraPlaces: [
+        ...bed500,
+        { type: 'mattress', count: 1, charge: { mode: 'fixed', amount: 300 } },
+      ],
+    }),
+    3,
+  );
+  assert.deepEqual(cheap.bedding, [{ type: 'mattress', count: 1, mode: 'fixed', amount: 300 }]);
+  // Extra adult ₹800 includes bedding: no bedding; unticked: both.
+  const paid = { extraAdultMinor: 80000, baseOccupancy: 2, extraPlaces: bed500 };
+  const ticked = price(room({ ...paid, extraAdultIncludesBedding: true }), 3);
+  assert.equal(ticked.bedding, undefined);
+  assert.equal(ticked.nights[0].rateMinor, 340000);
+  assert.equal(
+    price(room({ ...paid, extraAdultIncludesBedding: false }), 3).nights[0].rateMinor,
+    390000,
+  );
+  // Old room 1 king max 3, no places.
+  rejects(
+    () => price(room({ beds: [{ type: 'king', count: 1 }], extraPlaces: [] }), 3),
+    'BEDDING_UNAVAILABLE',
+  );
+  // A pre-3.4 place without a charge is free.
+  const free = price(room({ extraPlaces: [{ type: 'extra_bed', count: 1 }] }), 3);
+  assert.equal(free.nights[0].rateMinor, 260000);
+  assert.equal(free.nights[0].beddingMinor, undefined);
+  assert.equal(free.bedding, undefined, 'a free place keeps the old quote shape');
+  // Mixed fixed/percent: mattress ₹500 vs bed 10% of 4000/6000 → bed on weekday (400), mattress on weekend (500).
+  const mixed = priceRoomStay({
+    nights,
+    roomType: room({
+      extraPlaces: [
+        { type: 'extra_bed', count: 1, charge: { mode: 'percent', amount: 10 } },
+        { type: 'mattress', count: 1, charge: { mode: 'fixed', amount: 500 } },
+      ],
+    }),
+    plan: { ...base, weekdayMinor: 400000, weekendMinor: 600000 },
+    basePlan: { ...base, weekdayMinor: 400000, weekendMinor: 600000 },
+    overrides: {},
+    hotel,
+    slabs,
+    adults: 3,
+    childAges: [],
+  });
+  assert.deepEqual(
+    mixed.nights.map((n) => n.beddingMinor),
+    [40000, 50000],
+  );
+  assert.deepEqual(mixed.bedding.map((b) => b.type).sort(), ['extra_bed', 'mattress']);
 });

@@ -534,13 +534,16 @@ test(
         );
         await sql`UPDATE rentable SET status='live' WHERE id=${hotel.id}`;
         const checkIn = addLocalDays(propertyToday(), 20);
-        const quote = await quoteHotelStay(sql, {
-          rentableId: hotel.id,
-          checkIn,
-          checkOut: addLocalDays(checkIn, 1),
-          rooms: [{ roomTypeId: deluxe.id, ratePlanId: plan.id, adults: 3 }],
-        });
-        assert.equal(quote.lines.length, 1, 'still bookable');
+        const quoteFor = (adults) =>
+          quoteHotelStay(sql, {
+            rentableId: hotel.id,
+            checkIn,
+            checkOut: addLocalDays(checkIn, 1),
+            rooms: [{ roomTypeId: deluxe.id, ratePlanId: plan.id, adults }],
+          });
+        assert.equal((await quoteFor(2)).lines.length, 1, 'still bookable');
+        // Story 3.4: the third adult has no sleeping place, so that quote is refused.
+        await rejects(quoteFor(3), 'BEDDING_UNAVAILABLE');
         const fresh = flagged.roomTypes.map(strip);
         await rejects(
           saveHotelRooms(sql, owner.id, {
@@ -559,10 +562,42 @@ test(
           rentableId: hotel.id,
           expectedVersion: await version(),
           rooms: fresh.map((row) =>
-            row.id === deluxe.id ? { ...row, extraPlaces: [{ type: 'extra_bed', count: 1 }] } : row,
+            row.id === deluxe.id
+              ? {
+                  ...row,
+                  extraPlaces: [
+                    { type: 'extra_bed', count: 1, charge: { mode: 'percent', amount: 10 } },
+                  ],
+                  extraAdultIncludesBedding: true,
+                }
+              : row,
           ),
         });
-        assert.deepEqual((await edit()).capacityWarnings, []);
+        const readBack = await edit();
+        assert.deepEqual(readBack.capacityWarnings, []);
+        // Story 3.4: bedding charge and the includes-bedding box save and read back (audit only, no review).
+        const savedDeluxe = readBack.roomTypes.find((row) => row.id === deluxe.id);
+        assert.deepEqual(savedDeluxe.extraPlaces, [
+          { type: 'extra_bed', count: 1, charge: { mode: 'percent', amount: 10 } },
+        ]);
+        assert.equal(savedDeluxe.extraAdultIncludesBedding, true);
+        await rejects(
+          saveHotelRooms(sql, owner.id, {
+            rentableId: hotel.id,
+            expectedVersion: await version(),
+            rooms: readBack.roomTypes.map(strip).map((row) =>
+              row.id === deluxe.id
+                ? {
+                    ...row,
+                    extraPlaces: [
+                      { type: 'extra_bed', count: 1, charge: { mode: 'percent', amount: 101 } },
+                    ],
+                  }
+                : row,
+            ),
+          }),
+          'VALIDATION_FAILED',
+        );
         // Owner decision: extra sleeping places on a live hotel do not send it back to review, but are audited.
         assert.equal(added.sentBack, false);
         assert.equal(
@@ -573,7 +608,7 @@ test(
         const [audit] =
           await sql`SELECT "after" FROM audit_log WHERE entity_id=${hotel.id} AND action='hotel_rooms_changed' ORDER BY "at" DESC LIMIT 1`;
         assert.deepEqual(audit.after.rooms.find((row) => row.id === deluxe.id).extraPlaces, [
-          { type: 'extra_bed', count: 1 },
+          { type: 'extra_bed', count: 1, charge: { mode: 'percent', amount: 10 } },
         ]);
         // A removed (inactive) room that would break the rule does not block the save.
         const raw = (await edit()).roomTypes;

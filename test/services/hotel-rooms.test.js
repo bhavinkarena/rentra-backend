@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   bedCapacity,
+  beddingPlan,
   capacityShortfall,
   inclusionsProblem,
   mealDefaults,
@@ -82,4 +83,49 @@ test('Story 3.3: meal defaults and overrides', () => {
   assert.match(inclusionsProblem('MP', resolveInclusions('MP', null)), /lunch or dinner/);
   assert.equal(inclusionsProblem('MP', { breakfast: true, lunch: true, dinner: false }), null);
   assert.ok(inclusionsProblem('AP', { breakfast: true, lunch: true, dinner: false }));
+});
+
+test('Story 3.4: beddingPlan counts places only for adults the beds cannot hold', () => {
+  const double = [{ type: 'double', count: 1 }];
+  const bed = [{ type: 'extra_bed', count: 1 }];
+  assert.deepEqual(beddingPlan({ beds: double, extraPlaces: bed, adults: 2 }), {
+    needed: 0,
+    covered: 0,
+    charged: 0,
+    unavailable: 0,
+  });
+  assert.equal(
+    beddingPlan({ beds: [...double, { type: 'single', count: 1 }], adults: 3 }).charged,
+    0,
+  );
+  assert.equal(beddingPlan({ beds: double, extraPlaces: bed, adults: 3 }).charged, 1);
+  assert.equal(
+    beddingPlan({
+      beds: double,
+      extraPlaces: bed,
+      adults: 3,
+      extraAdults: 1,
+      extraAdultMinor: 80000,
+      includesBedding: true,
+    }).charged,
+    0,
+  );
+  assert.equal(
+    beddingPlan({
+      beds: double,
+      extraPlaces: bed,
+      adults: 3,
+      extraAdults: 1,
+      extraAdultMinor: 0,
+      includesBedding: true,
+    }).charged,
+    1,
+    'a free extra adult covers nothing',
+  );
+  assert.equal(beddingPlan({ beds: [{ type: 'king', count: 1 }], adults: 3 }).unavailable, 3);
+  assert.equal(
+    beddingPlan({ beds: [], adults: 3 }).charged,
+    0,
+    'undeclared beds (seeded rows) charge nothing',
+  );
 });
