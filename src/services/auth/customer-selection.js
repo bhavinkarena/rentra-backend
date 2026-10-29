@@ -19,10 +19,17 @@ export const SELECTION_TTL = 15 * 60;
 export function safeCustomerReturnPath(value) {
   return typeof value === 'string' && /^\/listing\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) && value.length <= 240 ? value : '/';
 }
+/** Encoded control characters, whitespace, backslashes, `@` or `//` never pass. */
+function unsafeDecoded(value) {
+  try { return /[\s\\@]|\/\/|[\u0000-\u001f\u007f]/.test(decodeURIComponent(value)); } catch { return true; }
+}
 /** Story 2.3: a signed-in customer page to return to after login. Same-origin paths only, no query. */
 export function safeCustomerAreaPath(value) {
-  return typeof value === 'string' && value.length <= 240
-    && /^\/(checkout|bookings|account|support|disputes|reviews)(\/[A-Za-z0-9_-]+)*$/.test(value) ? value : null;
+  if (typeof value !== 'string') return null;
+  // Story 3.1: the guest's search, query included, so login keeps the whole search context.
+  if (value.length <= 2000 && /^\/search(\?[A-Za-z0-9_.~%&=+,:-]*)?$/.test(value) && !unsafeDecoded(value)) return value;
+  return value.length <= 240
+    && /^\/(checkout|bookings|account|support|disputes|reviews|saved)(\/[A-Za-z0-9_-]+)*$/.test(value) ? value : null;
 }
 function key(env) {
   if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32) throw new Error('Session secret is not configured.');

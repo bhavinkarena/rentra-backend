@@ -53,8 +53,36 @@ export async function getDiscoveryRegistry(database = sql) {
 
 const unavailable = new Set(['INVENTORY_NOT_READY', 'INVENTORY_REMEDIATION_REQUIRED', 'SCHEDULE_UNAVAILABLE', 'LISTING_UNAVAILABLE', 'OWNER_REPAYMENT_OVERDUE', 'UNSUPPORTED_INVENTORY', 'SLOT_UNAVAILABLE', 'CAPACITY_EXCEEDED', 'AVAILABILITY_CONFLICT', 'NOT_FOUND']);
 
-/** Filter every candidate before global sorting/pagination; never paginate before availability. */
+/**
+ * Story 3.1: a zero-result page also carries `meta.inventory`, the live count for the
+ * location, category and vertical alone (no filters, dates or party), so the guest sees
+ * "nothing listed here yet" apart from "your filters exclude everything". Read-only.
+ */
 export async function searchDiscovery(filters, route = null, database = sql, registry = null) {
+  const result = await searchDiscoveryResults(filters, route, database, registry);
+  if (result.total || result.errors?.length || result.code) return result;
+  const city = route?.city?.slug || filters.city, area = route?.area?.slug || filters.area;
+  const category = route?.category?.slug || filters.category;
+  const vertical = route?.verticalCode ?? filters.vertical ?? DEFAULT_VERTICAL;
+  const term = `%${filters.q.replace(/[\\%_]/g, '\\$&')}%`;
+  const [row] = await database`SELECT count(*)::int AS n FROM rentable r
+    JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
+    JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${vertical}
+    WHERE r.status='live' AND c.is_active AND a.is_active AND cat.is_active AND u.role='client' AND u.account_status='active'
+      AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area})
+      AND (${!category} OR cat.slug=${category} OR (r.rental_unit::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource_activity ra
+        JOIN category ac ON ac.id=ra.category_id WHERE ra.rentable_id=r.id AND ac.slug=${category})))
+      AND (${!filters.q} OR a.name ILIKE ${term} OR c.name ILIKE ${term} OR r.title ILIKE ${term})
+      -- Hotels count only when bookable at all (the main search's rate-plan predicate, without the
+      -- freecancel/breakfast filters). Remaining gap: farm/venue inventory-readiness and the hotel
+      -- landmark radius are not mirrored, so a hidden-by-readiness listing still counts as inventory.
+      AND (${vertical !== STAY_VERTICAL} OR (r.rental_unit::text='night' AND EXISTS (SELECT 1 FROM rate_plan rp
+        JOIN room_type rt ON rt.id=rp.room_type_id AND rt.is_active WHERE rp.rentable_id=r.id AND rp.is_active)))`;
+  return { ...result, meta: { ...result.meta, inventory: row.n } };
+}
+
+/** Filter every candidate before global sorting/pagination; never paginate before availability. */
+async function searchDiscoveryResults(filters, route = null, database = sql, registry = null) {
   registry ??= await getDiscoveryRegistry(database);
   const city = route?.city?.slug || filters.city;
   const category = route?.category?.slug || filters.category;

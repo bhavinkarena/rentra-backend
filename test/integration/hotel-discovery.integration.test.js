@@ -53,6 +53,21 @@ test(
       clearDiscoveryRegistryCache(sql);
     });
 
+    await t.test('Story 3.1: zero results tell no inventory from no match', async () => {
+      const match = await search({ city: 'surat', min: '99999999' });
+      assert.equal(match.total, 0);
+      assert.equal(match.meta.inventory, 3);
+      const none = await search({ city: 'surat', q: 'no-such-place', min: '1' });
+      assert.equal(none.total, 0);
+      assert.equal(none.meta.inventory, 0);
+      assert.equal((await search({ city: 'surat', q: 'no-such-place' })).meta.inventory, 0);
+      // Fully booked: hotels exist, only dates and party exclude them (frontend: booked copy).
+      const booked = await search({ city: 'surat', checkin, checkout, rooms: '8', adults: '48' });
+      assert.equal(booked.total, 0);
+      assert.equal(booked.meta.inventory, 3);
+      assert.equal((await search({ city: 'surat' })).meta, undefined);
+    });
+
     await t.test('undated search shows every hotel from its lowest nightly rate', async () => {
       const result = await search({ city: 'surat' });
       assert.equal(result.total, 3);
