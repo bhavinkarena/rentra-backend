@@ -5,6 +5,7 @@ import {
   HOTEL_POLICY, HotelError, cancellationTerms, hotelRefund, priceRoomStay, roomTypeAvailability, stayInstants, stayNights,
 } from '../domain/hotel.js';
 import { resolveInclusions } from '../domain/hotel-rooms.js';
+import { effectiveChildPolicy } from '../domain/child-policy.js';
 import { quoteDigest } from './quotes.js';
 import { expireInventoryHolds, withListingSnapshot } from './inventory.js';
 
@@ -18,11 +19,18 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const day = (value) => (value instanceof Date ? value.toISOString().slice(0, 10) : value);
 const int = (value) => (value == null ? null : Number(value));
 
-const roomTypeOf = (row) => ({
+// Story 3.6: `childPolicy` is the effective { version, source, policy } this room quotes with.
+const roomTypeOf = (row, profile = null) => ({
   id: row.id, name: row.name, maxAdults: row.max_adults, maxChildren: row.max_children, maxOccupancy: row.max_occupancy,
   baseOccupancy: row.base_occupancy, roomCount: row.room_count,
   extraAdultMinor: int(row.extra_adult_minor), extraChildMinor: int(row.extra_child_minor),
   beds: row.beds, extraPlaces: row.extra_places ?? [], extraAdultIncludesBedding: row.extra_adult_includes_bedding ?? false, sizeSqm: row.size_sqm, view: row.view, amenities: row.amenities ?? [],
+  cots: row.cots ?? { count: 0 },
+  childPolicy: profile && {
+    version: profile.child_policy_version ?? 1,
+    ...effectiveChildPolicy({ childPolicy: profile.child_policy, childFreeAge: profile.child_free_age },
+      { childPolicy: row.child_policy, extraChildMinor: int(row.extra_child_minor) }),
+  },
 });
 // Story 2.6: a plan uses the hotel default unless the owner chose its own policy.
 const planOf = (row, hotelPolicy) => {
@@ -51,7 +59,7 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
   const ids = listings.map((l) => l.id);
   if (!ids.length) return new Map();
   const [profiles, rooms, plans, overrides, nightRows, staleHolds, slabs] = await Promise.all([
-    tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights,
+    tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights, p.child_policy, p.child_policy_version,
         r.cancellation_policy AS hotel_policy
       FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id JOIN category c ON c.id = r.category_id
       WHERE p.rentable_id IN ${tx(ids)} AND c.vertical_code = 'hotel'`,
@@ -103,7 +111,7 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
         checkInMinute: profile.check_in_minute, checkOutMinute: profile.check_out_minute,
         childFreeAge: profile.child_free_age, weekendNights: profile.weekend_nights.map(Number),
       },
-      roomTypes: (roomsByHotel.get(listing.id) ?? []).map(roomTypeOf),
+      roomTypes: (roomsByHotel.get(listing.id) ?? []).map((row) => roomTypeOf(row, profile)),
       plans: (plansByHotel.get(listing.id) ?? []).map((row) => planOf(row, profile.hotel_policy)),
       overridesByPlan: overridesByHotel.get(listing.id) ?? {},
       nightsByRoom,
@@ -139,7 +147,7 @@ const roomSnapshot = (roomType, plan) => ({
   name: roomType.name, beds: roomType.beds, extraPlaces: roomType.extraPlaces,
   extraAdultIncludesBedding: roomType.extraAdultIncludesBedding, sizeSqm: roomType.sizeSqm, view: roomType.view,
   amenities: roomType.amenities, baseOccupancy: roomType.baseOccupancy, maxAdults: roomType.maxAdults, maxChildren: roomType.maxChildren,
-  inclusions: plan.inclusions,
+  inclusions: plan.inclusions, childPolicy: roomType.childPolicy, cots: roomType.cots,
 });
 
 const planSnapshot = (plan) => ({
@@ -215,7 +223,7 @@ function buildQuote(data, { checkIn, checkOut, rooms }, now) {
     wanted.set(roomType.id, (wanted.get(roomType.id) ?? 0) + 1);
     const childAges = room.childAges ?? [];
     const price = priceLine(data, nights, { roomType, plan, adults: room.adults, childAges });
-    return { roomTypeId: roomType.id, ratePlanId: plan.id, adults: room.adults, childAges, plan: planSnapshot(plan), ...price };
+    return { roomTypeId: roomType.id, ratePlanId: plan.id, adults: room.adults, childAges, plan: planSnapshot(plan), childPolicy: roomType.childPolicy, ...price };
   });
   for (const [roomTypeId, count] of wanted) {
     const roomType = data.roomTypes.find((row) => row.id === roomTypeId);

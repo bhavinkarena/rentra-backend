@@ -440,7 +440,8 @@ export async function saveHotelRatesStep(_prev, formData) {
 async function hotelProfileAction(formData, part, known = null) {
   const { user, listing } = known ? { user: await requireClient(), listing: known } : await hotelListing(formData);
   const values = part === 'stay'
-    ? { checkInTime: formData.get('checkInTime'), checkOutTime: formData.get('checkOutTime'), childFreeAge: formData.get('childFreeAge'),
+    ? { checkInTime: formData.get('checkInTime'), checkOutTime: formData.get('checkOutTime'), childFreeAge: formData.get('childFreeAge') ?? undefined,
+      ...(formData.has('childPolicy') ? { childPolicy: formData.get('childPolicy') ? jsonField(formData, 'childPolicy') : null } : {}),
       weekendNights: formData.getAll('weekendNights'), starRating: formData.get('starRating') ?? '' }
     : part === 'rules'
       ? { couples: formData.get('couples') ?? undefined, localId: formData.get('localId') ?? undefined, idTypes: formData.getAll('idTypes'),

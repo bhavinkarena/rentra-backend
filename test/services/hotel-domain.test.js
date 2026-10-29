@@ -86,21 +86,28 @@ test('occupancy: children under the free age are free; base occupancy covers adu
     chargedGuests: 2,
     extraAdults: 0,
     extraChildren: 0,
+    childMinor: 0,
+    cots: 0,
   });
   assert.deepEqual(roomOccupancy(deluxe, { adults: 3, childAges: [8] }, 6), {
     guests: 4,
     chargedGuests: 4,
     extraAdults: 1,
     extraChildren: 1,
+    childMinor: deluxe.extraChildMinor,
+    cots: 0,
   });
   assert.deepEqual(roomOccupancy(deluxe, { adults: 1, childAges: [10, 12] }, 6), {
     guests: 3,
     chargedGuests: 3,
     extraAdults: 0,
     extraChildren: 1,
+    childMinor: deluxe.extraChildMinor,
+    cots: 0,
   });
   rejects(() => roomOccupancy(deluxe, { adults: 4 }, 6), 'OCCUPANCY');
-  rejects(() => roomOccupancy(deluxe, { adults: 3, childAges: [2, 3] }, 6), 'OCCUPANCY');
+  rejects(() => roomOccupancy(deluxe, { adults: 3, childAges: [2, 3] }, 6), 'COT_UNAVAILABLE');
+  rejects(() => roomOccupancy(deluxe, { adults: 3, childAges: [7, 8] }, 6), 'OCCUPANCY');
   rejects(() => roomOccupancy(deluxe, { adults: 2, childAges: [18] }, 6), 'OCCUPANCY');
 });
 

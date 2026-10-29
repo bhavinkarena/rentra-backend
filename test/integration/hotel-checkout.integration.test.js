@@ -528,6 +528,89 @@ test(
     );
 
     await t.test(
+      'Story 3.6: child bands price the quote; a policy change after quoting requotes',
+      async () => {
+        const session = await guest();
+        const dates = stay();
+        const quoteFor = () =>
+          createStayQuote(
+            sql,
+            {
+              rentableId: h.hotel,
+              ...dates,
+              rooms: [
+                { roomTypeId: h.deluxe, ratePlanId: h.deluxeBase, adults: 2, childAges: [8] },
+              ],
+            },
+            { customerId: session.userId },
+          );
+        const before = await quoteFor();
+        const policy = (amount) =>
+          JSON.stringify({
+            adultRateFromAge: 12,
+            bands: [
+              { kind: 'infant', fromAge: 0, toAge: 1, rule: { type: 'free', amount: 0 } },
+              { kind: 'child', fromAge: 2, toAge: 11, rule: { type: 'fixed', amount } },
+            ],
+          });
+        await sql`UPDATE hotel_profile SET child_policy=${policy(500)}::text::jsonb, child_policy_version=child_policy_version+1 WHERE rentable_id=${h.hotel}`;
+        try {
+          const stale = await quoteFor();
+          assert.notEqual(stale.hash, before.hash);
+          await sql`UPDATE hotel_profile SET child_policy=${policy(600)}::text::jsonb, child_policy_version=child_policy_version+1 WHERE rentable_id=${h.hotel}`;
+          await assert.rejects(
+            createCheckoutHold(
+              sql,
+              session,
+              {
+                rentableId: h.hotel,
+                quoteId: stale.id,
+                hash: stale.hash,
+                version: stale.version,
+                idempotencyKey: randomUUID(),
+                accepted: true,
+                stay: { guestNames: ['Kid Guest'] },
+              },
+              env,
+            ),
+            (error) => error.code === 'QUOTE_CHANGED',
+          );
+          const quote = await quoteFor();
+          const held = await createCheckoutHold(
+            sql,
+            session,
+            {
+              rentableId: h.hotel,
+              quoteId: quote.id,
+              hash: quote.hash,
+              version: quote.version,
+              idempotencyKey: randomUUID(),
+              accepted: true,
+              stay: { guestNames: ['Kid Guest'] },
+            },
+            env,
+          );
+          const [room] =
+            await sql`SELECT br.child_ages, br.nights, br.room_snapshot FROM booking_room br JOIN booking b ON b.id=br.booking_id WHERE b.order_id=${held.orderId}`;
+          assert.deepEqual(room.child_ages, [8]);
+          assert.equal(room.room_snapshot.childPolicy.policy.bands[1].rule.amount, 600);
+          assert.equal(room.room_snapshot.childPolicy.source, 'property');
+          // 2 adults fill base 2; the 8-year-old pays ₹600 per night (was the room's extra child price).
+          const [deluxe] =
+            await sql`SELECT extra_child_minor::int AS child FROM room_type WHERE id=${h.deluxe}`;
+          const priced = await quoteFor();
+          assert.ok(
+            priced.totals.rentMinor - before.totals.rentMinor >=
+              (60000 - deluxe.child) * room.nights.length,
+            'plus tax',
+          );
+        } finally {
+          await sql`UPDATE hotel_profile SET child_policy=NULL WHERE rentable_id=${h.hotel}`;
+        }
+      },
+    );
+
+    await t.test(
       '1,000 concurrent quote+hold attempts on 5 rooms: never more than 5 held',
       async () => {
         const dates = stay(1);

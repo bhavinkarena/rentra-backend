@@ -1,4 +1,5 @@
 import 'server-only';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   hotelGstSchema, hotelPlansSchema, hotelRoomsSchema, hotelRulesSchema, hotelStaySchema,
@@ -62,20 +63,20 @@ export async function saveHotelRooms(database, ownerId, { rentableId, expectedVe
     const saved = [];
     for (const row of input) {
       const values = [row.name, JSON.stringify(row.beds), row.sizeSqm, row.view, row.maxAdults, row.maxChildren, row.maxOccupancy,
-        row.baseOccupancy, row.roomCount, row.extraAdult * 100, row.extraChild * 100, JSON.stringify(row.amenities), row.sortOrder, row.isActive, JSON.stringify(row.extraPlaces), row.extraAdultIncludesBedding];
-      const [n, beds, size, view, adults, children, occupancy, base, count, extraAdult, extraChild, amenities, sort, active, extra, includesBedding] = values;
+        row.baseOccupancy, row.roomCount, row.extraAdult * 100, row.extraChild * 100, JSON.stringify(row.amenities), row.sortOrder, row.isActive, JSON.stringify(row.extraPlaces), row.extraAdultIncludesBedding, row.childPolicy && JSON.stringify(row.childPolicy), JSON.stringify(row.cots)];
+      const [n, beds, size, view, adults, children, occupancy, base, count, extraAdult, extraChild, amenities, sort, active, extra, includesBedding, childPolicy, cots] = values;
       try {
         const [room] = row.id
           ? await tx`UPDATE room_type SET name=${n}, beds=${beds}::text::jsonb, size_sqm=${size}, view=${view}, max_adults=${adults},
               max_children=${children}, max_occupancy=${occupancy}, base_occupancy=${base}, room_count=${count},
               extra_adult_minor=${extraAdult}, extra_child_minor=${extraChild}, amenities=${amenities}::text::jsonb, extra_places=${extra}::text::jsonb,
-              extra_adult_includes_bedding=${includesBedding},
+              extra_adult_includes_bedding=${includesBedding}, child_policy=${childPolicy}::text::jsonb, cots=${cots}::text::jsonb,
               sort_order=${sort}, is_active=${active}, updated_at=now()
             WHERE id=${row.id} AND rentable_id=${rentableId} RETURNING id`
           : await tx`INSERT INTO room_type(rentable_id,name,beds,size_sqm,view,max_adults,max_children,max_occupancy,base_occupancy,
-              room_count,extra_adult_minor,extra_child_minor,amenities,sort_order,is_active,extra_places,extra_adult_includes_bedding)
+              room_count,extra_adult_minor,extra_child_minor,amenities,sort_order,is_active,extra_places,extra_adult_includes_bedding,child_policy,cots)
             VALUES (${rentableId},${n},${beds}::text::jsonb,${size},${view},${adults},${children},${occupancy},${base},${count},
-              ${extraAdult},${extraChild},${amenities}::text::jsonb,${sort},${active},${extra}::text::jsonb,${includesBedding}) RETURNING id`;
+              ${extraAdult},${extraChild},${amenities}::text::jsonb,${sort},${active},${extra}::text::jsonb,${includesBedding},${childPolicy}::text::jsonb,${cots}::text::jsonb) RETURNING id`;
         saved.push(room.id);
       } catch (error) {
         if (error.code === '23514' && error.constraint_name === 'room_night_capacity_chk') {
@@ -99,6 +100,24 @@ export async function saveHotelRooms(database, ownerId, { rentableId, expectedVe
     if (effect.sentBack) {
       await tx`UPDATE rentable SET status=${effect.patch.status ?? listing.status}, prior_status=${effect.patch.priorStatus ?? listing.prior_status},
         updated_at=now() WHERE id=${rentableId}`;
+    }
+    // Story 3.6: a new child policy version only when a room's effective child terms really change (audit only, no review).
+    // Terms: own policy, else (with no property policy) the extra child price the fallback uses; plus cots.
+    // Removed or inactive rooms are ignored; a new or reactivated room counts only once it has its own policy or cots.
+    const [{ child_policy: propertyPolicy = null } = {}] = await tx`SELECT child_policy FROM hotel_profile WHERE rentable_id=${rentableId}`;
+    const terms = (r) => r && r.active ? [r.childPolicy ?? null, r.childPolicy || propertyPolicy ? null : r.extraChildMinor,
+      r.cots?.count ?? 0, r.cots?.count ? r.cots.amount ?? 0 : 0] : null;
+    const was = new Map(existing.map((r) => [r.id, terms({ active: r.is_active, childPolicy: r.child_policy, extraChildMinor: Number(r.extra_child_minor), cots: r.cots })]));
+    const next = new Map(input.map((r, i) => [saved[i], terms({ active: r.isActive, childPolicy: r.childPolicy, extraChildMinor: r.extraChild * 100, cots: r.cots })]));
+    const plain = (t) => t[0] == null && t[2] === 0;
+    const childChanged = [...next].some(([id, after]) => {
+      const before = was.get(id) ?? null;
+      if (after == null) return false; // removed rooms take no new quotes
+      return before == null ? !plain(after) : !isDeepStrictEqual(before, after);
+    });
+    if (childChanged) {
+      await tx`INSERT INTO hotel_profile(rentable_id) VALUES (${rentableId}) ON CONFLICT (rentable_id) DO NOTHING`;
+      await tx`UPDATE hotel_profile SET child_policy_version=child_policy_version+1, updated_at=now() WHERE rentable_id=${rentableId}`;
     }
     await audit(tx, ownerId, rentableId, 'hotel_rooms_changed', { rooms: input, deactivated: missing });
     return { roomTypeIds: saved, sentBack: effect.sentBack };
@@ -182,12 +201,18 @@ export async function saveHotelProfile(database, ownerId, { rentableId, expected
   const d = parsed.data;
   return ownedHotel(database, ownerId, rentableId, expectedVersion, async (tx) => {
     await tx`INSERT INTO hotel_profile(rentable_id) VALUES (${rentableId}) ON CONFLICT (rentable_id) DO NOTHING`;
-    const [profile] = await tx`SELECT policies FROM hotel_profile WHERE rentable_id=${rentableId} FOR UPDATE`;
+    const [profile] = await tx`SELECT policies, child_policy, child_free_age FROM hotel_profile WHERE rentable_id=${rentableId} FOR UPDATE`;
     const policies = { ...profile.policies };
     if (part === 'stay') {
       policies.stayAnswered = true;
+      // Story 3.6: an omitted childPolicy keeps the saved one; null clears it (back to the legacy fallback).
+      const childPolicy = d.childPolicy === undefined ? profile.child_policy : d.childPolicy;
+      const childFreeAge = d.childFreeAge ?? profile.child_free_age;
+      // The free age only prices quotes when no property policy is saved.
+      const changed = !isDeepStrictEqual(childPolicy ?? null, profile.child_policy ?? null) || (!childPolicy && childFreeAge !== profile.child_free_age);
       await tx`UPDATE hotel_profile SET check_in_minute=${minuteOf(d.checkInTime)}, check_out_minute=${minuteOf(d.checkOutTime)},
-        child_free_age=${d.childFreeAge}, weekend_nights=${[...new Set(d.weekendNights)].sort()}::smallint[],
+        child_free_age=${childFreeAge}, child_policy=${childPolicy ? JSON.stringify(childPolicy) : null}::text::jsonb,
+        child_policy_version=child_policy_version + ${changed ? 1 : 0}, weekend_nights=${[...new Set(d.weekendNights)].sort()}::smallint[],
         star_rating=${d.starRating === '' ? null : d.starRating}, policies=${JSON.stringify(policies)}::text::jsonb, updated_at=now()
         WHERE rentable_id=${rentableId}`;
     } else if (part === 'rules') {
@@ -210,12 +235,13 @@ export async function saveHotelProfile(database, ownerId, { rentableId, expected
 export async function hotelForEdit(database, rentableId) {
   const [[profile], roomTypes, ratePlans, [hotelPolicy]] = await Promise.all([
     database`SELECT star_rating AS "starRating", check_in_minute AS "checkInMinute", check_out_minute AS "checkOutMinute",
-        child_free_age AS "childFreeAge", weekend_nights AS "weekendNights", policies, gst_registered AS "gstRegistered", gstin
+        child_free_age AS "childFreeAge", child_policy AS "childPolicy", child_policy_version AS "childPolicyVersion",
+        weekend_nights AS "weekendNights", policies, gst_registered AS "gstRegistered", gstin
       FROM hotel_profile WHERE rentable_id=${rentableId}`,
     database`SELECT t.id, t.name, t.beds, t.size_sqm AS "sizeSqm", t.view, t.max_adults AS "maxAdults", t.max_children AS "maxChildren",
         t.max_occupancy AS "maxOccupancy", t.base_occupancy AS "baseOccupancy", t.room_count AS "roomCount",
         (t.extra_adult_minor/100)::int AS "extraAdult", (t.extra_child_minor/100)::int AS "extraChild", t.amenities, t.extra_places AS "extraPlaces",
-        t.extra_adult_includes_bedding AS "extraAdultIncludesBedding",
+        t.extra_adult_includes_bedding AS "extraAdultIncludesBedding", t.child_policy AS "childPolicy", t.cots,
         t.sort_order AS "sortOrder", t.is_active AS "isActive",
         (SELECT count(*)::int FROM booking_room br WHERE br.room_type_id=t.id AND br.state IN ('held','booked')
           AND br.check_out > (now() AT TIME ZONE 'Asia/Kolkata')::date) AS "upcomingRooms"

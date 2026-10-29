@@ -341,6 +341,127 @@ test(
         [720, 660, 6, [5, 6], 3, '24ABCDE1234F1Z5'],
       );
       assert.equal(profile.policies.couples, true);
+
+      // Story 3.6: explicit child bands; a gap is refused by name and nothing changes.
+      const bands = [
+        { kind: 'infant', fromAge: 0, toAge: 1, rule: { type: 'free', amount: 0 } },
+        { kind: 'child', fromAge: 2, toAge: 11, rule: { type: 'fixed', amount: 500 } },
+      ];
+      const stay = {
+        checkInTime: '12:00',
+        checkOutTime: '11:00',
+        weekendNights: ['5', '6'],
+        starRating: '3',
+      };
+      const failed = await saveHotelProfile(sql, owner.id, {
+        rentableId: hotel.id,
+        expectedVersion: await version(),
+        part: 'stay',
+        values: {
+          ...stay,
+          childPolicy: { adultRateFromAge: 12, bands: [bands[0], { ...bands[1], fromAge: 3 }] },
+        },
+      }).catch((error) => error);
+      assert.equal(failed.code, 'VALIDATION_FAILED');
+      assert.deepEqual(failed.fields['childPolicy.bands'], ['Age 2 is not covered']);
+      await rejects(
+        saveHotelProfile(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          part: 'stay',
+          values: {
+            ...stay,
+            childPolicy: {
+              adultRateFromAge: 12,
+              bands: [bands[0], { ...bands[1], rule: { type: 'percent', amount: 25 } }],
+            },
+          },
+        }),
+        'VALIDATION_FAILED',
+      );
+      const v1 = (await hotelForEdit(sql, hotel.id)).hotel.profile.childPolicyVersion;
+      await save('stay', { ...stay, childPolicy: { adultRateFromAge: 12, bands } });
+      const after = (await hotelForEdit(sql, hotel.id)).hotel.profile;
+      assert.deepEqual(after.childPolicy, { adultRateFromAge: 12, bands });
+      assert.equal(after.childPolicyVersion, v1 + 1);
+      assert.equal(after.childFreeAge, 6, 'an omitted child age keeps the saved one');
+      await save('stay', { ...stay, childPolicy: { adultRateFromAge: 12, bands } });
+      assert.equal(
+        (await hotelForEdit(sql, hotel.id)).hotel.profile.childPolicyVersion,
+        v1 + 1,
+        'unchanged policy keeps its version',
+      );
+      await save('stay', { ...stay, childPolicy: null });
+      assert.equal((await hotelForEdit(sql, hotel.id)).hotel.profile.childPolicy, null);
+
+      // Room override and cots save, read back and bump the version.
+      const roomsNow = (await hotelForEdit(sql, hotel.id)).hotel.roomTypes.map(
+        ({ upcomingRooms: _u, ...row }) => row,
+      );
+      const target = roomsNow.find((row) => row.isActive);
+      await saveHotelRooms(sql, owner.id, {
+        rentableId: hotel.id,
+        expectedVersion: await version(),
+        rooms: roomsNow.map((row) =>
+          row.id === target.id
+            ? {
+                ...row,
+                childPolicy: { adultRateFromAge: 12, bands },
+                cots: { count: 1, amount: 300 },
+              }
+            : row,
+        ),
+      });
+      const edited = (await hotelForEdit(sql, hotel.id)).hotel;
+      const savedRoom = edited.roomTypes.find((row) => row.id === target.id);
+      assert.deepEqual(savedRoom.childPolicy, { adultRateFromAge: 12, bands });
+      assert.deepEqual(savedRoom.cots, { count: 1, amount: 300 });
+      assert.equal(edited.profile.childPolicyVersion, v1 + 3);
+      const [logged] =
+        await sql`SELECT count(*)::int n FROM audit_log WHERE entity_id=${hotel.id} AND action='hotel_rooms_changed'
+        AND "after"::text LIKE '%"cots": {"count": 1, "amount": 300}%'`;
+      assert.equal(logged.n, 1, 'audited');
+
+      // Re-saving the same rooms, or changing only a removed room, keeps the version.
+      const same = edited.roomTypes.map(({ upcomingRooms: _u, ...row }) => row);
+      await saveHotelRooms(sql, owner.id, {
+        rentableId: hotel.id,
+        expectedVersion: await version(),
+        rooms: same,
+      });
+      assert.equal(
+        (await hotelForEdit(sql, hotel.id)).hotel.profile.childPolicyVersion,
+        v1 + 3,
+        'no real change, no new version',
+      );
+      // With no property policy, the fallback's extra child price is part of the terms.
+      const other = same.find((row) => row.isActive && row.id !== target.id);
+      if (other) {
+        await saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: same.map((row) =>
+            row.id === other.id ? { ...row, extraChild: row.extraChild + 1 } : row,
+          ),
+        });
+        assert.equal((await hotelForEdit(sql, hotel.id)).hotel.profile.childPolicyVersion, v1 + 4);
+      }
+      // A free-age change does not bump while a property policy is saved.
+      await save('stay', { ...stay, childPolicy: { adultRateFromAge: 12, bands } });
+      const withPolicy = (await hotelForEdit(sql, hotel.id)).hotel.profile.childPolicyVersion;
+      await save('stay', { ...stay, childFreeAge: '3' });
+      assert.equal(
+        (await hotelForEdit(sql, hotel.id)).hotel.profile.childPolicyVersion,
+        withPolicy,
+      );
+      await save('stay', { ...stay, childFreeAge: '6', childPolicy: null });
+      await saveHotelRooms(sql, owner.id, {
+        rentableId: hotel.id,
+        expectedVersion: await version(),
+        rooms: edited.roomTypes.map(({ upcomingRooms: _u, ...row }) =>
+          row.id === target.id ? { ...row, childPolicy: null, cots: { count: 0, amount: 0 } } : row,
+        ),
+      });
     });
 
     await t.test('completion: everything but proof, then submit', async () => {

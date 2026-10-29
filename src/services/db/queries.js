@@ -9,6 +9,7 @@ import {
 import { listingPath } from '@/services/domain/listing-url';
 import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { resolveInclusions } from '@/services/domain/hotel-rooms';
+import { effectiveChildPolicy } from '@/services/domain/child-policy';
 import { amenityStates, normalizePublicPhotos, publicHouseRules, publicSlotSchedules } from '@/services/domain/listing-content';
 import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
 import { minuteToHhmm } from '@/services/domain/hourly';
@@ -450,12 +451,12 @@ const HOTEL_PUBLIC_POLICIES = ['couples', 'localId', 'idTypes', 'pets', 'smoking
  */
 async function hotelDetail(row) {
   const [[profile], roomTypes, plans, landmarks] = await Promise.all([
-    sql`SELECT p.star_rating, p.check_in_minute, p.check_out_minute, p.child_free_age, p.policies, p.show_exact_address,
+    sql`SELECT p.star_rating, p.check_in_minute, p.check_out_minute, p.child_free_age, p.child_policy, p.policies, p.show_exact_address,
         r.location, CASE WHEN p.show_exact_address THEN r.exact_address END AS address
       FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id WHERE p.rentable_id = ${row.id}`,
     sql`SELECT id, name, beds, size_sqm AS "sizeSqm", view, max_adults AS "maxAdults", max_children AS "maxChildren",
         max_occupancy AS "maxOccupancy", room_count AS "roomCount", amenities, photos, extra_places AS "extraPlaces",
-        extra_adult_includes_bedding AS "extraAdultIncludesBedding"
+        extra_adult_includes_bedding AS "extraAdultIncludesBedding", child_policy AS "childPolicy", cots, extra_child_minor
       FROM room_type WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
     sql`SELECT id, room_type_id AS "roomTypeId", name, meal_plan AS "mealPlan", free_cancel_hours AS "freeCancelHours", min_nights AS "minNights", inclusions
       FROM rate_plan WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
@@ -470,10 +471,13 @@ async function hotelDetail(row) {
     hotel: profile ? {
       starRating: profile.star_rating, checkIn: minuteToHhmm(profile.check_in_minute), checkOut: minuteToHhmm(profile.check_out_minute),
       childFreeAge: profile.child_free_age, policies,
+      // Story 3.6: the saved property child bands, or null (each room then carries its own effective policy).
+      childPolicy: profile.child_policy ?? null,
       exactLocation: profile.show_exact_address && pin ? { ...pin, address: profile.address } : null,
     } : null,
-    roomTypes: roomTypes.map((room) => ({
+    roomTypes: roomTypes.map(({ extra_child_minor: extraChildMinor, childPolicy, ...room }) => ({
       ...room,
+      childPolicy: effectiveChildPolicy({ childPolicy: profile?.child_policy, childFreeAge: profile?.child_free_age }, { childPolicy, extraChildMinor: Number(extraChildMinor) }),
       photos: normalizePublicPhotos(room.photos, { ...photoContext(row), title: `${row.title} · ${room.name}` }),
       plans: plans.filter((plan) => plan.roomTypeId === room.id).map(({ roomTypeId: _roomTypeId, ...plan }) => ({ ...plan, inclusions: resolveInclusions(plan.mealPlan, plan.inclusions) })),
     })),

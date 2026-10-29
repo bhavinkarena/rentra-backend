@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { slotEnum, cancellationTierEnum } from './booking';
 import { cancellationPolicySchema } from '../../domain/cancellation-policy.js';
 import { EXTRA_PLACE_TYPES, capacityShortfall, inclusionsProblem, resolveInclusions } from '../../domain/hotel-rooms.js';
+import { policyProblem } from '../../domain/child-policy.js';
 
 export const slotPriceSchema = z.object({
   slot: slotEnum,
@@ -209,6 +210,24 @@ const wholeRupees = (min, max, label) => z.number({ error: `Enter ${label} in ru
 export const BED_TYPES = ['king', 'queen', 'double', 'single', 'sofa_bed', 'bunk'];
 export const ROOM_VIEWS = ['city', 'garden', 'river', 'sea', 'pool', 'hill', 'courtyard'];
 
+/** Story 3.6: child age bands (whole rupees per child per night). No percent rule until Story 3.7. */
+export const childPolicySchema = z.object({
+  adultRateFromAge: z.number().int().min(2, 'Adult rate starts at age 2 or later').max(18, 'Adult rate starts by age 18'),
+  bands: z.array(z.object({
+    kind: z.enum(['infant', 'child']),
+    fromAge: z.number().int().min(0).max(17),
+    toAge: z.number().int().min(0).max(17),
+    rule: z.discriminatedUnion('type', [
+      z.object({ type: z.literal('free'), amount: z.literal(0).default(0) }).strict(),
+      z.object({ type: z.literal('fixed'), amount: wholeRupees(0, 50000, 'Child price') }).strict(),
+    ], { error: 'Choose free or a fixed price' }),
+  }).strict()).min(1, 'Add an age band').max(8),
+}).strict().superRefine((policy, ctx) => {
+  const problem = policyProblem(policy);
+  if (problem) ctx.addIssue({ code: 'custom', path: ['bands'], message: problem });
+});
+export const cotsSchema = z.object({ count: z.number().int().min(0).max(4), amount: wholeRupees(0, 50000, 'Cot price').default(0) }).strict();
+
 /** One room type. `id` present = an existing room type. Charges are whole rupees. */
 export const hotelRoomSchema = z.object({
   id: z.string().uuid().optional(),
@@ -224,6 +243,9 @@ export const hotelRoomSchema = z.object({
     ]).optional(),
   }).strict()).max(2).default([]),
   extraAdultIncludesBedding: z.boolean().default(false),
+  // Story 3.6: null = the property child policy.
+  childPolicy: childPolicySchema.nullable().default(null),
+  cots: cotsSchema.default({ count: 0, amount: 0 }),
   sizeSqm: z.number().int().min(4).max(2000).nullable().default(null),
   view: z.enum(ROOM_VIEWS).nullable().default(null),
   maxAdults: z.number().int().min(1).max(12),
@@ -309,7 +331,9 @@ const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
 export const hotelStaySchema = z.object({
   checkInTime: clockTime,
   checkOutTime: clockTime,
-  childFreeAge: z.coerce.number().int().min(0).max(17),
+  // Story 3.6: the band editor replaces the single age; older forms may still send it.
+  childFreeAge: z.coerce.number().int().min(0).max(17).optional(),
+  childPolicy: childPolicySchema.nullable().optional(),
   weekendNights: z.array(z.coerce.number().int().min(0).max(6)).max(7),
   starRating: z.union([z.literal(''), z.coerce.number().int().min(1).max(5)]).default(''),
 });

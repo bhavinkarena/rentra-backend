@@ -1,6 +1,7 @@
 import { applyBasisPoints } from './booking-money.js';
 import { refundPct } from './cancellation-policy.js';
 import { beddingPlan, placeNightMinor } from './hotel-rooms.js';
+import { bandFor, cotNeed, fallbackPolicy } from './child-policy.js';
 import { addLocalDays, isLocalDate, parseLocalDate, propertyLocalInstant, propertyToday } from './booking-dates.js';
 
 /**
@@ -56,22 +57,33 @@ export function stayInstants({ checkIn, checkOut, checkInMinute, checkOutMinute 
 }
 
 /**
- * Who is charged in one room. Children under childFreeAge are free; base
- * occupancy covers adults first. Throws OCCUPANCY when the room cannot take them.
+ * Who is charged in one room (Story 3.6). Each child is matched by actual age to a band of `policy`; minors at or
+ * above adultRateFromAge use base occupancy and the extra adult price like adults, but never count as adults for
+ * maxAdults or supervision. Free-band children do not fill base occupancy; fixed-band children beyond it pay their
+ * band amount, oldest first. Infants beyond maxOccupancy need a cot each. `policy` may be a legacy childFreeAge.
  */
-export function roomOccupancy(roomType, { adults, childAges = [] }, childFreeAge) {
+export function roomOccupancy(roomType, { adults, childAges = [] }, policy) {
   if (!Number.isSafeInteger(adults) || adults < 1 || !Array.isArray(childAges)
     || childAges.some((age) => !Number.isSafeInteger(age) || age < 0 || age > 17)) {
     throw new HotelError('OCCUPANCY', 'Tell us the guests and each child’s age.');
   }
-  if (adults > roomType.maxAdults || childAges.length > roomType.maxChildren
-    || adults + childAges.length > roomType.maxOccupancy) {
-    throw new HotelError('OCCUPANCY', `${roomType.name} takes up to ${roomType.maxOccupancy} guests (${roomType.maxAdults} adults).`);
-  }
-  const chargedChildren = childAges.filter((age) => age >= childFreeAge).length;
-  const extra = Math.max(0, adults + chargedChildren - roomType.baseOccupancy);
-  const extraAdults = Math.min(extra, Math.max(0, adults - roomType.baseOccupancy));
-  return { guests: adults + childAges.length, chargedGuests: adults + chargedChildren, extraAdults, extraChildren: extra - extraAdults };
+  const rules = typeof policy === 'number' ? fallbackPolicy(policy, roomType.extraChildMinor) : policy;
+  const full = () => new HotelError('OCCUPANCY', `${roomType.name} takes up to ${roomType.maxOccupancy} guests (${roomType.maxAdults} adults).`);
+  if (adults > roomType.maxAdults || childAges.length > roomType.maxChildren) throw full();
+  const cot = cotNeed({ maxOccupancy: roomType.maxOccupancy, adults, childAges, policy: rules, cots: roomType.cots });
+  if (cot.tooMany) throw full();
+  if (cot.missing) throw new HotelError('COT_UNAVAILABLE', `${roomType.name} has no cot for infant ${cot.missing}`);
+  const adultRated = childAges.filter((age) => !bandFor(rules, age)).length;
+  const paying = childAges.filter((age) => bandFor(rules, age)?.rule.type === 'fixed').sort((a, b) => b - a);
+  const payingAdults = adults + adultRated;
+  const extra = Math.max(0, payingAdults + paying.length - roomType.baseOccupancy);
+  const extraAdults = Math.min(extra, Math.max(0, payingAdults - roomType.baseOccupancy));
+  const extraChildren = extra - extraAdults;
+  const childMinor = paying.slice(0, extraChildren).reduce((sum, age) => sum + Math.round(bandFor(rules, age).rule.amount * 100), 0);
+  return {
+    guests: adults + childAges.length, chargedGuests: payingAdults + paying.length, extraAdults, extraChildren,
+    childMinor, cots: cot.needed,
+  };
 }
 
 /** A plan's price for one room-night before extra guests. Derived plans follow their base plan. */
@@ -103,13 +115,15 @@ export function taxBpsFor(rateMinor, night, slabs) {
  * hotel: { weekendNights, childFreeAge }. rooms/plans in camelCase.
  */
 export function priceRoomStay({ nights, roomType, plan, basePlan, overrides, hotel, slabs, adults, childAges }) {
-  const occupancy = roomOccupancy(roomType, { adults, childAges }, hotel.childFreeAge);
-  const extrasMinor = occupancy.extraAdults * money(roomType.extraAdultMinor, 'Extra adult charge')
-    + occupancy.extraChildren * money(roomType.extraChildMinor, 'Extra child charge');
+  // Story 3.6: the room's effective child policy (resolved by the caller), else the legacy childFreeAge fallback.
+  const occupancy = roomOccupancy(roomType, { adults, childAges }, roomType.childPolicy?.policy ?? hotel.childFreeAge);
+  const extrasMinor = occupancy.extraAdults * money(roomType.extraAdultMinor, 'Extra adult charge') + occupancy.childMinor;
+  // Story 3.6: each needed cot is charged per night like bedding (0 = free).
+  const cotMinor = occupancy.cots * Math.round((roomType.cots?.amount ?? 0) * 100);
   // Story 3.4: extra sleeping places for adults the beds cannot hold, cheapest per night first.
   const places = roomType.extraPlaces ?? [];
   const { charged, unavailable } = beddingPlan({
-    beds: roomType.beds, extraPlaces: places, adults, extraAdults: occupancy.extraAdults,
+    beds: roomType.beds, extraPlaces: places, adults, extraAdults: Math.min(occupancy.extraAdults, Math.max(0, adults - roomType.baseOccupancy)),
     extraAdultMinor: roomType.extraAdultMinor, includesBedding: roomType.extraAdultIncludesBedding,
   });
   if (unavailable) throw new HotelError('BEDDING_UNAVAILABLE', `${roomType.name} has no sleeping place for adult ${unavailable}`);
@@ -130,17 +144,18 @@ export function priceRoomStay({ nights, roomType, plan, basePlan, overrides, hot
       const row = byType.get(index);
       if (!row || row.count < count) byType.set(index, { type: place.type, count, mode: place.charge?.mode ?? 'fixed', amount: place.charge?.amount ?? 0 });
     }
-    const rateMinor = planMinor + extrasMinor + beddingMinor;
+    const rateMinor = planMinor + extrasMinor + beddingMinor + cotMinor;
     const taxBps = taxBpsFor(rateMinor, night, slabs);
     const tax = applyBasisPoints(rateMinor, taxBps);
     roomMinor += rateMinor;
     taxMinor += tax;
-    return { night, rateMinor, source, taxBps, taxMinor: tax, ...(beddingMinor ? { beddingMinor } : {}) };
+    return { night, rateMinor, source, taxBps, taxMinor: tax, ...(beddingMinor ? { beddingMinor } : {}), ...(cotMinor ? { cotMinor } : {}) };
   });
   if (!Number.isSafeInteger(roomMinor + taxMinor)) throw new RangeError('Amount exceeds safe integer range');
   // Only priced bedding changes the quote shape: ₹0 places (pre-3.4 rooms) keep the old digest and no guest label.
   const bedding = [...byType.values()];
-  return { nights: priced, occupancy, ...(bedding.length ? { bedding } : {}), roomMinor, taxMinor, totalMinor: roomMinor + taxMinor };
+  const cots = occupancy.cots ? { count: occupancy.cots, amount: roomType.cots?.amount ?? 0 } : null;
+  return { nights: priced, occupancy, ...(bedding.length ? { bedding } : {}), ...(cots ? { cots } : {}), roomMinor, taxMinor, totalMinor: roomMinor + taxMinor };
 }
 
 /** The guest-facing promise for a plan, from its rules (never free text). */
