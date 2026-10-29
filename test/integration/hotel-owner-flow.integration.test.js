@@ -342,6 +342,77 @@ test(
       );
       assert.equal(profile.policies.couples, true);
 
+      // Story 3.8: pet policy save, version, legacy mirror, audit and owner scope.
+      const rules = {
+        couples: 'yes',
+        localId: 'yes',
+        idTypes: ['aadhaar'],
+        smoking: 'no',
+        parties: 'no',
+        extraRules: '',
+      };
+      const pets = async () =>
+        (
+          await sql`SELECT r.pet_policy, r.pet_policy_version AS v, p.policies->'pets' AS legacy
+        FROM rentable r JOIN hotel_profile p ON p.rentable_id=r.id WHERE r.id=${hotel.id}`
+        )[0];
+      const petFails = async (petPolicy, message) => {
+        const error = await saveHotelProfile(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          part: 'rules',
+          values: { ...rules, petPolicy },
+        }).then(
+          () => null,
+          (e) => e,
+        );
+        assert.equal(error?.code, 'VALIDATION_FAILED');
+        if (message) assert.deepEqual(error.fields.petPolicy, [message]);
+      };
+      const allowed = {
+        status: 'allowed',
+        maxPets: 2,
+        types: ['dog'],
+        maxSize: 'medium',
+        fee: { unit: 'per_pet_night', amount: 300 },
+      };
+      await petFails({ ...allowed, types: [] }, 'Choose at least one pet type');
+      await petFails({ ...allowed, maxPets: 6 });
+      await petFails({ ...allowed, fee: { unit: 'per_stay', amount: 50001 } });
+      await petFails({ status: 'on_request' });
+      const start = (await pets()).v;
+      await save('rules', { ...rules, pets: 'no', petPolicy: allowed });
+      let row = await pets();
+      assert.deepEqual([row.pet_policy, row.v, row.legacy], [allowed, start + 1, true]);
+      await save('rules', { ...rules, petPolicy: allowed });
+      assert.equal((await pets()).v, start + 1, 'same policy, same version');
+      await save('rules', { ...rules, petPolicy: { status: 'not_allowed', maxPets: 3 } });
+      row = await pets();
+      assert.deepEqual(
+        [row.pet_policy, row.v, row.legacy],
+        [{ status: 'not_allowed' }, start + 2, false],
+      );
+      const [{ count }] =
+        await sql`SELECT count(*)::int AS count FROM audit_log WHERE entity_id=${hotel.id} AND action='pet_policy_changed'`;
+      assert.equal(count, 2);
+      const [stranger] =
+        await sql`INSERT INTO "user"(email,role,account_status,name) VALUES (${`other-${randomUUID()}@fixture.invalid`},'client','active','Other') RETURNING id`;
+      await rejects(
+        saveHotelProfile(sql, stranger.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          part: 'rules',
+          values: { ...rules, petPolicy: allowed },
+        }),
+        'NOT_FOUND',
+      );
+      await save('rules', { ...rules, pets: 'no' });
+      assert.deepEqual(
+        (await pets()).pet_policy,
+        { status: 'not_allowed' },
+        'an omitted policy keeps the saved one',
+      );
+
       // Story 3.6: explicit child bands; a gap is refused by name and nothing changes.
       const bands = [
         { kind: 'infant', fromAge: 0, toAge: 1, rule: { type: 'free', amount: 0 } },

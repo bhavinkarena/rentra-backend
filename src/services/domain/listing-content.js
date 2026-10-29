@@ -1,3 +1,4 @@
+import { petPolicyLine } from './pet-policy.js';
 const ABSOLUTE_HTTP = /^https?:\/\//i;
 const PUBLIC_IMAGE_HOSTS = new Set(['res.cloudinary.com']);
 
@@ -102,11 +103,11 @@ export function publicSlotSchedules(bookingConfig) {
 const STAG = { no: 'No stag groups', on_request: 'Stag groups on request', yes: 'Stag groups welcome' };
 
 /** Guest-facing lines for farmhouse rules; the owner editor stores structured toggles. */
-export function publicHouseRules(rules) {
+export function publicHouseRules(rules, petPolicy = null) {
   if (Array.isArray(rules)) return rules;
   if (!rules || typeof rules !== 'object') return [];
   return [
-    rules.petsAllowed ? 'Pets allowed' : 'No pets',
+    petPolicy ? petPolicyLine(petPolicy) : rules.petsAllowed ? 'Pets allowed' : 'No pets',
     rules.alcoholAllowed ? 'Alcohol allowed' : 'No alcohol',
     STAG[rules.stagGroups],
     rules.musicCutoff ? `Music off by ${rules.musicCutoff}` : null,

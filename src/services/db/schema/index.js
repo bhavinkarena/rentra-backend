@@ -804,6 +804,9 @@ export const rentable = pgTable(
     /** Increments each time the listing goes back for review. */
     reviewPass: integer('review_pass').notNull().default(0),
     contentVersion: integer('content_version').notNull().default(1),
+    /** Story 3.8: pet policy (NULL derives from the legacy flag) and its version, stamped into quotes. */
+    petPolicy: jsonb('pet_policy'),
+    petPolicyVersion: integer('pet_policy_version').notNull().default(1),
     /** Publication attribution (CP07): the exact reviewed revision that went live, by whom. */
     // FK to listing_submission is added in 0026 SQL (declared later in this file).
     publishedSubmissionId: uuid('published_submission_id'),

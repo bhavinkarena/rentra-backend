@@ -682,6 +682,46 @@ test(
       },
     );
 
+    await t.test('Story 3.8: quotes stamp the pet policy only when pets are allowed', async () => {
+      const session = await guest();
+      const dates = stay();
+      const quoteFor = async () => {
+        const quote = await createStayQuote(
+          sql,
+          {
+            rentableId: h.hotel,
+            ...dates,
+            rooms: [{ roomTypeId: h.deluxe, ratePlanId: h.deluxeBase, adults: 2, childAges: [] }],
+          },
+          { customerId: session.userId },
+        );
+        const [row] = await sql`SELECT policy_snapshot FROM booking_quote WHERE id=${quote.id}`;
+        return { hash: quote.hash, pets: row.policy_snapshot.petPolicy };
+      };
+      try {
+        const before = await quoteFor();
+        assert.equal(before.pets, undefined);
+        await sql`UPDATE rentable SET pet_policy='{"status":"not_allowed"}'::jsonb WHERE id=${h.hotel}`;
+        assert.equal((await quoteFor()).hash, before.hash, 'not allowed keeps the digest');
+        const policy = {
+          status: 'allowed',
+          maxPets: 2,
+          types: ['dog'],
+          maxSize: 'medium',
+          fee: { unit: 'per_pet_night', amount: 300 },
+        };
+        await sql`UPDATE rentable SET pet_policy=${JSON.stringify(policy)}::text::jsonb, pet_policy_version=7 WHERE id=${h.hotel}`;
+        const allowed = await quoteFor();
+        assert.deepEqual(allowed.pets, {
+          version: 7,
+          policy: { status: 'allowed', maxPets: 2, types: ['dog'], maxSize: 'medium' },
+        });
+        assert.notEqual(allowed.hash, before.hash);
+      } finally {
+        await sql`UPDATE rentable SET pet_policy=NULL WHERE id=${h.hotel}`;
+      }
+    });
+
     await t.test(
       '1,000 concurrent quote+hold attempts on 5 rooms: never more than 5 held',
       async () => {

@@ -71,3 +71,15 @@ test('only values that really differ count as trust edits', () => {
   // Child collections are compared by the caller; naming one means it changed.
   assert.deepEqual(trustChanges(current, {}, ['amenities']), ['amenities']);
 });
+
+test('Story 3.8: the pets mirror in house rules is not a trust edit', () => {
+  const current = { houseRules: { petsAllowed: false, notes: 'Quiet' } };
+  assert.deepEqual(
+    trustChanges(current, { houseRules: { petsAllowed: true, notes: 'Quiet' } }, ['houseRules']),
+    [],
+  );
+  assert.deepEqual(
+    trustChanges(current, { houseRules: { petsAllowed: true, notes: 'Loud' } }, ['houseRules']),
+    ['houseRules'],
+  );
+});

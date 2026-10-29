@@ -57,6 +57,13 @@ const sameValue = (a, b) => {
  * compared with the stored row; child collections (amenities, photos) are
  * compared by their caller, so naming one here means it changed.
  */
+// Story 3.8: pet changes are audit only, so the pets mirror in house rules is not trust content.
+const withoutPets = (name, value) => {
+  if (name !== 'houseRules' || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const { petsAllowed: _pets, ...rest } = value;
+  return rest;
+};
+
 export function trustChanges(current, fields, names) {
-  return names.filter((name) => !(name in fields) || !sameValue(current[name], fields[name]));
+  return names.filter((name) => !(name in fields) || !sameValue(withoutPets(name, current[name]), withoutPets(name, fields[name])));
 }

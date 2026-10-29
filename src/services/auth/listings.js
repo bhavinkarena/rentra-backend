@@ -5,6 +5,8 @@ import { signListingPhoto, listingPhotoAsset, destroyListingPhoto } from '../upl
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { effectivePetPolicy } from '@/services/domain/pet-policy';
 import { and, eq, inArray, isNull, sql as raw } from 'drizzle-orm';
 import { db, sql } from '@/services/db';
 import { submitProperty } from '../admin/listings.js';
@@ -296,6 +298,7 @@ export async function saveRules(_prev, formData) {
     checkInFrom: formData.get('checkInFrom'),
     checkOutBy: formData.get('checkOutBy'),
     petsAllowed: formData.get('petsAllowed') ?? 'no',
+    ...(formData.get('petPolicy') ? { petPolicy: jsonField(formData, 'petPolicy') } : {}),
     alcoholAllowed: formData.get('alcoholAllowed') ?? 'no',
     stagAllowed: formData.get('stagAllowed') ?? 'on_request',
     musicCutoff: formData.get('musicCutoff') ?? '',
@@ -311,8 +314,10 @@ export async function saveRules(_prev, formData) {
    * checklist has an explicit reject for discriminatory terms (religion,
    * caste, marital status), which are live on competitor sites today.
    */
+  // Story 3.8: a saved pet policy mirrors the legacy flag so older readers stay right.
+  const petPolicy = d.petPolicy ?? listing.petPolicy ?? null;
   const houseRules = {
-    petsAllowed: d.petsAllowed === 'yes',
+    petsAllowed: petPolicy ? petPolicy.status === 'allowed' : d.petsAllowed === 'yes',
     alcoholAllowed: d.alcoholAllowed === 'yes',
     stagGroups: d.stagAllowed,
     musicCutoff: d.musicCutoff || null,
@@ -325,7 +330,8 @@ export async function saveRules(_prev, formData) {
     checkOutBy: d.checkOutBy,
     houseRules,
     ...(formData.get('wizardRules')==='1'?wizardTerms(formData, listing):{}),
-  }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData) });
+  }, ['houseRules'], {autosave:formData.get('autosave')==='1', expected: expectedVersion(formData),
+    children: d.petPolicy ? (tx) => savePetPolicy(tx, listing, d.petPolicy) : null });
 
   return { ok: true, contentVersion, sentBack };
 }
@@ -429,6 +435,22 @@ export async function saveHotelRoomsStep(_prev, formData) {
   return result;
 }
 
+/**
+ * Story 3.8: write the farm/villa pet policy under the listing lock. The version moves only when the
+ * effective policy really changes (a first save equal to the legacy default keeps it). Audited, no review.
+ */
+async function savePetPolicy(tx, listing, policy) {
+  const [row] = await tx.execute(raw`SELECT pet_policy, pet_policy_version, house_rules FROM rentable WHERE id=${listing.id}`);
+  const before = effectivePetPolicy(row.pet_policy, row.house_rules?.petsAllowed === true);
+  const changed = !isDeepStrictEqual(before, policy);
+  await tx.execute(raw`UPDATE rentable SET pet_policy=${JSON.stringify(policy)}::jsonb,
+    pet_policy_version=pet_policy_version + ${changed ? 1 : 0} WHERE id=${listing.id}`);
+  if (changed) {
+    await tx.execute(raw`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after")
+      VALUES ('client',${listing.clientId},'rentable',${listing.id},'pet_policy_changed',${JSON.stringify(before)}::jsonb,${JSON.stringify(policy)}::jsonb)`);
+  }
+}
+
 /** Rate plans: `plans` is one JSON field (wizard step `pricing`). */
 export async function saveHotelRatesStep(_prev, formData) {
   const { user, listing } = await hotelListing(formData);
@@ -445,7 +467,7 @@ async function hotelProfileAction(formData, part, known = null) {
       weekendNights: formData.getAll('weekendNights'), starRating: formData.get('starRating') ?? '' }
     : part === 'rules'
       ? { couples: formData.get('couples') ?? undefined, localId: formData.get('localId') ?? undefined, idTypes: formData.getAll('idTypes'),
-        pets: formData.get('pets') ?? 'no', smoking: formData.get('smoking') ?? 'no', parties: formData.get('parties') ?? 'no', extraRules: formData.get('extraRules') ?? '' }
+        pets: formData.get('pets') ?? 'no', ...(formData.get('petPolicy') ? { petPolicy: jsonField(formData, 'petPolicy') } : {}), smoking: formData.get('smoking') ?? 'no', parties: formData.get('parties') ?? 'no', extraRules: formData.get('extraRules') ?? '' }
       : { gstRegistered: formData.get('gstRegistered') ?? undefined, gstin: formData.get('gstin') ?? '' };
   try {
     const result = await saveHotelProfile(sql, user.id, { rentableId: listing.id, expectedVersion: Number(formData.get('contentVersion')), part, values });

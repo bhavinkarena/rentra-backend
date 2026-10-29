@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { currentPolicyReferences } from '../content/service.js';
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
 import { HOTEL_POLICY, HotelError } from '../domain/hotel.js';
-import { BookingQuoteError, quoteDigest, requireBookableListing } from './quotes.js';
+import { BookingQuoteError, petPolicyStamp, quoteDigest, requireBookableListing } from './quotes.js';
 import { withListingSnapshot } from './inventory.js';
 import { stayQuoteIn } from './hotel-stays.js';
 
@@ -47,7 +47,7 @@ export const stayDetailsSchema = z.object({
 });
 
 /** Visit, payment and policy snapshots in the shapes the existing checkout reads. */
-function stayTerms(stay, payment, publications, names = {}, fee = { bps: 0, source: 'default', settingId: null }) {
+function stayTerms(stay, payment, publications, names = {}, fee = { bps: 0, source: 'default', settingId: null }, pets = {}) {
   const roomMinor = stay.totals.roomMinor;
   const taxMinor = stay.totals.taxMinor;
   // Story 2.2: the guest-paid service fee on rooms and their extras, never on tax, rounded once
@@ -71,12 +71,12 @@ function stayTerms(stay, payment, publications, names = {}, fee = { bps: 0, sour
     allocations: [{ date: stay.checkIn, rentMinor: roomMinor, taxMinor, feeMinor, depositMinor: 0 }],
   };
   const policy = { version: HOTEL_POLICY.version, kind: 'stay', publications, hold: { minutes: HOTEL_POLICY.holdMinutes },
-    pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee' } };
+    pricing: { platformFeeBps: fee.bps, feeSource: fee.source, feeSettingId: fee.settingId, feeModel: 'guest_service_fee' }, ...pets };
   return {
     visits: [visit], payment: paymentSnapshot, policy,
     totals: { rentMinor: stayMinor, feeMinor, depositMinor: 0, totalMinor, roomMinor, taxMinor, illustrativeAdvanceMinor: totalMinor },
     // The stay's own hash covers rooms, plans, nights and money; payment, policy and fee are added.
-    hash: quoteDigest({ stay: stay.hash, paymentVersion: payment.version, provider: payment.provider, publications, feeBps: fee.bps }),
+    hash: quoteDigest({ stay: stay.hash, paymentVersion: payment.version, provider: payment.provider, publications, feeBps: fee.bps, ...pets }),
   };
 }
 
@@ -86,9 +86,10 @@ async function priceStay(tx, listing, selection, now) {
   const payment = await getPaymentConfiguration(tx);
   const publications = await currentPolicyReferences(tx);
   const types = await tx`SELECT id,name FROM room_type WHERE rentable_id=${listing.id}`;
-  const [profile] = await tx`SELECT check_in_minute,check_out_minute FROM hotel_profile WHERE rentable_id=${listing.id}`;
+  const [profile] = await tx`SELECT check_in_minute,check_out_minute,policies FROM hotel_profile WHERE rentable_id=${listing.id}`;
   const fee = await resolveServiceFee(tx, listing.client_id);
-  const terms = stayTerms(stay, payment, publications, Object.fromEntries(types.map((t) => [t.id, t.name])), fee);
+  const pets = petPolicyStamp(listing.pet_policy, listing.pet_policy_version, profile?.policies?.pets === true);
+  const terms = stayTerms(stay, payment, publications, Object.fromEntries(types.map((t) => [t.id, t.name])), fee, pets);
   // Hotel times for the guest's screens; the instants are already in startsAt/endsAt.
   terms.policy.hotel = { checkInMinute: profile?.check_in_minute ?? null, checkOutMinute: profile?.check_out_minute ?? null };
   return { stay, ...terms };

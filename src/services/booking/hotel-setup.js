@@ -8,6 +8,7 @@ import { conflict, notFound, unprocessable } from '../../utils/apiError.js';
 import { withListingInventory } from './inventory.js';
 import { ownerEditEffect } from '../domain/listing-lifecycle.js';
 import { capacityShortfall } from '../domain/hotel-rooms.js';
+import { effectivePetPolicy } from '../domain/pet-policy.js';
 import { CANCELLATION_PRESETS, freeCancelHoursOf, presetName } from '../domain/cancellation-policy.js';
 
 /**
@@ -216,10 +217,20 @@ export async function saveHotelProfile(database, ownerId, { rentableId, expected
         star_rating=${d.starRating === '' ? null : d.starRating}, policies=${JSON.stringify(policies)}::text::jsonb, updated_at=now()
         WHERE rentable_id=${rentableId}`;
     } else if (part === 'rules') {
+      // Story 3.8: the pet policy lives on the listing; policies.pets mirrors it for older readers.
+      const [listingRow] = await tx`SELECT pet_policy FROM rentable WHERE id=${rentableId}`;
+      const petPolicy = d.petPolicy ?? listingRow.pet_policy ?? null;
       Object.assign(policies, {
-        couples: d.couples === 'yes', localId: d.localId === 'yes', idTypes: d.idTypes, pets: d.pets === 'yes',
+        couples: d.couples === 'yes', localId: d.localId === 'yes', idTypes: d.idTypes, pets: petPolicy ? petPolicy.status === 'allowed' : d.pets === 'yes',
         smoking: d.smoking === 'yes', parties: d.parties === 'yes', notes: d.extraRules || null,
       });
+      if (d.petPolicy) {
+        const before = effectivePetPolicy(listingRow.pet_policy, profile.policies?.pets === true);
+        const changed = !isDeepStrictEqual(before, d.petPolicy);
+        await tx`UPDATE rentable SET pet_policy=${JSON.stringify(d.petPolicy)}::text::jsonb, pet_policy_version=pet_policy_version + ${changed ? 1 : 0}
+          WHERE id=${rentableId}`;
+        if (changed) await audit(tx, ownerId, rentableId, 'pet_policy_changed', { before, after: d.petPolicy });
+      }
       await tx`UPDATE hotel_profile SET policies=${JSON.stringify(policies)}::text::jsonb, updated_at=now() WHERE rentable_id=${rentableId}`;
     } else {
       policies.gstAnswered = true;

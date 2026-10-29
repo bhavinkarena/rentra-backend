@@ -10,6 +10,7 @@ import { listingPath } from '@/services/domain/listing-url';
 import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
 import { resolveInclusions } from '@/services/domain/hotel-rooms';
 import { effectiveChildPolicy } from '@/services/domain/child-policy';
+import { effectivePetPolicy, publicPetPolicy } from '@/services/domain/pet-policy';
 import { amenityStates, normalizePublicPhotos, publicHouseRules, publicSlotSchedules } from '@/services/domain/listing-content';
 import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
 import { minuteToHhmm } from '@/services/domain/hourly';
@@ -239,6 +240,7 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
       ...cardColumns,
       description: rentable.description,
       houseRules: rentable.houseRules,
+      petPolicy: rentable.petPolicy,
       depositAmount: raw`(${rentable.depositMinor}/100)::int`.mapWith(Number).as('deposit_amount'),
       cancellationTier: rentable.cancellationTier,
       clientName: users.name,
@@ -340,6 +342,8 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
 
   const agg = subScoreRows[0] ?? {};
   const venue = row.vertical === 'hotel' ? await hotelDetail(row) : row.rentalUnit === 'hour' ? await venueDetail(row) : {};
+  const petPolicy = row.rentalUnit === 'hour' ? null : publicPetPolicy(effectivePetPolicy(row.petPolicy,
+    row.vertical === 'hotel' ? venue.hotel?.policies?.pets === true : row.houseRules?.petsAllowed === true));
   const amenities = amenityStates({
     selected: selectedAmenities,
     catalogue: amenityCatalogue,
@@ -350,7 +354,9 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
     description: row.description,
     photos: normalizePublicPhotos(row.photos, photoContext(row)),
     amenities,
-    houseRules: publicHouseRules(row.houseRules),
+    houseRules: publicHouseRules(row.houseRules, petPolicy),
+    // Story 3.8: limits only; the fee is shown once Story 3.9 charges it. Venues have no pet policy.
+    petPolicy,
     depositAmount: row.depositAmount,
     cancellationTier: row.cancellationTier,
     areaSlug: row.areaSlug,

@@ -3,6 +3,7 @@ import { slotEnum, cancellationTierEnum } from './booking';
 import { cancellationPolicySchema } from '../../domain/cancellation-policy.js';
 import { EXTRA_PLACE_TYPES, capacityShortfall, inclusionsProblem, resolveInclusions } from '../../domain/hotel-rooms.js';
 import { policyProblem } from '../../domain/child-policy.js';
+import { normalizePetPolicy, petPolicyProblem } from '../../domain/pet-policy.js';
 
 export const slotPriceSchema = z.object({
   slot: slotEnum,
@@ -95,10 +96,17 @@ export const amenitiesSchema = z.object({
   amenity: z.union([z.string(), z.array(z.string())]).optional(),
 });
 
+/** Story 3.8: the owner's pet policy, checked by the shared domain rule and stored normalised. */
+export const petPolicySchema = z.unknown().superRefine((value, ctx) => {
+  const problem = petPolicyProblem(value);
+  if (problem) ctx.addIssue({ code: 'custom', message: problem });
+}).transform(normalizePetPolicy);
+
 export const rulesSchema = z.object({
   checkInFrom: z.string().trim().min(3, 'When can guests arrive?').max(32),
   checkOutBy: z.string().trim().min(3, 'When must they leave?').max(32),
   petsAllowed: z.enum(['yes', 'no']).default('no'),
+  petPolicy: petPolicySchema.optional(),
   alcoholAllowed: z.enum(['yes', 'no']).default('no'),
   stagAllowed: z.enum(['yes', 'no', 'on_request']).default('on_request'),
   musicCutoff: z.string().trim().max(20).optional().or(z.literal('')),
@@ -346,6 +354,7 @@ export const hotelRulesSchema = z.object({
   localId: z.enum(['yes', 'no'], { error: 'Say whether local ID is accepted' }),
   idTypes: z.array(z.enum(ID_TYPES)).min(1, 'Choose at least one ID you accept'),
   pets: z.enum(['yes', 'no']).default('no'),
+  petPolicy: petPolicySchema.optional(),
   smoking: z.enum(['yes', 'no']).default('no'),
   parties: z.enum(['yes', 'no']).default('no'),
   extraRules: z.string().trim().max(500).default(''),

@@ -42,10 +42,11 @@ test(
     const { sql } = fixture;
     // Current admission code runs on the 0075 schema first; stub the 0083 rule until migration.
     await sql`CREATE FUNCTION owner_repayment_overdue(uuid) RETURNS boolean LANGUAGE sql AS 'SELECT false'`;
-    // ...and the 0084 room-promise, 0085 bedding and 0086 child-policy columns.
+    // ...and the 0084 room-promise, 0085 bedding, 0086 child-policy and 0087 pet-policy columns.
     await sql.unsafe(`ALTER TABLE room_type ADD COLUMN IF NOT EXISTS extra_places jsonb NOT NULL DEFAULT '[]'; ALTER TABLE rate_plan ADD COLUMN IF NOT EXISTS inclusions jsonb; ALTER TABLE room_type ADD COLUMN IF NOT EXISTS extra_adult_includes_bedding boolean NOT NULL DEFAULT false;
       ALTER TABLE hotel_profile ADD COLUMN IF NOT EXISTS child_policy jsonb; ALTER TABLE hotel_profile ADD COLUMN IF NOT EXISTS child_policy_version int NOT NULL DEFAULT 1;
       ALTER TABLE room_type ADD COLUMN IF NOT EXISTS child_policy jsonb; ALTER TABLE room_type ADD COLUMN IF NOT EXISTS cots jsonb NOT NULL DEFAULT '{"count":0}';
+      ALTER TABLE rentable ADD COLUMN IF NOT EXISTS pet_policy jsonb; ALTER TABLE rentable ADD COLUMN IF NOT EXISTS pet_policy_version int NOT NULL DEFAULT 1;
       ALTER TABLE booking_room ADD COLUMN IF NOT EXISTS room_snapshot jsonb`);
     globalThis.__rentraSql = sql;
     Object.assign(process.env, {
