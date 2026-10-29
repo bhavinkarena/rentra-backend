@@ -65,6 +65,24 @@ test(
           .effectivePriceMinor,
         200000,
       );
+      // Story 3.5: % change applies to the effective price — the override when one exists.
+      const later = addLocalDays(day, 2);
+      const pct = await changeCalendarCells(sql, ids.owner, {
+        rentableId: ids.listing,
+        change: {
+          cells: [
+            { date: day, slot: 'day' },
+            { date: later, slot: 'day' },
+          ],
+          command: 'prices',
+          deltaBps: 1000,
+        },
+        expectedCalendarVersion: (await read()).items[0].version,
+        preview: true,
+      });
+      const [overridden, plain] = pct.preview.result.affected;
+      assert.deepEqual([overridden.before, overridden.after], [200000, 220000]);
+      assert.equal(plain.after, Math.round(plain.before * 1.1));
       const resetInput = {
         ...input,
         change: { ...input.change, rentMinor: undefined, reset: true },

@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { addLocalDays, isLocalDate, propertyToday } from '../domain/booking-dates.js';
 import { conflict, forbidden, notFound, unprocessable } from '../../utils/apiError.js';
 import { withListingInventory } from './inventory.js';
+import { quoteDigest } from './quotes.js';
+import { planNightRate } from '../domain/hotel.js';
 
 /**
  * Hotel rates and rooms calendar (hotel plan, Phase 5): rooms open to Rentra,
@@ -59,8 +61,8 @@ export async function hotelAriGrid(database, actor, rentableId, { from, days = 1
     const [nights, plans, overrides] = await Promise.all([
       tx`SELECT n.*, n.night::text AS d FROM room_night n JOIN room_type t ON t.id=n.room_type_id
         WHERE t.rentable_id=${rentableId} AND n.night BETWEEN ${start} AND ${end}`,
-      tx`SELECT id, room_type_id, name, weekday_minor, weekend_minor FROM rate_plan
-        WHERE rentable_id=${rentableId} AND is_active AND derived_from IS NULL ORDER BY sort_order, name, id`,
+      tx`SELECT id, room_type_id, name, weekday_minor, weekend_minor, derived_from, derived_pct_bps, derived_per_guest_minor FROM rate_plan
+        WHERE rentable_id=${rentableId} AND is_active ORDER BY sort_order, name, id`,
       tx`SELECT o.rate_plan_id, o.night::text AS d, o.rate_minor FROM rate_override o JOIN rate_plan p ON p.id=o.rate_plan_id
         WHERE p.rentable_id=${rentableId} AND o.night BETWEEN ${start} AND ${end}`,
     ]);
@@ -74,12 +76,25 @@ export async function hotelAriGrid(database, actor, rentableId, { from, days = 1
       today: propertyToday(),
       dates: dates.map((d) => ({ date: d, weekend: isWeekend(d) })),
       roomTypes: rooms.map((room) => {
-        const base = plans.find((p) => p.room_type_id === room.id) ?? null;
+        const base = plans.find((p) => p.room_type_id === room.id && !p.derived_from) ?? null;
+        const baseOverrides = base ? Object.fromEntries(overrides.filter((o) => o.rate_plan_id === base.id).map((o) => [o.d, Number(o.rate_minor)])) : {};
+        const basePlan = base && { id: base.id, weekdayMinor: Number(base.weekday_minor), weekendMinor: Number(base.weekend_minor) };
         return {
           id: room.id,
           name: room.name,
           roomCount: room.room_count,
           basePlan: base ? { id: base.id, name: base.name } : null,
+          // Linked offers follow the base plan's effective rate (read-only), priced for base occupancy.
+          derivedPlans: base
+            ? plans.filter((p) => p.derived_from === base.id).map((p) => ({
+                id: p.id,
+                name: p.name,
+                prices: dates.map((d) => planNightRate({
+                  plan: { derivedFrom: p.derived_from, derivedPctBps: Number(p.derived_pct_bps), derivedPerGuestMinor: Number(p.derived_per_guest_minor ?? 0) },
+                  basePlan, overrides: baseOverrides, night: d, weekendNights: weekend, chargedGuests: 0,
+                }).rateMinor),
+              }))
+            : [],
           nights: dates.map((d) => {
             const n = nights.find((row) => row.room_type_id === room.id && row.d === d);
             const override = base && overrides.find((o) => o.rate_plan_id === base.id && o.d === d);
@@ -114,6 +129,7 @@ const changeSchema = z.object({
   value: z.coerce.number().optional(),
   preview: z.boolean().default(false),
   previewHash: z.string().length(64).optional(),
+  expectedVersion: z.string().length(64).optional(),
 }).strict().superRefine((v, ctx) => {
   if (v.to < v.from) ctx.addIssue({ code: 'custom', path: ['to'], message: 'The end is before the start.' });
   const need = { price: [300, 200000], pricePct: [-50, 100], rooms: [0, 500], minNights: [1, 30] }[v.op];
@@ -148,30 +164,65 @@ export async function changeHotelAri(database, actor, rentableId, input) {
       WHERE extract(dow FROM d)::int = ANY(${v.weekdays}::int[])`;
     const [{ count }] = await tx`SELECT count(*)::int AS count FROM (${nights}) n`;
     if (!count) throw unprocessable({ weekdays: ['No night in that range falls on the chosen days.'] });
-    const summary = { rentableId, ...v, roomTypeIds: ids, preview: undefined, previewHash: undefined, cells: count * ids.length };
+    const summary = { rentableId, ...v, roomTypeIds: ids, preview: undefined, previewHash: undefined, expectedVersion: undefined, cells: count * ids.length };
     const previewHash = hash(summary);
-    if (v.preview) return { preview: true, previewHash, cells: count * ids.length, nights: count, roomTypes: ids.length };
-    if (v.previewHash && v.previewHash !== previewHash) throw conflict('STALE_PREVIEW', 'The change moved. Preview again before saving.');
-
-    if (['price', 'pricePct', 'resetPrice'].includes(v.op)) {
-      const plans = await tx`SELECT id, weekday_minor, weekend_minor FROM rate_plan
+    // Story 3.5: a digest of every row this change could touch. A save recomputes it under row locks,
+    // so a second tab or any edit after the preview is refused instead of silently overwritten.
+    const dataVersion = async (lock) => {
+      const forUpdate = lock ? tx`FOR UPDATE` : tx``;
+      const plans = await tx`SELECT id, weekday_minor, weekend_minor, derived_from, derived_pct_bps, derived_per_guest_minor, is_active
+        FROM rate_plan WHERE room_type_id IN ${tx(ids)} ORDER BY id ${forUpdate}`;
+      const rates = plans.length
+        ? await tx`SELECT rate_plan_id, night::text AS night, rate_minor FROM rate_override
+            WHERE rate_plan_id IN ${tx(plans.map((p) => p.id))} AND night IN (${nights}) ORDER BY rate_plan_id, night ${forUpdate}`
+        : [];
+      const rows = await tx`SELECT room_type_id, night::text AS night, allotment, stop_sell, min_nights, closed_to_arrival FROM room_night
+        WHERE room_type_id IN ${tx(ids)} AND night IN (${nights}) ORDER BY room_type_id, night ${forUpdate}`;
+      const [profile] = await tx`SELECT weekend_nights FROM hotel_profile WHERE rentable_id=${rentableId} ${forUpdate}`;
+      return quoteDigest({ weekend: profile?.weekend_nights ?? null, plans: [...plans], rates: [...rates], rows: [...rows] });
+    };
+    const isPrice = ['price', 'pricePct', 'resetPrice'].includes(v.op);
+    // A stale save is refused (409) before any value check can answer 422.
+    if (!v.preview) {
+      if (!v.expectedVersion) throw unprocessable({ expectedVersion: ['Preview the change before saving.'] });
+      if (v.previewHash && v.previewHash !== previewHash) throw conflict('STALE_PREVIEW', 'The change moved. Preview again before saving.');
+      if ((await dataVersion(true)) !== v.expectedVersion) throw conflict('CALENDAR_CHANGED', 'Prices changed since your preview — review again.');
+    }
+    let planIds = [];
+    let weekend = [];
+    let changes = [];
+    if (isPrice) {
+      const plans = await tx`SELECT id FROM rate_plan
         WHERE rentable_id=${rentableId} AND is_active AND derived_from IS NULL AND room_type_id IN ${tx(ids)}`;
       if (!plans.length) throw unprocessable({ roomTypeIds: ['These room types have no base rate yet. Add one in Rates first.'] });
-      const planIds = plans.map((p) => p.id);
+      planIds = plans.map((p) => p.id);
+      const [profile] = await tx`SELECT weekend_nights FROM hotel_profile WHERE rentable_id=${rentableId}`;
+      weekend = (profile?.weekend_nights ?? [5, 6]).map(Number);
+      // Before and after per room type × night. pricePct applies to the effective price (an existing override,
+      // else weekday/weekend), rounded to whole rupees; reset returns to the weekday/weekend price.
+      changes = (await tx`WITH target AS (
+          SELECT p.room_type_id, n.night, CASE WHEN extract(dow FROM n.night)::int = ANY(${weekend}::int[]) THEN p.weekend_minor ELSE p.weekday_minor END AS standard,
+            COALESCE(o.rate_minor, CASE WHEN extract(dow FROM n.night)::int = ANY(${weekend}::int[]) THEN p.weekend_minor ELSE p.weekday_minor END) AS current
+          FROM rate_plan p CROSS JOIN (${nights}) n LEFT JOIN rate_override o ON o.rate_plan_id=p.id AND o.night=n.night
+          WHERE p.id IN ${tx(planIds)})
+        SELECT room_type_id, night::text AS night, current::bigint AS before,
+          ${v.op === 'price' ? tx`${(v.value ?? 0) * 100}::bigint` : v.op === 'resetPrice' ? tx`standard::bigint` : tx`(round(current * (100 + ${v.value}::numeric) / 10000) * 100)::bigint`} AS after
+        FROM target ORDER BY night, room_type_id`).map((r) => ({ roomTypeId: r.room_type_id, night: r.night, beforeMinor: Number(r.before), afterMinor: Number(r.after) }));
+      if (v.op !== 'resetPrice' && changes.some((c) => c.afterMinor < 30000 || c.afterMinor > 20000000)) {
+        throw unprocessable({ value: ['Some nights would fall outside ₹300–₹2,00,000. Use a smaller change.'] });
+      }
+    }
+    if (v.preview) {
+      return {
+        preview: true, previewHash, version: await dataVersion(false), cells: count * ids.length, nights: count, roomTypes: ids.length,
+        ...(isPrice && { changes: changes.slice(0, 60), changeCount: changes.length }),
+      };
+    }
+
+    if (isPrice) {
       if (v.op === 'resetPrice') {
         await tx`DELETE FROM rate_override WHERE rate_plan_id IN ${tx(planIds)} AND night IN (${nights})`;
       } else {
-        const [profile] = await tx`SELECT weekend_nights FROM hotel_profile WHERE rentable_id=${rentableId}`;
-        const weekend = (profile?.weekend_nights ?? [5, 6]).map(Number);
-        // pricePct applies to today's effective price (an existing override, else weekday/weekend), rounded to whole rupees.
-        const [bad] = await tx`WITH target AS (
-            SELECT p.id AS plan, n.night,
-              COALESCE(o.rate_minor, CASE WHEN extract(dow FROM n.night)::int = ANY(${weekend}::int[]) THEN p.weekend_minor ELSE p.weekday_minor END) AS current
-            FROM rate_plan p CROSS JOIN (${nights}) n LEFT JOIN rate_override o ON o.rate_plan_id=p.id AND o.night=n.night
-            WHERE p.id IN ${tx(planIds)}),
-          next AS (SELECT plan, night, ${v.op === 'price' ? tx`${v.value * 100}::bigint` : tx`(round(current * (100 + ${v.value}::numeric) / 10000) * 100)::bigint`} AS rate FROM target)
-          SELECT count(*) FILTER (WHERE rate < 30000 OR rate > 20000000)::int AS bad FROM next`;
-        if (bad.bad) throw unprocessable({ value: ['Some nights would fall outside ₹300–₹2,00,000. Use a smaller change.'] });
         await tx`INSERT INTO rate_override (rate_plan_id, night, rate_minor)
           SELECT p.id, n.night, ${v.op === 'price' ? tx`${v.value * 100}::bigint` : tx`(round(COALESCE(o.rate_minor, CASE WHEN extract(dow FROM n.night)::int = ANY(${weekend}::int[]) THEN p.weekend_minor ELSE p.weekday_minor END) * (100 + ${v.value}::numeric) / 10000) * 100)::bigint`}
           FROM rate_plan p CROSS JOIN (${nights}) n LEFT JOIN rate_override o ON o.rate_plan_id=p.id AND o.night=n.night

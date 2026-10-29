@@ -17,6 +17,13 @@ test(
     const { hotelAriGrid, changeHotelAri } = await import('@/services/booking/hotel-ari.js');
     const { quoteHotelStay, holdHotelRooms } = await import('@/services/booking/hotel-stays.js');
     const { withListingInventory } = await import('@/services/booking/inventory.js');
+    // Every save carries the data version from its preview (Story 3.5).
+    const apply = async (actor, id, input) =>
+      changeHotelAri(sql, actor, id, {
+        ...input,
+        expectedVersion: (await changeHotelAri(sql, actor, id, { ...input, preview: true }))
+          .version,
+      });
     const rejects = (promise, code) =>
       assert.rejects(promise, (error) => {
         assert.equal(error.code, code, `${error.code}: ${error.message}`);
@@ -68,10 +75,14 @@ test(
       const preview = await changeHotelAri(sql, owner, h.hotel, { ...input, preview: true });
       assert.equal(preview.cells, 360);
       let started = performance.now();
-      await changeHotelAri(sql, owner, h.hotel, { ...input, previewHash: preview.previewHash });
+      await changeHotelAri(sql, owner, h.hotel, {
+        ...input,
+        previewHash: preview.previewHash,
+        expectedVersion: preview.version,
+      });
       const priceMs = performance.now() - started;
       started = performance.now();
-      await changeHotelAri(sql, owner, h.hotel, { ...input, op: 'rooms', value: 2 });
+      await apply(owner, h.hotel, { ...input, op: 'rooms', value: 2 });
       const roomsMs = performance.now() - started;
       assert.ok(
         priceMs < 2000 && roomsMs < 2000,
@@ -99,7 +110,7 @@ test(
         while (new Date(`${d}T00:00:00Z`).getUTCDay() !== 6) d = addLocalDays(d, 1);
         return d;
       })();
-      await changeHotelAri(sql, owner, h.hotel, {
+      await apply(owner, h.hotel, {
         from: saturday,
         to: addLocalDays(saturday, 6),
         weekdays: [6],
@@ -114,7 +125,7 @@ test(
         [352000, 320000],
         'Saturday +10%, Sunday unchanged',
       );
-      await changeHotelAri(sql, owner, h.hotel, {
+      await apply(owner, h.hotel, {
         from: saturday,
         to: saturday,
         roomTypeIds: [h.deluxe],
@@ -123,7 +134,7 @@ test(
       const reset = await hotelAriGrid(sql, owner, h.hotel, { from: saturday, days: 1 });
       assert.equal(reset.roomTypes.find((r) => r.id === h.deluxe).nights[0].priceMinor, 300000);
       await rejects(
-        changeHotelAri(sql, owner, h.hotel, {
+        apply(owner, h.hotel, {
           from: start,
           to: start,
           roomTypeIds: [h.deluxe],
@@ -135,7 +146,7 @@ test(
     });
 
     await t.test('rooms open can never drop below rooms booked', async () => {
-      await changeHotelAri(sql, owner, h.hotel, {
+      await apply(owner, h.hotel, {
         from: start,
         to: addLocalDays(start, 2),
         roomTypeIds: [h.deluxe],
@@ -158,7 +169,7 @@ test(
         await holdHotelRooms(tx, listing, { bookingId: ids.bookingId, quote });
       });
       await rejects(
-        changeHotelAri(sql, owner, h.hotel, {
+        apply(owner, h.hotel, {
           from: start,
           to: start,
           roomTypeIds: [h.deluxe],
@@ -168,7 +179,7 @@ test(
         'ROOMS_BELOW_BOOKINGS',
       );
       await rejects(
-        changeHotelAri(sql, owner, h.hotel, {
+        apply(owner, h.hotel, {
           from: start,
           to: start,
           roomTypeIds: [h.deluxe],
@@ -177,7 +188,7 @@ test(
         }),
         'VALIDATION_FAILED',
       );
-      await changeHotelAri(sql, owner, h.hotel, {
+      await apply(owner, h.hotel, {
         from: start,
         to: start,
         roomTypeIds: [h.deluxe],
@@ -192,6 +203,82 @@ test(
         [3, 3, 0],
       );
     });
+
+    await t.test(
+      'Story 3.5: versioned saves, before/after preview, derived rates, booked prices kept',
+      async () => {
+        const input = {
+          from: start,
+          to: addLocalDays(start, 1),
+          roomTypeIds: [h.deluxe],
+          op: 'pricePct',
+          value: 10,
+        };
+        const booked = async () => [
+          (
+            await sql`SELECT amount_room_minor FROM booking_room WHERE room_type_id=${h.deluxe} ORDER BY id`
+          ).map((r) => String(r.amount_room_minor)),
+          (
+            await sql`SELECT amount_rent_minor FROM booking_order WHERE rentable_id=${h.hotel} ORDER BY id`
+          ).map((r) => String(r.amount_rent_minor)),
+        ];
+        const bookedBefore = await booked();
+        assert.ok(bookedBefore[0].length, 'a booking exists on these nights');
+        const preview = await changeHotelAri(sql, owner, h.hotel, { ...input, preview: true });
+        assert.equal(preview.changeCount, 2);
+        assert.deepEqual(
+          preview.changes.map((c) => [c.roomTypeId, c.beforeMinor, c.afterMinor]),
+          [
+            [h.deluxe, 320000, 352000],
+            [h.deluxe, 320000, 352000],
+          ],
+        );
+        await rejects(changeHotelAri(sql, owner, h.hotel, input), 'VALIDATION_FAILED');
+        // Another edit lands between preview and save: nothing is written.
+        await apply(owner, h.hotel, { ...input, to: start, op: 'minNights', value: 2 });
+        await rejects(
+          changeHotelAri(sql, owner, h.hotel, {
+            ...input,
+            previewHash: preview.previewHash,
+            expectedVersion: preview.version,
+          }),
+          'CALENDAR_CHANGED',
+        );
+        // Weekend nights changing after the preview also invalidates it.
+        const weekendPreview = await changeHotelAri(sql, owner, h.hotel, {
+          ...input,
+          preview: true,
+        });
+        const [{ weekend_nights: weekendNights }] =
+          await sql`SELECT weekend_nights FROM hotel_profile WHERE rentable_id=${h.hotel}`;
+        await sql`UPDATE hotel_profile SET weekend_nights=${[0, 6]} WHERE rentable_id=${h.hotel}`;
+        await rejects(
+          changeHotelAri(sql, owner, h.hotel, {
+            ...input,
+            expectedVersion: weekendPreview.version,
+          }),
+          'CALENDAR_CHANGED',
+        );
+        await sql`UPDATE hotel_profile SET weekend_nights=${weekendNights} WHERE rentable_id=${h.hotel}`;
+        const grid = await hotelAriGrid(sql, owner, h.hotel, { from: start, days: 2 });
+        assert.deepEqual(
+          grid.roomTypes.find((r) => r.id === h.deluxe).nights.map((n) => n.priceMinor),
+          [320000, 320000],
+        );
+        await apply(owner, h.hotel, input);
+        assert.deepEqual(await booked(), bookedBefore, 'booked rooms keep their snapshot');
+        await sql`INSERT INTO rate_plan(room_type_id,rentable_id,name,derived_from,derived_pct_bps) VALUES (${h.deluxe},${h.hotel},'With breakfast',${h.deluxeBase},2000)`;
+        const derived = (
+          await hotelAriGrid(sql, owner, h.hotel, { from: start, days: 1 })
+        ).roomTypes
+          .find((r) => r.id === h.deluxe)
+          .derivedPlans.find((p) => p.name === 'With breakfast');
+        assert.deepEqual(derived.prices, [422400], 'base 3,520 + 20%');
+        await sql`DELETE FROM rate_plan WHERE name='With breakfast' AND rentable_id=${h.hotel}`;
+        await apply(owner, h.hotel, { ...input, op: 'price', value: 3200 });
+        await apply(owner, h.hotel, { ...input, to: start, op: 'minNights', value: 1 });
+      },
+    );
 
     await t.test(
       'a stay follows its booking: cancel releases rooms; no-show and completed keep them sold',
@@ -338,7 +425,7 @@ test(
     await t.test(
       'roles: front desk opens and closes rooms only; managers edit prices; strangers see nothing',
       async () => {
-        await changeHotelAri(sql, frontDesk, h.hotel, {
+        await apply(frontDesk, h.hotel, {
           from: start,
           to: start,
           roomTypeIds: [h.standard],
@@ -351,7 +438,7 @@ test(
           true,
         );
         await rejects(
-          changeHotelAri(sql, frontDesk, h.hotel, {
+          apply(frontDesk, h.hotel, {
             from: start,
             to: start,
             roomTypeIds: [h.standard],
@@ -361,7 +448,7 @@ test(
           'ROLE_FORBIDDEN',
         );
         await rejects(
-          changeHotelAri(sql, frontDesk, h.hotel, {
+          apply(frontDesk, h.hotel, {
             from: start,
             to: start,
             roomTypeIds: [h.standard],
@@ -374,14 +461,14 @@ test(
           (await hotelAriGrid(sql, frontDesk, h.hotel, { from: start, days: 1 })).canEditPrices,
           false,
         );
-        await changeHotelAri(sql, manager, h.hotel, {
+        await apply(manager, h.hotel, {
           from: start,
           to: start,
           roomTypeIds: [h.standard],
           op: 'price',
           value: 2500,
         });
-        await changeHotelAri(sql, owner, h.hotel, {
+        await apply(owner, h.hotel, {
           from: start,
           to: start,
           roomTypeIds: [h.standard],
@@ -396,7 +483,7 @@ test(
         const [revoked] =
           await sql`UPDATE client_staff SET is_active=false, revoked_at=now() WHERE id=${manager.id} RETURNING id`;
         await rejects(
-          changeHotelAri(sql, { kind: 'staff', id: revoked.id }, h.hotel, {
+          apply({ kind: 'staff', id: revoked.id }, h.hotel, {
             from: start,
             to: start,
             roomTypeIds: [h.standard],
@@ -405,7 +492,7 @@ test(
           'NOT_FOUND',
         );
         await rejects(
-          changeHotelAri(sql, owner, h.hotel, {
+          apply(owner, h.hotel, {
             from: addLocalDays(propertyToday(), -1),
             to: start,
             roomTypeIds: [h.standard],

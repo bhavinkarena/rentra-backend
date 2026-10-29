@@ -33,7 +33,9 @@ export async function changeCalendarCells(database,ownerId,input) {
     if(clashes.length){conflicts.push({...c,reservations:clashes.map(r=>({id:r.id,orderId:state.bookings.find(b=>b.id===r.booking_id)?.order_id,source:r.source}))});continue;}
    }
    const before=overrides.find(r=>r.day===c.date&&r.slot===c.slot),base=Number(isWeekendLocalDate(c.date,listing.booking_config?.weekendDays)?rate.weekend_minor:rate.weekday_minor);
-   const after=value.command==='prices'?(value.reset?null:value.rentMinor??Math.round(base*(10000+value.deltaBps)/10000)):value.open?1:0;
+   // % change starts from the date's effective price: its override, else the weekday/weekend price.
+   const current=before?Number(before.rent_minor):base;
+   const after=value.command==='prices'?(value.reset?null:value.rentMinor??Math.round(current*(10000+value.deltaBps)/10000)):value.open?1:0;
    if(value.command==='prices'&&after!=null&&after<50000)throw new RangeError('Enter at least ₹500, or close the slot instead');
    affected.push({...c,oldOverride:before?Number(before.rent_minor):null,beforeRows:state.availability.filter(r=>r.day===c.date&&(c.slot==='full_day'?['day','night'].includes(r.slot):r.slot===c.slot)),before:value.command==='prices'?(before?Number(before.rent_minor):base):state.availability.find(r=>r.day===c.date&&r.slot===c.slot)?.units_available??0,after});
   }
