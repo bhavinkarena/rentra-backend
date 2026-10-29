@@ -5,6 +5,7 @@ import {
   bandFor,
   effectiveChildPolicy,
   fallbackPolicy,
+  percentChildMinor,
   policyProblem,
 } from '../../src/services/domain/child-policy.js';
 import { childPolicySchema, hotelRoomSchema } from '../../src/services/schemas/zod/listing.js';
@@ -87,7 +88,7 @@ test('policy validation: exact cover, ordered, named gaps and overlaps', () => {
     ...policy,
     bands: [policy.bands[0], { ...policy.bands[1], rule: { type: 'percent', amount: 25 } }],
   };
-  assert.equal(childPolicySchema.safeParse(percent).success, false);
+  assert.equal(childPolicySchema.safeParse(percent).success, true);
   const missing = childPolicySchema.safeParse(gap);
   assert.equal(missing.error.issues[0].message, 'Age 2 is not covered');
 });
@@ -230,4 +231,94 @@ test('room schema takes an override and cots; percent and bad cots are refused',
   assert.deepEqual(parsed.cots, { count: 1, amount: 300 });
   assert.equal(hotelRoomSchema.parse(base).childPolicy, null);
   assert.equal(hotelRoomSchema.safeParse({ ...base, cots: { count: 5 } }).success, false);
+});
+
+/** Story 3.7: percent child bands. */
+const pctPolicy = (amount, kind = 'child') => ({
+  adultRateFromAge: 12,
+  bands: [policy.bands[0], { ...policy.bands[1], kind, rule: { type: 'percent', amount } }],
+});
+const pctRoom = (amount, extra = {}) => ({
+  ...room,
+  maxAdults: 3,
+  childPolicy: { version: 3, source: 'property', policy: pctPolicy(amount) },
+  ...extra,
+});
+const night = (
+  roomType,
+  adults,
+  childAges,
+  rates = { weekdayMinor: 400000, weekendMinor: 600000 },
+  chosen,
+) => {
+  const own = { ...plan, ...rates };
+  return priceRoomStay({
+    nights: ['2030-01-08', '2030-01-12'], // Tue, Sat
+    roomType,
+    plan: chosen ?? own,
+    basePlan: own,
+    overrides: {},
+    hotel: { weekendNights: [5, 6], childFreeAge: 6 },
+    slabs,
+    adults,
+    childAges,
+  }).nights;
+};
+
+test('percent validation: child bands only, whole 1-100', () => {
+  assert.equal(policyProblem(pctPolicy(25)), null);
+  assert.equal(childPolicySchema.safeParse(pctPolicy(25)).success, true);
+  for (const amount of [0, 101, 2.5]) {
+    assert.match(policyProblem(pctPolicy(amount)), /percent/);
+    assert.equal(childPolicySchema.safeParse(pctPolicy(amount)).success, false);
+  }
+  const blank = childPolicySchema.safeParse(pctPolicy(''));
+  assert.equal(
+    blank.error.issues[0].message,
+    'Enter each band’s percent as a whole number from 1 to 100',
+  );
+  const infant = {
+    adultRateFromAge: 12,
+    bands: [{ kind: 'infant', fromAge: 0, toAge: 11, rule: { type: 'percent', amount: 25 } }],
+  };
+  assert.equal(policyProblem(infant), 'Infant bands are free or a fixed price');
+  assert.equal(childPolicySchema.safeParse(infant).success, false);
+});
+
+test('percent: share of the room-only night ÷ room adults, beyond base only', () => {
+  // ₹4,000 weekday, ₹6,000 weekend, 2 adults, base 2, 25%.
+  const two = night(pctRoom(25), 2, [5]);
+  assert.deepEqual(
+    two.map((n) => [n.rateMinor, n.childMinor]),
+    [
+      [450000, 50000],
+      [675000, 75000],
+    ],
+  );
+  // 3 adults, base 3: 4000 × 25% / 3 = 333.33.
+  assert.equal(
+    night(
+      pctRoom(25, {
+        baseOccupancy: 3,
+        maxOccupancy: 4,
+        beds: [
+          { type: 'king', count: 1 },
+          { type: 'single', count: 1 },
+        ],
+      }),
+      3,
+      [5],
+    )[0].childMinor,
+    33333,
+  );
+  assert.equal(percentChildMinor(400000, 25, 3), 33333);
+  assert.equal(percentChildMinor(1, 50, 1), 1); // half up
+  // Derived CP +20% over ₹4,000: the base is ₹4,000, meals excluded.
+  const cp = { id: 'cp', derivedFrom: 'base', derivedPctBps: 2000, derivedPerGuestMinor: 0 };
+  assert.equal(night(pctRoom(25), 2, [5], undefined, cp)[0].childMinor, 50000);
+  // Within base occupancy: free.
+  const within = night(pctRoom(25), 1, [5]);
+  assert.equal(within[0].rateMinor, 400000);
+  assert.equal(within[0].childMinor, undefined);
+  rejects(() => night(pctRoom(25), 0, [5]), 'OCCUPANCY');
 });

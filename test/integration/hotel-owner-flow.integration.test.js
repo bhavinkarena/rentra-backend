@@ -373,7 +373,8 @@ test(
             ...stay,
             childPolicy: {
               adultRateFromAge: 12,
-              bands: [bands[0], { ...bands[1], rule: { type: 'percent', amount: 25 } }],
+              // Story 3.7: percent is for child bands only; an infant band with percent is refused.
+              bands: [{ ...bands[0], rule: { type: 'percent', amount: 25 } }, bands[1]],
             },
           },
         }),

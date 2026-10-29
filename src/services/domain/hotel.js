@@ -1,7 +1,7 @@
 import { applyBasisPoints } from './booking-money.js';
 import { refundPct } from './cancellation-policy.js';
 import { beddingPlan, placeNightMinor } from './hotel-rooms.js';
-import { bandFor, cotNeed, fallbackPolicy } from './child-policy.js';
+import { bandFor, cotNeed, fallbackPolicy, percentChildMinor } from './child-policy.js';
 import { addLocalDays, isLocalDate, parseLocalDate, propertyLocalInstant, propertyToday } from './booking-dates.js';
 
 /**
@@ -74,13 +74,17 @@ export function roomOccupancy(roomType, { adults, childAges = [] }, policy) {
   if (cot.tooMany) throw full();
   if (cot.missing) throw new HotelError('COT_UNAVAILABLE', `${roomType.name} has no cot for infant ${cot.missing}`);
   const adultRated = childAges.filter((age) => !bandFor(rules, age)).length;
-  const paying = childAges.filter((age) => bandFor(rules, age)?.rule.type === 'fixed').sort((a, b) => b - a);
+  const paying = childAges.filter((age) => ['fixed', 'percent'].includes(bandFor(rules, age)?.rule.type)).sort((a, b) => b - a);
   const payingAdults = adults + adultRated;
   const extra = Math.max(0, payingAdults + paying.length - roomType.baseOccupancy);
   const extraAdults = Math.min(extra, Math.max(0, payingAdults - roomType.baseOccupancy));
   const extraChildren = extra - extraAdults;
-  const childMinor = paying.slice(0, extraChildren).reduce((sum, age) => sum + Math.round(bandFor(rules, age).rule.amount * 100), 0);
+  const charged = paying.slice(0, extraChildren).map((age) => bandFor(rules, age).rule);
+  const childMinor = charged.filter((rule) => rule.type === 'fixed').reduce((sum, rule) => sum + Math.round(rule.amount * 100), 0);
+  // Story 3.7: percent children are priced per night from that night's room-only rate (see priceRoomStay).
+  const childPercents = charged.filter((rule) => rule.type === 'percent').map((rule) => rule.amount);
   return {
+    ...(childPercents.length ? { childPercents } : {}),
     guests: adults + childAges.length, chargedGuests: payingAdults + paying.length, extraAdults, extraChildren,
     childMinor, cots: cot.needed,
   };
@@ -144,12 +148,14 @@ export function priceRoomStay({ nights, roomType, plan, basePlan, overrides, hot
       const row = byType.get(index);
       if (!row || row.count < count) byType.set(index, { type: place.type, count, mode: place.charge?.mode ?? 'fixed', amount: place.charge?.amount ?? 0 });
     }
-    const rateMinor = planMinor + extrasMinor + beddingMinor + cotMinor;
+    const percentMinor = (occupancy.childPercents ?? []).reduce((sum, pct) => sum + percentChildMinor(roomOnlyMinor, pct, adults), 0);
+    const childMinor = occupancy.childMinor + percentMinor;
+    const rateMinor = planMinor + extrasMinor + percentMinor + beddingMinor + cotMinor;
     const taxBps = taxBpsFor(rateMinor, night, slabs);
     const tax = applyBasisPoints(rateMinor, taxBps);
     roomMinor += rateMinor;
     taxMinor += tax;
-    return { night, rateMinor, source, taxBps, taxMinor: tax, ...(beddingMinor ? { beddingMinor } : {}), ...(cotMinor ? { cotMinor } : {}) };
+    return { night, rateMinor, source, taxBps, taxMinor: tax, ...(beddingMinor ? { beddingMinor } : {}), ...(cotMinor ? { cotMinor } : {}), ...(percentMinor ? { childMinor } : {}) };
   });
   if (!Number.isSafeInteger(roomMinor + taxMinor)) throw new RangeError('Amount exceeds safe integer range');
   // Only priced bedding changes the quote shape: ₹0 places (pre-3.4 rooms) keep the old digest and no guest label.

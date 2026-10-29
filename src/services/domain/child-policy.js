@@ -1,7 +1,7 @@
 /**
  * Story 3.6: explicit child age bands. A policy is
- * { adultRateFromAge: 2..18, bands: [{ kind: 'infant'|'child', fromAge, toAge, rule: { type: 'free'|'fixed', amount } }] }
- * (amount whole rupees per child per night). Bands cover 0 .. adultRateFromAge-1 exactly; minors at or above
+ * { adultRateFromAge: 2..18, bands: [{ kind: 'infant'|'child', fromAge, toAge, rule: { type: 'free'|'fixed'|'percent', amount } }] }
+ * (fixed: whole rupees per child per night; percent, child bands only: % of the room-only night ÷ room adults, Story 3.7). Bands cover 0 .. adultRateFromAge-1 exactly; minors at or above
  * adultRateFromAge pay the extra adult rate but stay children. Mirrored in Rentra/lib/domain/hotel-ui.js.
  */
 const ages = (from, to) => (from === to ? `Age ${from} is` : `Ages ${from}-${to} are`);
@@ -18,7 +18,9 @@ export function policyProblem(policy) {
     const { type, amount } = band.rule ?? {};
     if (type === 'free' && amount !== 0) return 'A free band has no price';
     if (type === 'fixed' && !(Number.isInteger(amount) && amount >= 0 && amount <= 50000)) return 'Enter each band’s price in whole rupees from 0 to 50,000';
-    if (type !== 'free' && type !== 'fixed') return 'Choose free or a fixed price for each band';
+    if (type === 'percent' && band.kind !== 'child') return 'Infant bands are free or a fixed price';
+    if (type === 'percent' && !(Number.isInteger(amount) && amount >= 1 && amount <= 100)) return 'Enter each band’s percent as a whole number from 1 to 100';
+    if (!['free', 'fixed', 'percent'].includes(type)) return 'Choose free, a fixed price or a percent for each band';
     const prev = bands[index - 1];
     if (prev && band.fromAge < prev.fromAge) return 'List the bands from youngest to oldest';
     if (prev && band.kind === 'infant' && prev.kind === 'child') return 'Infant bands come before child bands';
@@ -64,3 +66,9 @@ export function cotNeed({ maxOccupancy, adults, childAges, policy, cots }) {
   const have = cots?.count ?? 0;
   return { needed: overflow, tooMany: overflow > infants, missing: overflow > have ? have + 1 : 0 };
 }
+
+/** Story 3.7: one child's percent charge for a night, integer paise, half up: roomOnly × pct / 100 / adults. */
+export const percentChildMinor = (roomOnlyMinor, pct, adults) => {
+  const denom = 10000 * adults;
+  return Math.floor((roomOnlyMinor * pct * 100 + denom / 2) / denom);
+};

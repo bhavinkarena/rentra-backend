@@ -210,7 +210,7 @@ const wholeRupees = (min, max, label) => z.number({ error: `Enter ${label} in ru
 export const BED_TYPES = ['king', 'queen', 'double', 'single', 'sofa_bed', 'bunk'];
 export const ROOM_VIEWS = ['city', 'garden', 'river', 'sea', 'pool', 'hill', 'courtyard'];
 
-/** Story 3.6: child age bands (whole rupees per child per night). No percent rule until Story 3.7. */
+/** Story 3.6: child age bands (whole rupees per child per night). Story 3.7: percent (1-100, child bands only). */
 export const childPolicySchema = z.object({
   adultRateFromAge: z.number().int().min(2, 'Adult rate starts at age 2 or later').max(18, 'Adult rate starts by age 18'),
   bands: z.array(z.object({
@@ -220,7 +220,9 @@ export const childPolicySchema = z.object({
     rule: z.discriminatedUnion('type', [
       z.object({ type: z.literal('free'), amount: z.literal(0).default(0) }).strict(),
       z.object({ type: z.literal('fixed'), amount: wholeRupees(0, 50000, 'Child price') }).strict(),
-    ], { error: 'Choose free or a fixed price' }),
+      // Blank or out of range passes here so policyProblem names it ("…1 to 100").
+      z.object({ type: z.literal('percent'), amount: z.union([z.number(), z.literal('')]) }).strict(),
+    ], { error: 'Choose free, a fixed price or a percent' }),
   }).strict()).min(1, 'Add an age band').max(8),
 }).strict().superRefine((policy, ctx) => {
   const problem = policyProblem(policy);
