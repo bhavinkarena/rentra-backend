@@ -6,6 +6,7 @@ import {
 import { conflict, notFound, unprocessable } from '../../utils/apiError.js';
 import { withListingInventory } from './inventory.js';
 import { ownerEditEffect } from '../domain/listing-lifecycle.js';
+import { capacityShortfall } from '../domain/hotel-rooms.js';
 import { CANCELLATION_PRESETS, freeCancelHoursOf, presetName } from '../domain/cancellation-policy.js';
 
 /**
@@ -61,19 +62,19 @@ export async function saveHotelRooms(database, ownerId, { rentableId, expectedVe
     const saved = [];
     for (const row of input) {
       const values = [row.name, JSON.stringify(row.beds), row.sizeSqm, row.view, row.maxAdults, row.maxChildren, row.maxOccupancy,
-        row.baseOccupancy, row.roomCount, row.extraAdult * 100, row.extraChild * 100, JSON.stringify(row.amenities), row.sortOrder, row.isActive];
-      const [n, beds, size, view, adults, children, occupancy, base, count, extraAdult, extraChild, amenities, sort, active] = values;
+        row.baseOccupancy, row.roomCount, row.extraAdult * 100, row.extraChild * 100, JSON.stringify(row.amenities), row.sortOrder, row.isActive, JSON.stringify(row.extraPlaces)];
+      const [n, beds, size, view, adults, children, occupancy, base, count, extraAdult, extraChild, amenities, sort, active, extra] = values;
       try {
         const [room] = row.id
           ? await tx`UPDATE room_type SET name=${n}, beds=${beds}::text::jsonb, size_sqm=${size}, view=${view}, max_adults=${adults},
               max_children=${children}, max_occupancy=${occupancy}, base_occupancy=${base}, room_count=${count},
-              extra_adult_minor=${extraAdult}, extra_child_minor=${extraChild}, amenities=${amenities}::text::jsonb,
+              extra_adult_minor=${extraAdult}, extra_child_minor=${extraChild}, amenities=${amenities}::text::jsonb, extra_places=${extra}::text::jsonb,
               sort_order=${sort}, is_active=${active}, updated_at=now()
             WHERE id=${row.id} AND rentable_id=${rentableId} RETURNING id`
           : await tx`INSERT INTO room_type(rentable_id,name,beds,size_sqm,view,max_adults,max_children,max_occupancy,base_occupancy,
-              room_count,extra_adult_minor,extra_child_minor,amenities,sort_order,is_active)
+              room_count,extra_adult_minor,extra_child_minor,amenities,sort_order,is_active,extra_places)
             VALUES (${rentableId},${n},${beds}::text::jsonb,${size},${view},${adults},${children},${occupancy},${base},${count},
-              ${extraAdult},${extraChild},${amenities}::text::jsonb,${sort},${active}) RETURNING id`;
+              ${extraAdult},${extraChild},${amenities}::text::jsonb,${sort},${active},${extra}::text::jsonb) RETURNING id`;
         saved.push(room.id);
       } catch (error) {
         if (error.code === '23514' && error.constraint_name === 'room_night_capacity_chk') {
@@ -88,6 +89,7 @@ export async function saveHotelRooms(database, ownerId, { rentableId, expectedVe
     await tx`UPDATE rentable SET capacity=(SELECT max(max_occupancy) FROM room_type WHERE rentable_id=${rentableId} AND is_active),
       updated_at=now() WHERE id=${rentableId}`;
     // What the rooms are is trust content; how many are sold on Rentra is not, and neither is the order.
+    // Owner decision 29 Oct 2026: extra sleeping places are not review-triggering facts (audited only).
     const facts = (rows) => JSON.stringify(rows.filter((r) => r.isActive).map((r) => [r.name, r.beds, r.sizeSqm, r.view, r.maxAdults, r.maxChildren, r.maxOccupancy])
       .sort((a, b) => a[0].localeCompare(b[0])));
     const before = facts(existing.map((r) => ({ name: r.name, beds: r.beds, sizeSqm: r.size_sqm, view: r.view, maxAdults: r.max_adults,
@@ -149,6 +151,7 @@ export async function saveHotelRates(database, ownerId, { rentableId, expectedVe
         free_cancel_hours: terms.freeCancelHours, late_charge: terms.lateCharge, no_show: terms.noShow,
         min_nights: row.minNights, sort_order: row.sortOrder, is_active: row.isActive,
         cancellation_policy: own ? tx.json(own) : null,
+        inclusions: row.inclusions ? tx.json(row.inclusions) : null,
       };
       const [plan] = row.id
         ? await tx`UPDATE rate_plan SET ${tx(values)}, updated_at=now() WHERE id=${row.id} AND rentable_id=${rentableId} RETURNING id`
@@ -210,13 +213,13 @@ export async function hotelForEdit(database, rentableId) {
       FROM hotel_profile WHERE rentable_id=${rentableId}`,
     database`SELECT t.id, t.name, t.beds, t.size_sqm AS "sizeSqm", t.view, t.max_adults AS "maxAdults", t.max_children AS "maxChildren",
         t.max_occupancy AS "maxOccupancy", t.base_occupancy AS "baseOccupancy", t.room_count AS "roomCount",
-        (t.extra_adult_minor/100)::int AS "extraAdult", (t.extra_child_minor/100)::int AS "extraChild", t.amenities,
+        (t.extra_adult_minor/100)::int AS "extraAdult", (t.extra_child_minor/100)::int AS "extraChild", t.amenities, t.extra_places AS "extraPlaces",
         t.sort_order AS "sortOrder", t.is_active AS "isActive",
         (SELECT count(*)::int FROM booking_room br WHERE br.room_type_id=t.id AND br.state IN ('held','booked')
           AND br.check_out > (now() AT TIME ZONE 'Asia/Kolkata')::date) AS "upcomingRooms"
       FROM room_type t WHERE t.rentable_id=${rentableId} ORDER BY t.sort_order, t.name, t.id`,
     database`SELECT id, room_type_id, name, meal_plan, derived_from, weekday_minor, weekend_minor, derived_pct_bps,
-        derived_per_guest_minor, free_cancel_hours, late_charge, no_show, min_nights, sort_order, is_active, cancellation_policy
+        derived_per_guest_minor, free_cancel_hours, late_charge, no_show, min_nights, sort_order, is_active, cancellation_policy, inclusions
       FROM rate_plan WHERE rentable_id=${rentableId} ORDER BY sort_order, name, id`,
     database`SELECT cancellation_policy FROM rentable WHERE id=${rentableId}`,
   ]);
@@ -232,8 +235,11 @@ export async function hotelForEdit(database, rentableId) {
         // Story 2.6: 'default' inherits the hotel default; otherwise the preset these windows equal, or 'custom'.
         cancellation: row.cancellation_policy == null ? 'default' : presetName(row.cancellation_policy, 'night'),
         cancellationPolicy: row.cancellation_policy,
-        minNights: row.min_nights, sortOrder: row.sort_order, isActive: row.is_active,
+        minNights: row.min_nights, sortOrder: row.sort_order, isActive: row.is_active, inclusions: row.inclusions,
       })),
+      // Story 3.3: saved rooms that promise more adults than they sleep; still bookable, fixed on the next save.
+      capacityWarnings: roomTypes.filter((room) => room.isActive).map((room) => ({ roomTypeId: room.id, message: capacityShortfall(room) }))
+        .filter((warning) => warning.message),
       cancellationPolicy: hotelPolicy?.cancellation_policy ?? CANCELLATION_PRESETS.night.moderate,
     },
   };

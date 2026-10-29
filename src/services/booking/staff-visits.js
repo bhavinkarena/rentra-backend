@@ -27,7 +27,7 @@ const assigned = (database, staff) =>
   database`EXISTS (SELECT 1 FROM staff_property sp JOIN rentable ar ON ar.id=sp.rentable_id
     WHERE sp.staff_id=${staff.id} AND sp.rentable_id=b.rentable_id AND ar.client_id=${staff.ownerId})`;
 
-const roomFacts = tx => tx`(SELECT jsonb_agg(jsonb_build_object('id',br.id,'name',rt.name,'state',br.state,
+const roomFacts = tx => tx`(SELECT jsonb_agg(jsonb_build_object('id',br.id,'name',coalesce(br.room_snapshot->>'name',rt.name),'state',br.state,
   'departedAt',br.departed_at,'inventoryEnd',br.inventory_end,'checkIn',br.check_in,'checkOut',br.check_out) ORDER BY br.id)
   FROM booking_room br JOIN room_type rt ON rt.id=br.room_type_id WHERE br.booking_id=b.id)`;
 const activeGuests = tx => tx`(SELECT coalesce(sum(br.adults+cardinality(br.child_ages)),0)::int

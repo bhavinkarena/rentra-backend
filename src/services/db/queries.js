@@ -8,6 +8,7 @@ import {
 } from './schema/index.js';
 import { listingPath } from '@/services/domain/listing-url';
 import { addLocalDays, propertyToday } from '@/services/domain/booking-dates';
+import { resolveInclusions } from '@/services/domain/hotel-rooms';
 import { amenityStates, normalizePublicPhotos, publicHouseRules, publicSlotSchedules } from '@/services/domain/listing-content';
 import { DEFAULT_VERTICAL } from '@/services/domain/verticals';
 import { minuteToHhmm } from '@/services/domain/hourly';
@@ -453,9 +454,9 @@ async function hotelDetail(row) {
         r.location, CASE WHEN p.show_exact_address THEN r.exact_address END AS address
       FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id WHERE p.rentable_id = ${row.id}`,
     sql`SELECT id, name, beds, size_sqm AS "sizeSqm", view, max_adults AS "maxAdults", max_children AS "maxChildren",
-        max_occupancy AS "maxOccupancy", room_count AS "roomCount", amenities, photos
+        max_occupancy AS "maxOccupancy", room_count AS "roomCount", amenities, photos, extra_places AS "extraPlaces"
       FROM room_type WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
-    sql`SELECT id, room_type_id AS "roomTypeId", name, meal_plan AS "mealPlan", free_cancel_hours AS "freeCancelHours", min_nights AS "minNights"
+    sql`SELECT id, room_type_id AS "roomTypeId", name, meal_plan AS "mealPlan", free_cancel_hours AS "freeCancelHours", min_nights AS "minNights", inclusions
       FROM rate_plan WHERE rentable_id = ${row.id} AND is_active ORDER BY sort_order, name, id`,
     sql`SELECT slug, name, kind, latitude::float8 AS latitude, longitude::float8 AS longitude
       FROM landmark WHERE city_id = ${row.cityId} AND is_active`,
@@ -473,7 +474,7 @@ async function hotelDetail(row) {
     roomTypes: roomTypes.map((room) => ({
       ...room,
       photos: normalizePublicPhotos(room.photos, { ...photoContext(row), title: `${row.title} · ${room.name}` }),
-      plans: plans.filter((plan) => plan.roomTypeId === room.id).map(({ roomTypeId: _roomTypeId, ...plan }) => plan),
+      plans: plans.filter((plan) => plan.roomTypeId === room.id).map(({ roomTypeId: _roomTypeId, ...plan }) => ({ ...plan, inclusions: resolveInclusions(plan.mealPlan, plan.inclusions) })),
     })),
     // Nearest six within 25 km, measured from the real pin even when the pin itself is not shown.
     landmarks: pin ? landmarks.map(({ latitude, longitude, ...landmark }) => ({ ...landmark, km: Math.round(distanceKm(pin, { latitude, longitude }) * 10) / 10 }))

@@ -71,6 +71,7 @@ test(
     const room = (name, roomCount, extra = {}) => ({
       name,
       beds: [{ type: 'king', count: 1 }],
+      extraPlaces: [{ type: 'extra_bed', count: 1 }],
       sizeSqm: 24,
       view: 'city',
       maxAdults: 3,
@@ -123,7 +124,12 @@ test(
             maxOccupancy: 3,
             sortOrder: 20,
           }),
-          room('Family Suite', 4, { maxAdults: 4, maxOccupancy: 5, sortOrder: 30 }),
+          room('Family Suite', 4, {
+            maxAdults: 4,
+            maxOccupancy: 5,
+            sortOrder: 30,
+            extraPlaces: [{ type: 'extra_bed', count: 2 }],
+          }),
         ],
       });
       assert.equal(saved.roomTypeIds.length, 3);
@@ -418,6 +424,7 @@ test(
               extraAdult,
               extraChild,
               amenities,
+              extraPlaces,
               sortOrder,
               isActive,
             }) => ({
@@ -434,6 +441,7 @@ test(
               extraAdult,
               extraChild,
               amenities,
+              extraPlaces,
               sortOrder,
               isActive,
               ...(patch[id] ?? {}),
@@ -471,6 +479,173 @@ test(
           (await sql`SELECT status FROM rentable WHERE id=${hotel.id}`)[0].status,
           'pending_review',
         );
+      },
+    );
+
+    await t.test(
+      'Story 3.3: sleeping places, warnings, meal inclusions and the booked snapshot',
+      async () => {
+        const edit = async () => (await hotelForEdit(sql, hotel.id)).hotel;
+        const current = (await edit()).roomTypes;
+        const [deluxe] = current;
+        const strip = ({ upcomingRooms: _u, ...row }) => row;
+        const payload = (patch) =>
+          current.map((row) => ({ ...strip(row), ...(row.id === deluxe.id ? patch : {}) }));
+        // 1 double, 3 adults, no extra place: refused with the shortfall, nothing saved.
+        const before = await version();
+        await assert.rejects(
+          saveHotelRooms(sql, owner.id, {
+            rentableId: hotel.id,
+            expectedVersion: before,
+            rooms: payload({
+              name: 'Deluxe X',
+              beds: [{ type: 'double', count: 1 }],
+              extraPlaces: [],
+              maxAdults: 3,
+            }),
+          }),
+          (error) => {
+            assert.equal(error.code, 'VALIDATION_FAILED');
+            assert.match(
+              JSON.stringify(error.details ?? error.fields ?? error),
+              /Deluxe X: 1 double bed sleeps 2; add a sleeping place or lower max adults to 2/,
+            );
+            return true;
+          },
+        );
+        assert.equal(await version(), before);
+        assert.equal(
+          (await sql`SELECT name FROM room_type WHERE id=${deluxe.id}`)[0].name,
+          deluxe.name,
+        );
+        // Existing non-compliant room: flagged, still quotable, next save refused until fixed.
+        await sql`UPDATE room_type SET beds='[{"type":"king","count":1}]', extra_places='[]', max_adults=3 WHERE id=${deluxe.id}`;
+        const flagged = await edit();
+        assert.deepEqual(
+          flagged.capacityWarnings.map((w) => w.roomTypeId),
+          [deluxe.id],
+        );
+        assert.match(
+          flagged.capacityWarnings[0].message,
+          /add a sleeping place or lower max adults to 2/,
+        );
+        const plan = flagged.ratePlans.find(
+          (p) => p.roomTypeId === deluxe.id && !p.derivedFrom && p.isActive,
+        );
+        await sql`UPDATE rentable SET status='live' WHERE id=${hotel.id}`;
+        const checkIn = addLocalDays(propertyToday(), 20);
+        const quote = await quoteHotelStay(sql, {
+          rentableId: hotel.id,
+          checkIn,
+          checkOut: addLocalDays(checkIn, 1),
+          rooms: [{ roomTypeId: deluxe.id, ratePlanId: plan.id, adults: 3 }],
+        });
+        assert.equal(quote.lines.length, 1, 'still bookable');
+        const fresh = flagged.roomTypes.map(strip);
+        await rejects(
+          saveHotelRooms(sql, owner.id, {
+            rentableId: hotel.id,
+            expectedVersion: await version(),
+            rooms: fresh,
+          }),
+          'VALIDATION_FAILED',
+        );
+        const audits = async () =>
+          (
+            await sql`SELECT count(*)::int n FROM audit_log WHERE entity_id=${hotel.id} AND action='hotel_rooms_changed'`
+          )[0].n;
+        const auditsBefore = await audits();
+        const added = await saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: fresh.map((row) =>
+            row.id === deluxe.id ? { ...row, extraPlaces: [{ type: 'extra_bed', count: 1 }] } : row,
+          ),
+        });
+        assert.deepEqual((await edit()).capacityWarnings, []);
+        // Owner decision: extra sleeping places on a live hotel do not send it back to review, but are audited.
+        assert.equal(added.sentBack, false);
+        assert.equal(
+          (await sql`SELECT status FROM rentable WHERE id=${hotel.id}`)[0].status,
+          'live',
+        );
+        assert.equal(await audits(), auditsBefore + 1);
+        const [audit] =
+          await sql`SELECT "after" FROM audit_log WHERE entity_id=${hotel.id} AND action='hotel_rooms_changed' ORDER BY "at" DESC LIMIT 1`;
+        assert.deepEqual(audit.after.rooms.find((row) => row.id === deluxe.id).extraPlaces, [
+          { type: 'extra_bed', count: 1 },
+        ]);
+        // A removed (inactive) room that would break the rule does not block the save.
+        const raw = (await edit()).roomTypes;
+        const spare = raw.find((row) => row.id !== deluxe.id && row.isActive && !row.upcomingRooms);
+        const withRemoved = raw.map(strip);
+        await saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: withRemoved.map((row) =>
+            row.id === spare.id
+              ? { ...row, isActive: false, extraPlaces: [], maxAdults: 6, maxOccupancy: 8 }
+              : row,
+          ),
+        });
+        await sql`UPDATE rentable SET status='live' WHERE id=${hotel.id}`;
+
+        // Booked rooms keep their promises after the owner renames and re-beds the room.
+        const [booked] =
+          await sql`SELECT id, room_snapshot FROM booking_room WHERE room_type_id=${deluxe.id} LIMIT 1`;
+        assert.equal(booked.room_snapshot.name, 'Deluxe Double');
+        assert.deepEqual(booked.room_snapshot.beds, [{ type: 'king', count: 1 }]);
+        assert.deepEqual(booked.room_snapshot.extraPlaces, [{ type: 'extra_bed', count: 1 }]);
+        assert.deepEqual(booked.room_snapshot.amenities, ['ac', 'tv']);
+        assert.deepEqual(booked.room_snapshot.inclusions, {
+          breakfast: false,
+          lunch: false,
+          dinner: false,
+        });
+        const renamed = (await edit()).roomTypes
+          .map(strip)
+          .map((row) =>
+            row.id === deluxe.id
+              ? { ...row, name: 'Premier', beds: [{ type: 'single', count: 3 }], extraPlaces: [] }
+              : row,
+          );
+        await saveHotelRooms(sql, owner.id, {
+          rentableId: hotel.id,
+          expectedVersion: await version(),
+          rooms: renamed,
+        });
+        const [shown] =
+          await sql`SELECT coalesce(br.room_snapshot->>'name', t.name) AS name, br.room_snapshot->'beds' AS beds
+        FROM booking_room br JOIN room_type t ON t.id=br.room_type_id WHERE br.id=${booked.id}`;
+        assert.deepEqual(shown, { name: 'Deluxe Double', beds: [{ type: 'king', count: 1 }] });
+        await sql`UPDATE booking_room SET room_snapshot=NULL WHERE id=${booked.id}`;
+        const [old] =
+          await sql`SELECT coalesce(br.room_snapshot->>'name', t.name) AS name FROM booking_room br JOIN room_type t ON t.id=br.room_type_id WHERE br.id=${booked.id}`;
+        assert.equal(old.name, 'Premier', 'old rows fall back to live values');
+
+        // Meal inclusions: CP default, MP needs its second meal, AP cannot drop dinner.
+        const base = { roomTypeId: deluxe.id, weekday: 2600, weekend: 3000, sortOrder: 0 };
+        const rv = async (row) =>
+          saveHotelRates(sql, owner.id, {
+            rentableId: hotel.id,
+            expectedVersion: await version(),
+            plans: [{ id: plan.id, ...base, name: 'Plan', ...row }],
+          });
+        await rejects(rv({ mealPlan: 'MP' }), 'VALIDATION_FAILED');
+        await rejects(
+          rv({ mealPlan: 'AP', inclusions: { breakfast: true, lunch: true, dinner: false } }),
+          'VALIDATION_FAILED',
+        );
+        await rejects(
+          rv({ mealPlan: 'CP', inclusions: { breakfast: false, lunch: true, dinner: false } }),
+          'VALIDATION_FAILED',
+        );
+        await rv({ mealPlan: 'CP' });
+        let saved = (await edit()).ratePlans.find((p) => p.id === plan.id);
+        assert.equal(saved.inclusions, null, 'CP without override keeps the code default');
+        await rv({ mealPlan: 'MP', inclusions: { breakfast: true, lunch: false, dinner: true } });
+        saved = (await edit()).ratePlans.find((p) => p.id === plan.id);
+        assert.deepEqual(saved.inclusions, { breakfast: true, lunch: false, dinner: true });
       },
     );
   },

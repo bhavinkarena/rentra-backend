@@ -4,6 +4,7 @@ import { freeCancelHoursOf, policyFromHotelPlan } from '../domain/cancellation-p
 import {
   HOTEL_POLICY, HotelError, cancellationTerms, hotelRefund, priceRoomStay, roomTypeAvailability, stayInstants, stayNights,
 } from '../domain/hotel.js';
+import { resolveInclusions } from '../domain/hotel-rooms.js';
 import { quoteDigest } from './quotes.js';
 import { expireInventoryHolds, withListingSnapshot } from './inventory.js';
 
@@ -21,6 +22,7 @@ const roomTypeOf = (row) => ({
   id: row.id, name: row.name, maxAdults: row.max_adults, maxChildren: row.max_children, maxOccupancy: row.max_occupancy,
   baseOccupancy: row.base_occupancy, roomCount: row.room_count,
   extraAdultMinor: int(row.extra_adult_minor), extraChildMinor: int(row.extra_child_minor),
+  beds: row.beds, extraPlaces: row.extra_places ?? [], sizeSqm: row.size_sqm, view: row.view, amenities: row.amenities ?? [],
 });
 // Story 2.6: a plan uses the hotel default unless the owner chose its own policy.
 const planOf = (row, hotelPolicy) => {
@@ -37,7 +39,7 @@ const planColumns = (row) => ({
   weekdayMinor: int(row.weekday_minor), weekendMinor: int(row.weekend_minor), derivedFrom: row.derived_from,
   derivedPctBps: row.derived_pct_bps, derivedPerGuestMinor: int(row.derived_per_guest_minor),
   freeCancelHours: row.free_cancel_hours, lateCharge: row.late_charge, noShow: row.no_show,
-  minNights: row.min_nights, maxNights: row.max_nights,
+  minNights: row.min_nights, maxNights: row.max_nights, inclusions: resolveInclusions(row.meal_plan, row.inclusions),
 });
 
 /**
@@ -131,6 +133,13 @@ function priceLine(data, nights, { roomType, plan, adults, childAges }) {
     hotel: data.hotel, slabs: data.slabs, adults, childAges,
   });
 }
+
+/** Story 3.3: the room as promised at booking; later owner edits never rewrite it. */
+const roomSnapshot = (roomType, plan) => ({
+  name: roomType.name, beds: roomType.beds, extraPlaces: roomType.extraPlaces, sizeSqm: roomType.sizeSqm, view: roomType.view,
+  amenities: roomType.amenities, baseOccupancy: roomType.baseOccupancy, maxAdults: roomType.maxAdults, maxChildren: roomType.maxChildren,
+  inclusions: plan.inclusions,
+});
 
 const planSnapshot = (plan) => ({
   name: plan.name, mealPlan: plan.mealPlan, freeCancelHours: plan.freeCancelHours, lateCharge: plan.lateCharge, noShow: plan.noShow,
@@ -245,7 +254,12 @@ function inventoryError(error) {
 export async function holdHotelRooms(tx, listing, { bookingId, quote, guestNames = [], now }) {
   await expireInventoryHolds(tx, listing.id, now);
   const clock = now ? new Date(now) : new Date((await tx`SELECT clock_timestamp() AS now`)[0].now);
-  const fresh = buildQuote(await loadHotel(tx, listing, quote.checkIn, quote.checkOut, clock), {
+  // Story 3.3: the snapshot is read under the listing row lock that saveHotelRooms/saveHotelRates also take
+  // (both run in withListingInventory); FOR SHARE keeps that true even for a writer that skips the mutex.
+  await tx`SELECT id FROM room_type WHERE rentable_id = ${listing.id} ORDER BY id FOR SHARE`;
+  await tx`SELECT id FROM rate_plan WHERE rentable_id = ${listing.id} ORDER BY id FOR SHARE`;
+  const data = await loadHotel(tx, listing, quote.checkIn, quote.checkOut, clock);
+  const fresh = buildQuote(data, {
     checkIn: quote.checkIn, checkOut: quote.checkOut,
     rooms: quote.lines.map(({ roomTypeId, ratePlanId, adults, childAges }) => ({ roomTypeId, ratePlanId, adults, childAges })),
   }, clock);
@@ -256,10 +270,11 @@ export async function holdHotelRooms(tx, listing, { bookingId, quote, guestNames
   try {
     for (const { line, name } of lines) {
       await tx`INSERT INTO booking_room (booking_id, rentable_id, room_type_id, rate_plan_id, check_in, check_out, adults, child_ages,
-          guest_name, nights, amount_room_minor, amount_tax_minor, plan_snapshot)
+          guest_name, nights, amount_room_minor, amount_tax_minor, plan_snapshot, room_snapshot)
         VALUES (${bookingId}, ${listing.id}, ${line.roomTypeId}, ${line.ratePlanId}, ${fresh.checkIn}, ${fresh.checkOut}, ${line.adults},
           ${line.childAges}, ${name}, ${JSON.stringify(line.nights)}::text::jsonb, ${line.roomMinor}, ${line.taxMinor},
-          ${JSON.stringify(line.plan)}::text::jsonb)`;
+          ${JSON.stringify(line.plan)}::text::jsonb, ${JSON.stringify(roomSnapshot(
+            data.roomTypes.find((row) => row.id === line.roomTypeId), data.plans.find((row) => row.id === line.ratePlanId)))}::text::jsonb)`;
     }
   } catch (error) {
     throw inventoryError(error);

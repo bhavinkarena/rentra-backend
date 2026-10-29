@@ -274,10 +274,10 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     const stay = stayRow ? {
       checkIn: stayRow.slot_snapshot?.checkIn ?? null, checkOut: stayRow.slot_snapshot?.checkOut ?? null, nights: stayRow.slot_snapshot?.nights ?? null,
       roomMinor: amount(stayRow.slot_snapshot?.roomMinor), taxMinor: amount(stayRow.slot_snapshot?.taxMinor),
-      rooms: (await tx`SELECT br.id,br.state,br.departed_at,br.inventory_end::text,br.adults,br.child_ages,br.guest_name,br.amount_room_minor,br.amount_tax_minor,br.plan_snapshot,t.name
-        FROM booking_room br JOIN room_type t ON t.id=br.room_type_id WHERE br.booking_id=${stayRow.id} ORDER BY t.name,br.id`).map(room => ({
+      rooms: (await tx`SELECT br.id,br.state,br.departed_at,br.inventory_end::text,br.adults,br.child_ages,br.guest_name,br.amount_room_minor,br.amount_tax_minor,br.plan_snapshot,br.room_snapshot,coalesce(br.room_snapshot->>'name',t.name) AS name
+        FROM booking_room br JOIN room_type t ON t.id=br.room_type_id WHERE br.booking_id=${stayRow.id} ORDER BY name,br.id`).map(room => ({
         id: room.id, name: room.name, state: room.state, departedAt: instant(room.departed_at), inventoryEnd: room.inventory_end, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
-        plan: room.plan_snapshot, roomMinor: amount(room.amount_room_minor), taxMinor: amount(room.amount_tax_minor) })),
+        plan: room.plan_snapshot, room: room.room_snapshot ?? null, roomMinor: amount(room.amount_room_minor), taxMinor: amount(room.amount_tax_minor) })),
       details: order.guest_details ?? null,
       // Phase 10: the hotel page, for "Change dates or rooms".
       listingHref: (await tx`SELECT slug, public_code FROM rentable WHERE id=${order.rentable_id}`).map((r) => listingPath(r.slug, r.public_code))[0] ?? null,

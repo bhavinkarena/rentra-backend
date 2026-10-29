@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { slotEnum, cancellationTierEnum } from './booking';
 import { cancellationPolicySchema } from '../../domain/cancellation-policy.js';
+import { EXTRA_PLACE_TYPES, capacityShortfall, inclusionsProblem, resolveInclusions } from '../../domain/hotel-rooms.js';
 
 export const slotPriceSchema = z.object({
   slot: slotEnum,
@@ -213,6 +214,8 @@ export const hotelRoomSchema = z.object({
   id: z.string().uuid().optional(),
   name: roomName,
   beds: z.array(z.object({ type: z.enum(BED_TYPES), count: z.number().int().min(1).max(6) }).strict()).min(1, 'Add the beds').max(4),
+  // Story 3.3: extra sleeping places are a physical promise, never a price.
+  extraPlaces: z.array(z.object({ type: z.enum(EXTRA_PLACE_TYPES), count: z.number().int().min(1).max(4) }).strict()).max(2).default([]),
   sizeSqm: z.number().int().min(4).max(2000).nullable().default(null),
   view: z.enum(ROOM_VIEWS).nullable().default(null),
   maxAdults: z.number().int().min(1).max(12),
@@ -228,6 +231,9 @@ export const hotelRoomSchema = z.object({
 }).strict().superRefine((row, ctx) => {
   if (row.maxAdults > row.maxOccupancy) ctx.addIssue({ code: 'custom', path: ['maxAdults'], message: 'More adults than the room takes in total' });
   if (row.baseOccupancy > row.maxOccupancy) ctx.addIssue({ code: 'custom', path: ['baseOccupancy'], message: 'The price cannot include more guests than the room takes' });
+  // Removed rooms are resubmitted inactive; they promise nothing, so they never block a save.
+  const shortfall = row.isActive ? capacityShortfall(row) : null;
+  if (shortfall) ctx.addIssue({ code: 'custom', path: ['maxAdults'], message: shortfall });
 });
 
 export const hotelRoomsSchema = z.object({
@@ -267,9 +273,13 @@ export const hotelPlanSchema = z.object({
   cancellation: z.enum(['default', ...Object.keys(HOTEL_CANCELLATION), 'custom']).default('default'),
   cancellationPolicy: cancellationPolicySchema.optional(),
   minNights: z.number().int().min(1).max(30).default(1),
+  // Story 3.3: null = the meal plan code's default; an override may add meals, never remove the minimum.
+  inclusions: z.object({ breakfast: z.boolean(), lunch: z.boolean(), dinner: z.boolean() }).strict().nullable().default(null),
   sortOrder: z.number().int().min(0).max(1000),
   isActive: z.boolean().default(true),
 }).strict().superRefine((row, ctx) => {
+  const meals = inclusionsProblem(row.mealPlan, resolveInclusions(row.mealPlan, row.inclusions));
+  if (meals) ctx.addIssue({ code: 'custom', path: ['inclusions'], message: `${row.name}: ${meals}` });
   if (row.derivedFrom == null) {
     if (row.weekday == null) ctx.addIssue({ code: 'custom', path: ['weekday'], message: 'Enter the weekday price' });
     if (row.weekend == null) ctx.addIssue({ code: 'custom', path: ['weekend'], message: 'Enter the weekend price' });
