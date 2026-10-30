@@ -18,7 +18,7 @@ export async function scheduleOwnerNotifications(database) {
         await tx`SELECT client_update_insert(${b.client_id},${event+':'+b.id},'booking',${event==='checkout_overdue'?'action':'info'},${event},${b.rentable_id},${b.order_id},${detail}::text::jsonb,now())`;
       }
     }
-    const properties=await tx`SELECT r.id,r.client_id FROM rentable r WHERE r.status='live' AND r.rental_unit::text NOT IN ('hour','night') AND coalesce((r.booking_config->>'autoOpen')::boolean,false)=false
+    const properties=await tx`SELECT r.id,r.client_id FROM rentable r WHERE r.status='live' AND r.rental_unit::text NOT IN ('hour','night','unit_night') AND coalesce((r.booking_config->>'autoOpen')::boolean,false)=false
       AND NOT EXISTS(SELECT 1 FROM availability a WHERE a.rentable_id=r.id AND a.day>(now() AT TIME ZONE 'Asia/Kolkata')::date+7 AND a.units_available>0)`;
     for(const p of properties) await tx`SELECT client_update_insert(${p.client_id},${'dates:'+p.id+':'+new Date(Date.now()+330*60000).toISOString().slice(0,7)},'property','action','dates_running_out',${p.id},NULL,'{}'::jsonb,now())`;
     return visits.length;

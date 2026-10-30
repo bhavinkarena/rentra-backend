@@ -617,6 +617,13 @@
       "when": 1790591517015,
       "tag": "0087_pet_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1790591518015,
+      "tag": "0088_whole_apartment",
+      "breakpoints": true
     }
   ]
 }

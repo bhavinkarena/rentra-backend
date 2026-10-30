@@ -1,5 +1,6 @@
 import 'server-only';
 import { hotelForEdit } from '../booking/hotel-setup.js';
+import { apartmentForEdit } from '../booking/apartment-setup.js';
 import { z } from 'zod';
 import { conflict, notFound, unprocessable } from '@/utils/apiError.js';
 import { listingCompletion } from '../domain/listing-completion.js';
@@ -97,7 +98,8 @@ async function snapshot(tx, row) {
       ORDER BY c.slug,rr.day_kind,rr.start_minute`).map(camel),
   } : {};
   // Hotels: profile, room types and rate plans are reviewed content too.
-  const hotel = row.rental_unit === 'night' ? await hotelForEdit(tx, row.id) : {};
+  // Story 3.10: an apartment's unit, stay rules and price are reviewed content too.
+  const hotel = row.rental_unit === 'night' ? await hotelForEdit(tx, row.id) : row.rental_unit === 'unit_night' ? await apartmentForEdit(tx, row.id) : {};
   return {
     listing,
     ...venue,

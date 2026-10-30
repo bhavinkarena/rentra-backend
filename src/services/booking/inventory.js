@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { addLocalDays, intervalsOverlap, isLocalDate, propertyToday, visitInterval } from '../domain/booking-dates.js';
-import { bookingModel } from '../domain/verticals.js';
+import { APARTMENT_SLOT_MESSAGE, bookingModel } from '../domain/verticals.js';
 
 const lockContexts = new WeakMap();
 const ACTIVE_BOOKINGS = ['requested', 'confirmed', 'handed_over', 'returned', 'disputed'];
@@ -305,6 +305,7 @@ async function loadInventory(tx, listing, window) {
 export async function prepareInventoryCheck(tx, listing, window = null) {
   const context = contextFor(tx, listing.id);
   if (bookingModel(listing) === 'hourly') throw new InventoryError('UNSUPPORTED_INVENTORY', 'Use the time-slot check for this venue.');
+  if (bookingModel(listing) === 'apartment') throw new InventoryError('UNSUPPORTED_INVENTORY', APARTMENT_SLOT_MESSAGE);
   const state = await loadInventory(tx, listing, window);
   await auditInventoryReadiness(tx, listing, state);
   const closedIntervals = closedDateIntervals(listing, state.availability, context.now);

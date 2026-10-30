@@ -180,7 +180,7 @@ export async function ownerPortfolioCalendar(database, ownerId, query = {}) {
       // Same digest as calendarSnapshot for this window, so commands accept the page's version.
       const snapshot = { ...state, overrides: listingOverrides, version: digest([listing.booking_config, state, listingOverrides, listingRates]) };
       result.items.push({
-        cells: ['hour','night'].includes(listing.rental_unit)?[]:calendarCells(listing,snapshot,listingRates,from,days),
+        cells: ['hour','night','unit_night'].includes(listing.rental_unit)?[]:calendarCells(listing,snapshot,listingRates,from,days),
         config:listing.booking_config,
         id: listing.id,
         title: listing.title,

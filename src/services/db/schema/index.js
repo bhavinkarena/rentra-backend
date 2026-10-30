@@ -109,8 +109,8 @@ export const fulfilment = pgEnum('fulfilment', [
   'pickup_from_owner', // movable, collected
   'delivered',         // movable, brought to the renter
 ]);
-/** 'hour' (0053): time booking on a start/duration grid per court. The engine branches on rentable.rental_unit. */
-export const rentalUnit = pgEnum('rental_unit', ['slot', 'night', 'day', 'week', 'month', 'hour']);
+/** 'hour' (0053): time booking on a start/duration grid per court; 'unit_night' (0088): a whole apartment. The engine branches on rentable.rental_unit. */
+export const rentalUnit = pgEnum('rental_unit', ['slot', 'night', 'day', 'week', 'month', 'hour', 'unit_night']);
 
 /**
  * Availability is stored per DAY and per NIGHT only.
@@ -2183,3 +2183,29 @@ export const ownerNotification=pgTable('owner_notification',{
  eventKey:text('event_key').notNull(),event:varchar('event',{length:64}).notNull(),category:varchar('category',{length:16}).notNull(),channel:varchar('channel',{length:16}).notNull(),payload:jsonb('payload').notNull().default({}),
  state:varchar('state',{length:16}).notNull().default('pending'),attempts:integer('attempts').notNull().default(0),nextAttemptAt:timestamp('next_attempt_at',{withTimezone:true}).notNull().defaultNow(),sentAt:timestamp('sent_at',{withTimezone:true}),deliveredAt:timestamp('delivered_at',{withTimezone:true}),failureCode:varchar('failure_code',{length:64}),providerId:text('provider_id'),providerAccount:text('provider_account'),recipient:text('recipient'),sender:text('sender'),bodyHash:varchar('body_hash',{length:64}),leaseToken:uuid('lease_token'),leaseUntil:timestamp('lease_until',{withTimezone:true}),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
 },t=>[uniqueIndex('owner_notification_event_idx').on(t.userId,t.eventKey,t.channel),index('owner_notification_due_idx').on(t.nextAttemptAt).where(sql`${t.state} IN ('pending','retry','blocked','accepted','sending')`),check('owner_notification_valid_chk',sql`${t.channel} IN ('mobile','email','whatsapp','sms') AND ${t.state} IN ('pending','sending','accepted','delivered','retry','blocked','failed','unknown','suppressed') AND ${t.attempts}>=0 AND jsonb_typeof(${t.payload})='object'`)]);
+
+/** Story 3.10 (0088): a whole apartment's unit, stay rules and price; NULL beds/check-in/weekday = part not saved yet. */
+export const apartmentProfile = pgTable('apartment_profile', {
+  rentableId: uuid('rentable_id').primaryKey().references(() => rentable.id, { onDelete: 'cascade' }),
+  bedrooms: smallint('bedrooms').notNull().default(1),
+  bathrooms: smallint('bathrooms').notNull().default(1),
+  beds: jsonb('beds'),
+  maxAdults: smallint('max_adults').notNull().default(2),
+  maxChildren: smallint('max_children').notNull().default(0),
+  maxOccupants: smallint('max_occupants').notNull().default(2),
+  minNights: smallint('min_nights').notNull().default(1),
+  maxNights: smallint('max_nights').notNull().default(30),
+  arrivalRules: jsonb('arrival_rules').notNull().default({ weekdays: {}, ranges: [] }),
+  checkInMinute: smallint('check_in_minute'),
+  checkOutMinute: smallint('check_out_minute'),
+  turnoverNights: smallint('turnover_nights').notNull().default(0),
+  cleaningFeeMinor: bigint('cleaning_fee_minor', { mode: 'number' }).notNull().default(0),
+  weekdayMinor: bigint('weekday_minor', { mode: 'number' }),
+  weekendMinor: bigint('weekend_minor', { mode: 'number' }),
+  weekendNights: smallint('weekend_nights').array().notNull().default(sql`'{5,6}'`),
+  version: integer('version').notNull().default(1),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check('apartment_nights_chk', sql`${t.minNights} <= ${t.maxNights}`),
+]);

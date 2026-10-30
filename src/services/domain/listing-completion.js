@@ -17,8 +17,10 @@ export const MAX_PHOTOS = 15;
 /** Hotels show rooms, bathrooms, lobby and dining: more photos, and a higher minimum. */
 export const HOTEL_MIN_PHOTOS = 8;
 export const HOTEL_MAX_PHOTOS = 40;
-export const minPhotosFor = (rentalUnit) => (rentalUnit === 'night' ? HOTEL_MIN_PHOTOS : MIN_PHOTOS);
-export const maxPhotosFor = (rentalUnit) => (rentalUnit === 'night' ? HOTEL_MAX_PHOTOS : MAX_PHOTOS);
+// Story 3.10: whole apartments use the hotel photo limits.
+const nightly = (rentalUnit) => rentalUnit === 'night' || rentalUnit === 'unit_night';
+export const minPhotosFor = (rentalUnit) => (nightly(rentalUnit) ? HOTEL_MIN_PHOTOS : MIN_PHOTOS);
+export const maxPhotosFor = (rentalUnit) => (nightly(rentalUnit) ? HOTEL_MAX_PHOTOS : MAX_PHOTOS);
 
 /** Documents that can prove ownership, best first. */
 export const OWNERSHIP_DOC_TYPES = [
@@ -107,7 +109,7 @@ export const ownershipDocTypesFor = (rentalUnit) =>
 
 export function listingCompletion(
   listing,
-  { prices = [], amenities = [], photos = [], documents = [], legacySubmission=false, resources = [], hourlyRates = [], hotel = null } = {},
+  { prices = [], amenities = [], photos = [], documents = [], legacySubmission=false, resources = [], hourlyRates = [], hotel = null, apartment = null } = {},
 ) {
   const l = listing ?? {};
   const photoList = Array.isArray(photos) ? photos : [];
@@ -208,6 +210,8 @@ export function listingCompletion(
 
   // Hotels (hotel plan, Phase 3): rooms, rates, check-in and hotel rules; already in walkthrough order.
   if (l.rentalUnit === 'night') sections = hotelSections(sections, l, { hotel, photos: photoList, liveDocs, rejectedDoc });
+  // Whole apartments (Story 3.10): unit, stay rules and price replace capacity, availability and slot prices.
+  else if (l.rentalUnit === 'unit_night') sections = apartmentSections(sections, l, { apartment, legacySubmission, photos: photoList });
   else {
   const by = id => sections.find(section=>section.id===id);
   const story=by('basics'), rules=by('rules'), terms=by('terms');
@@ -377,5 +381,53 @@ function hotelSections(farm, l, { hotel, photos, liveDocs, rejectedDoc }) {
         : liveDocs.length && !gstAnswered ? 'Answer the GST question' : null,
       minutes: 4,
     },
+  ];
+}
+
+/** The whole-apartment variant (Story 3.10), in the apartment walkthrough order (step ids). */
+function apartmentSections(farm, l, { apartment, legacySubmission, photos }) {
+  const by = (id) => farm.find((s) => s.id === id);
+  const a = apartment ?? {};
+  const rules = by('rules'), terms = by('terms');
+  return [
+    { id: 'type', label: 'Type', done: Boolean(l.categoryId), minutes: 1 },
+    by('location'),
+    {
+      id: 'space',
+      label: 'Unit',
+      hint: 'Bedrooms, bathrooms, beds and who can stay',
+      done: Array.isArray(a.beds) && a.beds.length > 0,
+      note: a.beds?.length ? `${a.bedrooms} bedroom${a.bedrooms === 1 ? '' : 's'} · sleeps ${a.maxOccupants}` : null,
+      minutes: 3,
+    },
+    { ...by('amenities'), label: 'Facilities', hint: 'Wi-Fi, AC, kitchen, lift, parking…' },
+    {
+      ...by('photos'),
+      hint: `${HOTEL_MIN_PHOTOS}–${HOTEL_MAX_PHOTOS} photos: every room, kitchen, bathroom and the view`,
+      done: photos.length >= HOTEL_MIN_PHOTOS,
+      note: photos.length > 0 && photos.length < HOTEL_MIN_PHOTOS ? `${photos.length} of ${HOTEL_MIN_PHOTOS} minimum` : null,
+    },
+    { ...by('basics'), id: 'story', label: 'Title and description' },
+    {
+      id: 'pricing',
+      label: 'Price',
+      hint: 'Weekday and weekend price per night, cleaning fee',
+      done: a.weekday > 0 && a.weekend > 0,
+      minutes: 2,
+    },
+    {
+      id: 'availability',
+      label: 'Stay rules',
+      hint: 'Minimum and maximum nights, times, turnover',
+      done: Boolean(a.checkInTime && a.checkOutTime),
+      minutes: 3,
+    },
+    {
+      ...rules,
+      id: 'rules',
+      label: 'House rules and cancellation',
+      done: rules.done && terms.done && (legacySubmission || !['draft', 'rejected'].includes(l.status ?? 'draft') || l.houseRules?.cancellationConfirmed === true),
+    },
+    by('ownership'),
   ];
 }

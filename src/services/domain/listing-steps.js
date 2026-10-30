@@ -29,15 +29,17 @@
 const chapters = (model = 'slot') => {
   const venue = model === 'hour';
   const hotel = model === 'night';
+  // Story 3.10: a whole apartment keeps the hotel's step ids with its own labels.
+  const apartment = model === 'apartment';
   return [
     {
       id: 'place',
-      label: hotel ? 'Your hotel' : 'Your place',
+      label: hotel ? 'Your hotel' : apartment ? 'Your apartment' : 'Your place',
       steps: [
         { id: 'type', label: 'Type', advance: 'submit' },
         { id: 'location', label: 'Location', advance: 'submit' },
-        { id: 'space', label: hotel ? 'Rooms' : venue ? 'Courts' : 'Space', advance: 'submit' },
-        { id: 'amenities', label: 'Amenities', advance: 'submit' },
+        { id: 'space', label: hotel ? 'Rooms' : venue ? 'Courts' : apartment ? 'Unit' : 'Space', advance: 'submit' },
+        { id: 'amenities', label: apartment ? 'Facilities' : 'Amenities', advance: 'submit' },
       ],
     },
     {
@@ -54,15 +56,15 @@ const chapters = (model = 'slot') => {
       steps: [
         {
           id: 'pricing',
-          label: hotel ? 'Rates' : venue ? 'Hourly prices' : 'Pricing',
+          label: hotel ? 'Rates' : venue ? 'Hourly prices' : apartment ? 'Price' : 'Pricing',
           advance: 'submit',
         },
         {
           id: 'availability',
-          label: hotel ? 'Check-in and check-out' : 'Availability',
+          label: hotel ? 'Check-in and check-out' : apartment ? 'Stay rules' : 'Availability',
           advance: 'submit',
         },
-        { id: 'rules', label: hotel ? 'House rules' : 'Rules and cancellation', advance: 'submit' },
+        { id: 'rules', label: hotel ? 'House rules' : apartment ? 'House rules and cancellation' : 'Rules and cancellation', advance: 'submit' },
         {
           id: 'ownership',
           label: hotel ? 'Proof and GST' : 'Ownership proof',
@@ -76,6 +78,7 @@ const chapters = (model = 'slot') => {
 export const LISTING_CHAPTERS = chapters();
 export const VENUE_CHAPTERS = chapters('hour');
 export const HOTEL_CHAPTERS = chapters('night');
+export const APARTMENT_CHAPTERS = chapters('apartment');
 export const legacyStep = (id) =>
   ({
     basics: 'story',
@@ -90,13 +93,25 @@ export const legacyStep = (id) =>
     review: 'preview',
   })[id] || id;
 
-/** The booking model of a listing: 'hour' (venue), 'night' (hotel) or 'slot' (farmhouse, the default). */
+/** The booking model of a listing: 'hour' (venue), 'night' (hotel), 'apartment' (whole apartment, unit_night) or 'slot' (farmhouse, the default). */
 export const listingModel = (listing) =>
-  listing?.rentalUnit === 'hour' ? 'hour' : listing?.rentalUnit === 'night' ? 'night' : 'slot';
+  listing?.rentalUnit === 'hour'
+    ? 'hour'
+    : listing?.rentalUnit === 'night'
+      ? 'night'
+      : listing?.rentalUnit === 'unit_night'
+        ? 'apartment'
+        : 'slot';
 
 /** Chapters for a booking model. Every helper below takes the same optional `model`. */
 export const chaptersFor = (model = 'slot') =>
-  model === 'hour' ? VENUE_CHAPTERS : model === 'night' ? HOTEL_CHAPTERS : LISTING_CHAPTERS;
+  model === 'hour'
+    ? VENUE_CHAPTERS
+    : model === 'night'
+      ? HOTEL_CHAPTERS
+      : model === 'apartment'
+        ? APARTMENT_CHAPTERS
+        : LISTING_CHAPTERS;
 
 const stepsOf = (model) =>
   chaptersFor(model).flatMap((c) =>

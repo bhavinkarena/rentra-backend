@@ -1,7 +1,7 @@
 import 'server-only';
 import { z } from 'zod';
 import { bookingConfigSchema, hourlyBookingConfigSchema, priceOverrideSchema } from '../schemas/zod/booking-config.js';
-import { bookingModel } from '../domain/verticals.js';
+import { APARTMENT_SLOT_MESSAGE, bookingModel } from '../domain/verticals.js';
 import { operatingWindows } from '../domain/hourly.js';
 import { localDateSchema } from '../schemas/zod/booking.js';
 import { addLocalDays, parseLocalDate } from '../domain/booking-dates.js';
@@ -17,6 +17,7 @@ export async function saveBookingConfiguration(database, ownerId, { rentableId, 
   z.number().int().nonnegative().parse(expectedVersion);
   return withListingInventory(database, rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId, true);
+    if (bookingModel(listing) === 'apartment') throw new InventoryError('UNSUPPORTED_INVENTORY', APARTMENT_SLOT_MESSAGE);
     if(draftOnly && (!['draft','rejected'].includes(listing.status) || (await tx`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`).length)) throw new InventoryError('EXPLICIT_SAVE_REQUIRED','Use the booking rules preview for this property.');
     // The listing's booking model picks the schema; a config in the other shape is refused.
     const hourly = bookingModel(listing) === 'hourly';
@@ -56,6 +57,7 @@ export async function saveBookingPriceOverride(database, ownerId, input) {
   const value = priceOverrideSchema.parse(input);
   return withListingInventory(database, value.rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId);
+    if (bookingModel(listing) === 'apartment') throw new InventoryError('UNSUPPORTED_INVENTORY', APARTMENT_SLOT_MESSAGE);
     if(!listing.booking_config?.slots?.[value.slot]?.enabled || !(await tx`SELECT 1 FROM rentable_price WHERE rentable_id=${listing.id} AND slot=${value.slot}`).length)throw new InventoryError('SLOT_UNAVAILABLE','This slot is not offered. Enable it before setting a date price.');
     if (value.rentMinor === null) {
       await tx`DELETE FROM booking_price_override WHERE rentable_id=${listing.id} AND day=${value.day} AND slot=${value.slot}`;
@@ -78,6 +80,7 @@ export async function openBookingDates(database, ownerId, { rentableId, from, to
   if (count < 1 || count > 366) throw new InventoryError('INVALID_RANGE', 'Choose an ordered range of at most 366 dates.');
   return withListingInventory(database, rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId);
+    if (bookingModel(listing) === 'apartment') throw new InventoryError('UNSUPPORTED_INVENTORY', APARTMENT_SLOT_MESSAGE);
     if (bookingModel(listing) === 'hourly') throw new InventoryError('UNSUPPORTED_INVENTORY', 'Venues open by their weekly hours; close a day with a block instead.');
     const result = await tx`INSERT INTO availability (rentable_id,day,slot,units_available)
       SELECT ${listing.id}, d::date, s::availability_slot, 1
@@ -99,7 +102,7 @@ export async function setAutoOpen(database, ownerId, { rentableId, enabled }) {
   z.boolean().parse(enabled);
   return withListingInventory(database, rentableId, async (tx, listing) => {
     await ownerAccess(tx, listing, ownerId);
-    if (bookingModel(listing) === 'hourly' || !listing.booking_config?.inventoryReady) throw new InventoryError('UNSUPPORTED_INVENTORY', 'Set booking rules for this property first.');
+    if (bookingModel(listing) !== 'slot' || !listing.booking_config?.inventoryReady) throw new InventoryError('UNSUPPORTED_INVENTORY', 'Set booking rules for this property first.');
     const config = { ...listing.booking_config, autoOpen: enabled };
     await tx`UPDATE rentable SET booking_config=${JSON.stringify(config)}::text::jsonb, booking_config_version=booking_config_version+1, updated_at=now() WHERE id=${rentableId}`;
     if (enabled) await fillOpenDates(tx, rentableId, config.bookingHorizonDays);
@@ -109,7 +112,7 @@ export async function setAutoOpen(database, ownerId, { rentableId, enabled }) {
 }
 
 export async function autoOpenDates(database) {
-  const rows=await database`SELECT id FROM rentable WHERE booking_config->>'autoOpen'='true' AND rental_unit<>'hour' AND status IN ('draft','live','pending_review','pending_verification')`;
+  const rows=await database`SELECT id FROM rentable WHERE booking_config->>'autoOpen'='true' AND rental_unit::text NOT IN ('hour','unit_night') AND status IN ('draft','live','pending_review','pending_verification')`;
   for (const row of rows) await withListingInventory(database,row.id,async(tx,l)=> {if(l.booking_config?.autoOpen) await fillOpenDates(tx,l.id,l.booking_config.bookingHorizonDays);});
   return {properties:rows.length};
 }

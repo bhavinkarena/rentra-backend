@@ -14,6 +14,7 @@ import { changePropertyPolicy } from '../booking/property-policy.js';
 import { changeHourlyRates } from '../booking/hourly-rates.js';
 import { saveVenueResources } from '../booking/venue.js';
 import { saveHotelProfile, saveHotelRates, saveHotelRooms } from '../booking/hotel-setup.js';
+import { saveApartment } from '../booking/apartment-setup.js';
 import { pauseImpact } from '../booking/pause-impact.js';
 import {
   rentable, rentableAmenity, documents, users,
@@ -200,6 +201,8 @@ export async function saveBasics(_prev, formData) {
     FROM category c WHERE c.id = ${d.categoryId} AND c.is_active`;
   if (!choice) return { errors: { categoryId: 'Choose an available category' } };
   if (!choice.same_vertical) return { errors: { categoryId: 'A listing cannot move to another kind of place. Create a new listing instead.' } };
+  // Story 3.10: a hotel and a whole apartment share a vertical but not a booking model.
+  if (choice.rental_unit !== listing.rentalUnit && [choice.rental_unit, listing.rentalUnit].includes('unit_night')) return { errors: { categoryId: 'Choose a category booked the same way. Create a new listing instead.' } };
   const { sentBack, contentVersion } = await applyEdit(listing, {
     categoryId: d.categoryId,
     form: choice.form,
@@ -294,9 +297,12 @@ export async function saveRules(_prev, formData) {
   if (listing.rentalUnit === 'night') return hotelProfileAction(formData, 'rules', listing);
   if (formData.get('wizardRules')==='1') { const [booking]=await sql`SELECT 1 FROM booking WHERE rentable_id=${listing.id} LIMIT 1`;if(!['draft','rejected'].includes(listing.status)||booking)throw conflict('EXPLICIT_SAVE_REQUIRED','Use the policy preview for this property'); const terms=termsSchema.safeParse(Object.fromEntries(formData)); if (!terms.success) return {errors:fieldErrors(terms.error)}; if(formData.get('cancellationConfirmed')!=='on') return {errors:{cancellationConfirmed:'Confirm your cancellation policy'}}; }
   if (listing.rentalUnit === 'hour') return saveVenueRules(listing, formData);
+  // Story 3.10: an apartment's times are set in its stay rules; house rules reuse them.
+  const apartment = listing.rentalUnit === 'unit_night';
+  if (apartment && !(listing.checkInFrom && listing.checkOutBy)) return { errors: { checkInFrom: 'Set check-in and check-out in Stay rules first' } };
   const parsed = rulesSchema.safeParse({
-    checkInFrom: formData.get('checkInFrom'),
-    checkOutBy: formData.get('checkOutBy'),
+    checkInFrom: apartment ? listing.checkInFrom : formData.get('checkInFrom'),
+    checkOutBy: apartment ? listing.checkOutBy : formData.get('checkOutBy'),
     petsAllowed: formData.get('petsAllowed') ?? 'no',
     ...(formData.get('petPolicy') ? { petPolicy: jsonField(formData, 'petPolicy') } : {}),
     alcoholAllowed: formData.get('alcoholAllowed') ?? 'no',
@@ -479,6 +485,22 @@ async function hotelProfileAction(formData, part, known = null) {
     throw error;
   }
 }
+
+/** Story 3.10: a whole apartment's unit, stay rules or price; `values` is one JSON field. */
+async function apartmentAction(formData, part) {
+  const { user, listing } = await hotelListing(formData);
+  try {
+    const result = await saveApartment(sql, user.id, { rentableId: listing.id, expectedVersion: Number(formData.get('contentVersion')), part, values: jsonField(formData, 'values') });
+    revalidateListing(listing);
+    return result;
+  } catch (error) {
+    if (error.statusCode === 422 && error.fields) return { errors: Object.fromEntries(Object.entries(error.fields).map(([k, v]) => [k, [].concat(v)[0]])) };
+    throw error;
+  }
+}
+export async function saveApartmentUnitStep(_prev, formData) { return apartmentAction(formData, 'unit'); }
+export async function saveApartmentStayStep(_prev, formData) { return apartmentAction(formData, 'stay'); }
+export async function saveApartmentPriceStep(_prev, formData) { return apartmentAction(formData, 'price'); }
 export async function saveHotelStayStep(_prev, formData) { return hotelProfileAction(formData, 'stay'); }
 export async function saveHotelGstStep(_prev, formData) { return hotelProfileAction(formData, 'gst'); }
 

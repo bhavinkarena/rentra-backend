@@ -1,5 +1,6 @@
 import 'server-only';
 import { hotelForEdit } from '../booking/hotel-setup.js';
+import { apartmentForEdit } from '../booking/apartment-setup.js';
 import { listingCompletion } from '../domain/listing-completion.js';
 import {getEnv} from '../schemas/joi/env.js';
 import {firstIncompleteStepId, stepIndex} from '../domain/listing-steps.js';
@@ -278,7 +279,7 @@ export async function getListingForEdit(id, clientId = null) {
 
   const [{ vertical, categorySlug }] = await sql`SELECT slug AS "categorySlug", vertical_code AS vertical FROM category WHERE id=${row.categoryId}`;
   const venue = row.rentalUnit === 'hour' ? await venueForEdit(id) : { resources: [], hourlyRates: [] };
-  const hotel = row.rentalUnit === 'night' ? await hotelForEdit(sql, id) : {};
+  const hotel = row.rentalUnit === 'night' ? await hotelForEdit(sql, id) : row.rentalUnit === 'unit_night' ? await apartmentForEdit(sql, id) : {};
   const [bookings]=await sql`SELECT count(*)::int AS n FROM booking WHERE rentable_id=${id}`;
   return {
     // Money is stored in paise; the editor keeps its whole-rupee fields.

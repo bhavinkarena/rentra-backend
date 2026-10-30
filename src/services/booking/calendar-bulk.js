@@ -19,6 +19,7 @@ export async function changeCalendarCells(database,ownerId,input) {
   const [owner]=await tx`SELECT 1 FROM "user" WHERE id=${ownerId} AND role='client' AND account_status='active' FOR SHARE`;
   if(!owner || listing.client_id!==ownerId)throw new InventoryError('NOT_FOUND','Property unavailable');
   if(listing.rental_unit==='hour')throw new RangeError('Use court hours and blocks for a venue');
+  if(listing.rental_unit==='unit_night')throw new InventoryError('UNSUPPORTED_INVENTORY','Whole apartments do not use slot calendars yet.');
   await expireInventoryHolds(tx,listing.id);
   const state=await getInventoryState(tx,listing,{from:`${days[0]}T00:00:00+05:30`,to:`${addLocalDays(days.at(-1),2)}T00:00:00+05:30`});
   const rates=await tx`SELECT slot,weekday_minor,weekend_minor FROM rentable_price WHERE rentable_id=${listing.id}`;

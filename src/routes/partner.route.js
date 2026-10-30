@@ -211,6 +211,10 @@ for (const [step, handler] of [
   ['rates', listings.hotelRates],
   ['stay', listings.hotelStay],
   ['gst', listings.hotelGst],
+  // Story 3.10: whole-apartment unit, stay rules and price.
+  ['apartment-unit', listings.apartmentUnit],
+  ['apartment-stay', listings.apartmentStay],
+  ['apartment-price', listings.apartmentPrice],
   ['amenities', listings.amenitiesStep],
   ['rules', listings.rules],
   ['pricing', listings.pricing],

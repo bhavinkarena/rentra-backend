@@ -18,7 +18,7 @@ export async function savedPlaceCards(database, entries) {
       (SELECT count(*)::int FROM rentable_resource rs WHERE rs.rentable_id=r.id AND rs.is_active) AS resource_count,
       (SELECT max(rs.capacity) FROM rentable_resource rs WHERE rs.rentable_id=r.id AND rs.is_active) AS max_players
     FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id
-    WHERE r.id IN ${database(ids)} AND r.status='live'`;
+    WHERE r.id IN ${database(ids)} AND r.status='live' AND r.rental_unit::text<>'unit_night'`;
   return entries.map(e => {
     const row = rows.find(r => r.id === e.rentableId);
     const selection = validSavedSelection(e.selection, e.rentableId);
@@ -53,7 +53,7 @@ export async function changeCustomerSaved(database, session, input, env=process.
     const [existing] = await tx`SELECT active,selection FROM customer_favourite WHERE customer_id=${user.id} AND rentable_id=${value.rentableId}`;
     if (value.saved) {
       if (!existing) {
-        const [live] = await tx`SELECT id FROM rentable WHERE id=${value.rentableId} AND status='live' FOR SHARE`;
+        const [live] = await tx`SELECT id FROM rentable WHERE id=${value.rentableId} AND status='live' AND rental_unit::text<>'unit_night' FOR SHARE`;
         if (!live) throw new CustomerAccountError('This place is no longer available to save.');
       }
       if (!existing?.active && (await ownedEntries(tx,user.id)).length >= SAVED_LIMIT) throw new CustomerAccountError(`You can save up to ${SAVED_LIMIT} places. Remove one first.`);

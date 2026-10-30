@@ -67,9 +67,16 @@ export const CANCELLATION_PRESETS = Object.freeze({
   },
 });
 
-/** Existing preset tier for a slot or hourly property. */
+/**
+ * The preset family of a booking model. Story 3.10: whole apartments (unit_night) are nightly stays and
+ * use the hotel night presets (flexible 24 h, moderate 3 days, strict 7 days, non-refundable), not 'day'.
+ */
+export const presetFamily = (rentalUnit) =>
+  rentalUnit === 'hour' ? 'hour' : rentalUnit === 'night' || rentalUnit === 'unit_night' ? 'night' : 'day';
+
+/** Existing preset tier for a slot, hourly or apartment property. */
 export function policyFromTier(tier, rentalUnit) {
-  const set = CANCELLATION_PRESETS[rentalUnit === 'hour' ? 'hour' : 'day'];
+  const set = CANCELLATION_PRESETS[rentalUnit === 'night' ? 'day' : presetFamily(rentalUnit)];
   return structuredClone(set[tier] ?? set.moderate);
 }
 
@@ -93,7 +100,7 @@ export function freeCancelHoursOf(policyValue) {
 
 /** The preset name these windows equal, so screens can show it; otherwise 'custom'. */
 export function presetName(policyValue, rentalUnit) {
-  const set = CANCELLATION_PRESETS[rentalUnit === 'hour' ? 'hour' : rentalUnit === 'night' ? 'night' : 'day'];
+  const set = CANCELLATION_PRESETS[presetFamily(rentalUnit)];
   // Compare values, not JSON text: jsonb does not keep key order.
   const key = (p) => JSON.stringify([p.windows.map((w) => [w.hoursBefore, w.pct]), p.atOrAfterCheckInPct,
     Boolean(p.earlyDeparture?.offered), p.earlyDeparture?.pct ?? 0]);
@@ -107,5 +114,7 @@ export function listingCancellationPolicy(listing) {
   const unit = listing.rental_unit ?? listing.rentalUnit;
   return unit === 'night'
     ? structuredClone(CANCELLATION_PRESETS.night.moderate)
+    : unit === 'unit_night'
+      ? policyFromTier(listing.cancellation_tier ?? listing.cancellationTier ?? 'moderate', unit)
     : policyFromTier(listing.cancellation_tier ?? listing.cancellationTier, unit);
 }

@@ -163,6 +163,7 @@ export function petTerms(petPolicy, legacyAllowed, pets, units) {
 export function prepareQuote(selection, listing, rates, overrides, payment, now, publications, fee = DEFAULT_FEE) {
   if (listing.status !== 'live' || listing.total_units !== 1) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   if (bookingModel(listing) === 'hourly') throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This venue is booked by time, not by slot.');
+  if (bookingModel(listing) === 'apartment') throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   const config = listingConfiguration(listing);
   const schedule = config.slots[selection.slot];
   const rate = rates.find((row) => row.slot === selection.slot);
@@ -242,7 +243,8 @@ export async function requireBookableListing(tx, listing) {
     EXISTS (SELECT 1 FROM "user" WHERE id=${listing.client_id} AND role='client' AND account_status='active') AS owner_active,
     EXISTS (SELECT 1 FROM category c JOIN vertical v ON v.code=c.vertical_code WHERE c.id=${listing.category_id} AND ${visibleVertical(tx)}) AS vertical_public,
     owner_repayment_overdue(${listing.client_id}) AS overdue`;
-  if (!row.owner_active || !row.vertical_public) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
+  // Story 3.10: whole apartments take no quotes, holds or bookings until Story 3.11.
+  if (!row.owner_active || !row.vertical_public || listing.rental_unit === 'unit_night') throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   // Story 2.20: evaluated in this transaction; covers quote, hold (both models) and held-term revalidation.
   if (row.overdue) throw new BookingQuoteError('OWNER_REPAYMENT_OVERDUE', 'This property is not taking bookings right now.');
 }

@@ -40,10 +40,15 @@ export const HOTEL_CHECKLIST = [
   ['fireSafety', 'Fire extinguishers, marked exits and the fire NOC (where required) are in place'],
   ['guestRegister', 'Guest ID checks and the guest register (Form C for foreign guests) are in use'],
 ];
+/** Whole apartments (Story 3.10): the unit as listed, sold whole. */
+export const APARTMENT_CHECKLIST = [
+  ...CHECKLIST,
+  ['unitMatches', 'Bedrooms, beds and bathrooms match the listing, and the whole unit is let to one party'],
+];
 /** The checklist an admin must confirm, by the property's booking model. */
 export const checklistFor = (rentalUnit) =>
-  rentalUnit === 'hour' ? VENUE_CHECKLIST : rentalUnit === 'night' ? HOTEL_CHECKLIST : CHECKLIST;
-const CHECKLIST_KEYS = [...new Set([...CHECKLIST, ...VENUE_CHECKLIST, ...HOTEL_CHECKLIST].map(([key]) => key))];
+  rentalUnit === 'hour' ? VENUE_CHECKLIST : rentalUnit === 'night' ? HOTEL_CHECKLIST : rentalUnit === 'unit_night' ? APARTMENT_CHECKLIST : CHECKLIST;
+const CHECKLIST_KEYS = [...new Set([...CHECKLIST, ...VENUE_CHECKLIST, ...HOTEL_CHECKLIST, ...APARTMENT_CHECKLIST].map(([key]) => key))];
 const TIME_ZONE = 'Asia/Kolkata';
 const IST_OFFSET = '+05:30';
 const uuid = z.string().uuid();
@@ -128,6 +133,10 @@ async function audit(tx, { adminId, id, action, after, reason = null, ip = null 
 /** Saleable inventory facts shared by the admin publish panel and the owner overview. */
 export async function listingInventory(database, id, row) {
   const config = row.booking_config;
+  // Story 3.10: apartments are reviewed now but take no bookings until Story 3.11.
+  if (row.rental_unit === 'unit_night') {
+    return { scheduleReady: false, openDates: null, bookable: false, note: 'Not bookable yet: apartments go live for guests soon.' };
+  }
   if (row.rental_unit === 'night') {
     // A hotel sells room types by the night: it needs active rooms, a priced base rate for each, and check-in times.
     const { hotel } = await hotelForEdit(database, id);

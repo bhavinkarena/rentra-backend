@@ -40,7 +40,7 @@ export async function inspectHotelRelease(database, stage = 'beta') {
             WHERE t.rentable_id = r.id AND t.is_active AND NOT coalesce(n.stop_sell, false) AND coalesce(n.allotment, t.room_count) > 0))::int AS closed_nights
       FROM rentable r JOIN category c ON c.id = r.category_id AND c.vertical_code = 'hotel'
       LEFT JOIN hotel_profile hp ON hp.rentable_id = r.id
-      WHERE r.status = 'live' ORDER BY r.title`;
+      WHERE r.status = 'live' AND r.rental_unit::text = 'night' ORDER BY r.title`;
     const failing = (test) => hotels.filter((h) => !test(h)).map((h) => h.title);
     check('bookable hotels live', stage === 'public' ? hotels.length >= HOTEL_LAUNCH.minHotels : hotels.length >= 1,
       { live: hotels.length, required: stage === 'public' ? HOTEL_LAUNCH.minHotels : 1 });

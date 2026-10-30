@@ -164,6 +164,8 @@ const nightPrice = and(
  */
 const publiclyListed = () => and(
   eq(rentable.status, 'live'),
+  // Story 3.10: whole apartments stay off every guest surface until Story 3.11 makes them bookable.
+  raw`${rentable.rentalUnit}::text <> 'unit_night'`,
   raw`exists (select 1 from "user" o where o.id = ${rentable.clientId}
     and o.role = 'client' and o.account_status = 'active')`,
   // A vertical that is not public yet (hidden, or open to partners only) never
@@ -341,7 +343,7 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
   ]);
 
   const agg = subScoreRows[0] ?? {};
-  const venue = row.vertical === 'hotel' ? await hotelDetail(row) : row.rentalUnit === 'hour' ? await venueDetail(row) : {};
+  const venue = row.vertical === 'hotel' && row.rentalUnit === 'night' ? await hotelDetail(row) : row.rentalUnit === 'hour' ? await venueDetail(row) : {};
   const petPolicy = row.rentalUnit === 'hour' ? null : publicPetPolicy(effectivePetPolicy(row.petPolicy,
     row.vertical === 'hotel' ? venue.hotel?.policies?.pets === true : row.houseRules?.petsAllowed === true));
   const amenities = amenityStates({

@@ -46,7 +46,7 @@ export async function listCommissionRules(database, actor) {
     const today = await todayIst(tx);
     const rows = await tx`SELECT cr.*, c.name AS city_name, r.title AS hotel_title, a.email AS created_by_email,
         (SELECT count(*)::int FROM rentable h JOIN category hc ON hc.id=h.category_id
-          WHERE hc.vertical_code='hotel' AND h.status IN ('live','paused','pending_review','pending_verification')
+          WHERE hc.vertical_code='hotel' AND h.rental_unit::text='night' AND h.status IN ('live','paused','pending_review','pending_verification')
             AND (cr.rentable_id IS NULL OR h.id=cr.rentable_id) AND (cr.city_id IS NULL OR h.city_id=cr.city_id)) AS hotels
       FROM commission_rule cr LEFT JOIN city c ON c.id=cr.city_id LEFT JOIN rentable r ON r.id=cr.rentable_id
       LEFT JOIN admin_user a ON a.id=cr.created_by
@@ -54,7 +54,7 @@ export async function listCommissionRules(database, actor) {
     const [cities, hotels] = await Promise.all([
       tx`SELECT id, name FROM city WHERE is_active ORDER BY name`,
       tx`SELECT r.id, r.title, c.name AS city FROM rentable r JOIN category k ON k.id=r.category_id LEFT JOIN city c ON c.id=r.city_id
-        WHERE k.vertical_code='hotel' AND r.status<>'draft' ORDER BY r.title LIMIT 500`,
+        WHERE k.vertical_code='hotel' AND r.rental_unit::text='night' AND r.status<>'draft' ORDER BY r.title LIMIT 500`,
     ]);
     return {
       canWrite,
@@ -128,7 +128,7 @@ export async function commissionCommand(database, actor, input) {
     const rentableId = value.scope === 'property' ? value.rentableId : null;
     let scopeCity = cityId;
     if (rentableId) {
-      const [hotel] = await tx`SELECT r.id, r.city_id FROM rentable r JOIN category c ON c.id=r.category_id WHERE r.id=${rentableId} AND c.vertical_code='hotel'`;
+      const [hotel] = await tx`SELECT r.id, r.city_id FROM rentable r JOIN category c ON c.id=r.category_id WHERE r.id=${rentableId} AND c.vertical_code='hotel' AND r.rental_unit::text='night'`;
       if (!hotel) throw unprocessable({ rentableId: ['Choose a hotel.'] });
       scopeCity = hotel.city_id;
     }

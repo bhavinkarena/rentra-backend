@@ -21,6 +21,9 @@ import {
   saveHotelRatesStep,
   saveHotelStayStep,
   saveHotelGstStep,
+  saveApartmentUnitStep,
+  saveApartmentStayStep,
+  saveApartmentPriceStep,
   saveTerms,
   uploadListingPhotos,
   removeListingPhoto,
@@ -137,6 +140,9 @@ export const hotelRooms = policyAction(saveHotelRoomsStep);
 export const hotelRates = policyAction(saveHotelRatesStep);
 export const hotelStay = policyAction(saveHotelStayStep);
 export const hotelGst = policyAction(saveHotelGstStep);
+export const apartmentUnit = policyAction(saveApartmentUnitStep);
+export const apartmentStay = policyAction(saveApartmentStayStep);
+export const apartmentPrice = policyAction(saveApartmentPriceStep);
 function policyAction(action) {
   const handler = runAction(action);
   return (req, res, next) => {

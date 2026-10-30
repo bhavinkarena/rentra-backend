@@ -23,7 +23,7 @@ async function roleConflict() {
 export async function beginCustomerLogin(input) {
   const parsed = loginSelectionSchema.safeParse(input);
   if (!parsed.success) return { error: 'Choose valid dates, slot and guests before logging in.' };
-  const [listing] = await sql`SELECT slug,public_code FROM rentable WHERE id=${parsed.data.rentableId} AND status='live'`;
+  const [listing] = await sql`SELECT slug,public_code FROM rentable WHERE id=${parsed.data.rentableId} AND status='live' AND rental_unit::text<>'unit_night'`;
   if (!listing) return { error: 'This listing is no longer available.' };
   const jar = await cookies();
   jar.set(SELECTION_COOKIE, await signCustomerSelection(parsed.data, listingPath(listing.slug, listing.public_code)), cookieOptions(SELECTION_TTL));

@@ -35,7 +35,8 @@ export async function getDiscoveryRegistry(database = sql) {
     database`SELECT a.id,a.city_id AS "cityId",a.slug,a.name FROM area a JOIN city c ON c.id=a.city_id WHERE c.is_active=true AND a.is_active=true ORDER BY a.sort_order,a.name,a.id`,
     database`SELECT c.id,c.slug,c.name,c.vertical_code AS vertical,c.icon_key AS "iconKey",c.default_rental_unit::text AS "rentalUnit"
       FROM category c JOIN vertical v ON v.code=c.vertical_code AND ${visibleVertical(database)}
-      WHERE c.is_active=true ORDER BY v.sort_order,c.sort_order,c.name,c.id`,
+      -- Story 3.10: no "Whole apartment" tab until Story 3.11 makes apartments bookable.
+      WHERE c.is_active=true AND c.default_rental_unit::text<>'unit_night' ORDER BY v.sort_order,c.sort_order,c.name,c.id`,
     database`SELECT a.slug,a.label_en AS name,
         COALESCE(json_agg(av.vertical_code ORDER BY av.vertical_code) FILTER (WHERE av.vertical_code IS NOT NULL), '[]'::json) AS verticals
       FROM amenity a LEFT JOIN amenity_vertical av ON av.amenity_id=a.id
@@ -75,7 +76,7 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
   const [row] = await database`SELECT count(*)::int AS n FROM rentable r
     JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${vertical}
-    WHERE r.status='live' AND c.is_active AND a.is_active AND cat.is_active AND u.role='client' AND u.account_status='active'
+    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND c.is_active AND a.is_active AND cat.is_active AND u.role='client' AND u.account_status='active'
       AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area})
       AND (${!category} OR cat.slug=${category} OR (r.rental_unit::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource_activity ra
         JOIN category ac ON ac.id=ra.category_id WHERE ra.rentable_id=r.id AND ac.slug=${category})))
@@ -384,7 +385,7 @@ export async function getLandingRoutes(database = sql) {
     FROM rentable r
     JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND v.status='public'
-    WHERE r.status='live' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'`;
+    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'`;
   const scopes = [
     ...registry.categories.map((row) => row.slug),
     ...registry.verticals.map((row) => row.slug).filter((slug) => !registry.categories.some((row) => row.slug === slug)),
@@ -426,7 +427,7 @@ export async function countDiscoveryRoute(route, database = sql) {
   const [row] = await database`SELECT count(*)::int AS n FROM rentable r
     JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND v.status='public' AND v.code=${vertical}
-    WHERE r.status='live' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'
+    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'
     AND r.city_id=${route.city.id} AND (${!route.category} OR r.category_id=${route.category?.id ?? null}::uuid
       OR (r.rental_unit::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource_activity ra WHERE ra.rentable_id=r.id AND ra.category_id=${route.category?.id ?? null}::uuid)))
     AND (${!route.area} OR r.area_id=${route.area?.id ?? null}::uuid)
@@ -450,7 +451,7 @@ export async function suggestDestinations(q, vertical = STAY_VERTICAL, database 
   const hotels = await database`SELECT r.slug,r.public_code,r.title,a.name AS area_name,c.name AS city_name
     FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${vertical}
-    WHERE r.status='live' AND u.role='client' AND u.account_status='active' AND c.is_active AND a.is_active AND cat.is_active AND r.title ILIKE ${term}
+    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND u.role='client' AND u.account_status='active' AND c.is_active AND a.is_active AND cat.is_active AND r.title ILIKE ${term}
     ORDER BY r.review_count DESC, r.title LIMIT 5`;
   return {
     cities: registry.cities.filter(c => hit(c.name)).slice(0, 5).map(c => ({ slug: c.slug, name: c.name })),

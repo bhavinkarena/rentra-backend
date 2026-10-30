@@ -86,7 +86,7 @@ export async function getOwnerHotelAnalytics(database, ownerId, input) {
     const [owner] = await sql`SELECT id FROM "user" WHERE id = ${ownerId} AND role = 'client' AND account_status = 'active'`;
     if (!owner) throw forbidden();
     const hotels = await sql`SELECT r.id, r.title FROM rentable r JOIN category c ON c.id = r.category_id AND c.vertical_code = 'hotel'
-      WHERE r.client_id = ${ownerId} ORDER BY r.title`;
+      WHERE r.client_id = ${ownerId} AND r.rental_unit::text = 'night' ORDER BY r.title`;
     if (hotelId && !hotels.some((h) => h.id === hotelId)) throw forbidden();
     const ids = hotelId ? [hotelId] : hotels.map((h) => h.id);
     if (!ids.length) return { period: { from, to }, hotels: [], kpis: kpis([], { bookings: 0, cancelled: 0, no_shows: 0 }), daily: [], reviews: null };
@@ -118,7 +118,7 @@ export async function getAdminHotelAnalytics(database, adminId, input) {
   return database.begin('isolation level repeatable read read only', async (sql) => {
     const [admin] = await sql`SELECT permissions FROM admin_user WHERE id = ${adminId} AND is_active`;
     if (!admin || (admin.permissions != null && !admin.permissions.includes('admin.payments.read'))) throw forbidden();
-    const scope = sql`EXISTS (SELECT 1 FROM category c WHERE c.id = r.category_id AND c.vertical_code = 'hotel') AND (${!cityId} OR r.city_id = ${cityId}::uuid)`;
+    const scope = sql`EXISTS (SELECT 1 FROM category c WHERE c.id = r.category_id AND c.vertical_code = 'hotel') AND r.rental_unit::text = 'night' AND (${!cityId} OR r.city_id = ${cityId}::uuid)`;
     const [sold, offered, [counts], [money], [commission], topHotels, topCities, [supply]] = await Promise.all([
       soldNights(sql, scope, from, to), offeredNights(sql, scope, from, to), bookingCounts(sql, scope, from, to),
       sql`SELECT coalesce(sum(pa.actual_minor), 0)::text AS paid,
