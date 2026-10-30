@@ -377,7 +377,8 @@ export async function createOwnerBlock(database, ownerId, { rentableId, resource
     await requireListingOwner(tx, listing, ownerId);
     await expireInventoryHolds(tx, listing.id);
     const state = await getInventoryState(tx, listing);
-    await auditInventoryReadiness(tx, listing, state);
+    // Story 3.11: apartment stays keep their accepted interval while an early departure shrinks the reservation, so the slot audit does not apply.
+    if (bookingModel(listing) !== 'apartment') await auditInventoryReadiness(tx, listing, state);
     if (resourceId != null) {
       const [resource] = await tx`SELECT id FROM rentable_resource WHERE id = ${resourceId} AND rentable_id = ${rentableId}`;
       if (!resource) throw new InventoryError('NOT_FOUND', 'Court unavailable.');

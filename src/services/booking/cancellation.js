@@ -8,6 +8,41 @@ import { previewHotelCancellation } from './hotel-stays.js';
 import { allocateByWeights, refundOfPaid } from '../domain/booking-money.js';
 import { earlyDepartureRoom } from '../domain/early-departure.js';
 import { stayInstants } from '../domain/hotel.js';
+import { apartmentRefundParts, departedReservationEnd, isApartmentPolicy } from './apartment-stays.js';
+
+/**
+ * Story 3.11: a whole apartment cancelled before arrival. The booked percentage applies to everything
+ * paid (rent + cleaning + pet, booked as rent, and the fee), floored to the paisa; cleaning and pet
+ * follow the same ratio as the rent. refund + charge = paid.
+ */
+function apartmentCancelEntitlement(visit, now) {
+  let entitlement;
+  try { entitlement = cancellationEntitlement(visit, now); } catch (error) { throw new CheckoutError(error.message); }
+  const paid = Number(visit.amount_rent_minor) + Number(visit.amount_fee_minor);
+  const refund = entitlement.rent + entitlement.fee;
+  const chargeMinor = paid - refund;
+  if (chargeMinor < 0) throw new CheckoutError('REFUND_EXCEEDS_PAID');
+  return { ...entitlement, apartment: apartmentRefundParts(visit.slot_snapshot.apartment, entitlement.rent), chargeMinor };
+}
+
+/**
+ * Story 3.11: leaving an apartment early. Unused nights (and their share of the fee) are refunded at the
+ * booked early-departure rule over the accepted per-night snapshot; cleaning and pet charges are kept.
+ */
+function apartmentDepartureEntitlement(visit, now, departed) {
+  if (departed || !visit.hours_known || !['confirmed', 'handed_over', 'returned'].includes(visit.state)
+    || new Date(visit.starts_at) > new Date(now) || new Date(visit.ends_at) <= new Date(now)) throw new CheckoutError('EARLY_DEPARTURE_UNAVAILABLE');
+  const stay = visit.slot_snapshot, a = stay?.apartment;
+  try {
+    const fees = allocateByWeights(Number(visit.amount_fee_minor), [a.rentMinor, a.cleaningMinor, a.petMinor ?? 0]);
+    const d = earlyDepartureRoom({ checkIn: stay.checkIn, checkOut: stay.checkOut, nights: a.nightly, rent: a.rentMinor, tax: 0, fee: fees[0],
+      policy: visit.policy_snapshot.cancellationPolicy, checkInMinute: a.checkInMinute, timeZone: visit.time_zone }, now);
+    if (!d.consumedNights.length) throw new RangeError('EARLY_DEPARTURE_UNSUPPORTED');
+    return { rent: d.refund.rent, tax: 0, fee: d.refund.fee, deposit: 0, basis: 'unused_nights', roomDetails: [], rooms: 0, roomIds: [], partial: false,
+      apartment: { consumedNights: d.consumedNights, unusedNights: d.unusedNights, inventoryEnd: d.inventoryEnd, offered: d.offered, pct: d.pct,
+        keptCleaningMinor: a.cleaningMinor, keptPetMinor: a.petMinor ?? 0 } };
+  } catch { throw new CheckoutError('EARLY_DEPARTURE_UNSUPPORTED'); }
+}
 
 async function departureEntitlement(visit, now, roomIds, all) {
   if (visit.slot !== 'stay' || visit.policy_snapshot?.kind !== 'stay' || !visit.hours_known
@@ -163,16 +198,30 @@ async function estimate(tx, order, value) {
   const allocations=await capturedAllocations(tx, value.visitIds);
   const plans=[];
   for(const visit of visits) {
+    const apartment=visit.slot==='stay' && isApartmentPolicy(visit.policy_snapshot);
+    const hotelStay=visit.slot==='stay' && !apartment;
+    const departed=apartment && (await tx`SELECT 1 FROM booking_cancellation c, jsonb_array_elements(c.snapshot->'visits') v
+      WHERE c.order_id=${order.id} AND c.snapshot->>'operation'='early_departure' AND v->>'id'=${visit.id}::text`).length>0;
+    if(apartment && value.roomIds) throw new CheckoutError('ROOMS_NEED_ONE_STAY');
+    if(apartment && departed && !value.operation) throw new CheckoutError('VISIT_NOT_CANCELLABLE');
     if(!value.operation && visit.state!=='confirmed') throw new CheckoutError(value.roomIds && visit.slot==='stay' ? 'ROOM_NOT_CANCELLABLE' : 'VISIT_NOT_CANCELLABLE');
     let entitlement;
-    if(value.operation) entitlement=await departureEntitlement(visit,now,value.roomIds ?? null,departureRooms.filter(room=>room.booking_id===visit.id));
+    if(value.operation && apartment) entitlement=apartmentDepartureEntitlement(visit,now,departed);
+    else if(apartment) entitlement=apartmentCancelEntitlement(visit,now);
+    else if(value.operation) entitlement=await departureEntitlement(visit,now,value.roomIds ?? null,departureRooms.filter(room=>room.booking_id===visit.id));
     else if(visit.slot==='stay') entitlement=await stayEntitlement(tx,visit,now,value.roomIds ?? null);
     else if (value.roomIds) throw new CheckoutError('ROOMS_NEED_ONE_STAY');
     else try { entitlement=cancellationEntitlement(visit,now); } catch(error) { throw new CheckoutError(error.message); }
     const sources=allocations.filter(a=>a.booking_id===visit.id);
     if(!sources.length || !testSourcesOnly(sources)) throw new CheckoutError('PAYMENT_UNSUPPORTED');
+    // Story 3.11: an apartment's refund + charge must equal what was actually captured for it.
+    if(apartment && !value.operation) {
+      const captured=sources.reduce((sum,a)=>sum+Number(a.actual_minor),0);
+      if(captured!==Number(visit.amount_rent_minor)+Number(visit.amount_fee_minor)) throw new CheckoutError('PAYMENT_MISMATCH');
+      entitlement.chargeMinor=captured-(entitlement.rent+entitlement.fee);
+    }
     // Earlier stay refunds must name the rooms whose entitlement they consumed.
-    if (visit.slot === 'stay' && sources.some((source) => Number(source.reserved) > 0)) {
+    if (hotelStay && sources.some((source) => Number(source.reserved) > 0)) {
       const [unattributed] = await tx`SELECT ra.refund_id FROM refund_allocation ra JOIN refund r ON r.id=ra.refund_id
         WHERE ra.booking_id=${visit.id} AND r.state<>'failed' AND NOT EXISTS (
           SELECT 1 FROM booking_cancellation c, jsonb_array_elements(c.snapshot->'visits') v
@@ -182,7 +231,8 @@ async function estimate(tx, order, value) {
         ) LIMIT 1`;
       if (unattributed) throw new CheckoutError('REFUND_ATTRIBUTION_REQUIRED');
     }
-    const refunds=allocateRefund(sources, entitlement, { remainingOnly: visit.slot==='stay' });
+    // A departure entitles only the unused part (remaining capacity); a cancellation counts the whole payment.
+    const refunds=allocateRefund(sources, entitlement, { remainingOnly: hotelStay || (apartment && Boolean(value.operation)) });
     plans.push({id:visit.id,reference:visit.reference,date:String(visit.local_day instanceof Date?visit.local_day.toISOString():visit.local_day).slice(0,10),
       state:visit.state,version:visit.lifecycle_version,...entitlement,
       startedAtEstimate: visit.slot==='stay' && entitlement.basis==='full_paid' && new Date(visit.starts_at)<=new Date(now),
@@ -219,7 +269,15 @@ export async function applyCancellation(tx, order, preview, value, { actorKind, 
   const saveReceipt=()=>tx`INSERT INTO booking_cancellation(id,order_id,customer_id,idempotency_key,request_hash,snapshot)
     VALUES(${id},${order.id},${customerId},${idempotencyKey},${requestHash},${JSON.stringify(snapshot)}::text::jsonb)`;
   if (departing) await saveReceipt();
-  if (departing) {
+  if (departing && preview.visits[0].apartment) {
+    // Story 3.11: the accepted stay is kept; the reservation ends at the first unused night + turnover, so those nights sell again.
+    const [visit]=await tx`SELECT slot_snapshot FROM booking WHERE id=${value.visitIds[0]}`;
+    const end=departedReservationEnd(preview.visits[0].apartment.inventoryEnd, visit.slot_snapshot.apartment.turnoverNights ?? 0);
+    await tx`UPDATE inventory_reservation SET blocked_end_at=${end} WHERE booking_id=${value.visitIds[0]} AND state='committed' AND blocked_end_at>${end}`;
+    // The stay is over: completed like a hotel stay left early (0089 accepts the departure receipt as proof).
+    await tx`UPDATE booking SET state='completed',lifecycle_version=lifecycle_version+1,updated_at=clock_timestamp()
+      WHERE id=${value.visitIds[0]} AND state IN ('confirmed','handed_over','returned')`;
+  } else if (departing) {
     for (const room of preview.visits[0].roomDetails) {
       const changed=await tx`UPDATE booking_room SET state='stayed',departed_at=${preview.requestedAt},inventory_end=${room.inventoryEnd},updated_at=clock_timestamp()
         WHERE booking_id=${value.visitIds[0]} AND id=${room.id} AND state='booked' AND departed_at IS NULL RETURNING id`;

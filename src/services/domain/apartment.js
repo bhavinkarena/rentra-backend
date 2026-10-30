@@ -1,4 +1,5 @@
 import { BED_CAPACITY, bedCapacity } from './hotel-rooms.js';
+import { propertyLocalInstant } from './booking-dates.js';
 
 /**
  * Story 3.10: a whole apartment, one exclusive nightly unit (rental_unit 'unit_night', category under the
@@ -83,3 +84,70 @@ export function normalizeArrivalRules(rules = {}) {
 
 /** "No cleaning fee" or "Cleaning fee ₹1,500 per stay". */
 export const cleaningFeeLine = (rupees) => (rupees ? `Cleaning fee ₹${rupees.toLocaleString('en-IN')} per stay` : 'No cleaning fee');
+
+/* ---------------------------------------------------------------------------------------------- *
+ * Story 3.11: booking a whole apartment. Pure rules and price; the service reads the profile.
+ * ---------------------------------------------------------------------------------------------- */
+const DAY_MS = 86_400_000;
+const WEEKDAY_NAMES = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
+export const APARTMENT_HORIZON_DAYS = 365;
+const dayIndex = (date) => new Date(`${date}T00:00:00Z`).getUTCDay();
+export const addDays = (date, n) => new Date(Date.parse(`${date}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
+/** Weekday key (mon..sun) of a local date. */
+export const weekdayKey = (date) => WEEKDAYS[(dayIndex(date) + 6) % 7];
+
+/** The minimum nights for an arrival on `checkIn`, and why (the strictest rule wins). */
+export function arrivalMinimum(profile, checkIn) {
+  let min = profile.minNights, reason = null;
+  const key = weekdayKey(checkIn);
+  const day = profile.arrivalRules?.weekdays?.[key];
+  if (day != null && day > min) { min = day; reason = `for ${WEEKDAY_NAMES[key]} arrival`; }
+  for (const r of profile.arrivalRules?.ranges ?? []) {
+    if (checkIn >= r.from && checkIn <= r.to && r.minNights > min) { min = r.minNights; reason = `for arrivals from ${r.from} to ${r.to}`; }
+  }
+  return { min, reason };
+}
+
+/**
+ * Why this stay cannot be quoted ({ code, message }), or null. `today` is the property-local date.
+ * Codes: DATES_INVALID, OUTSIDE_BOOKING_WINDOW, MIN_NIGHTS, MAX_NIGHTS, OCCUPANCY.
+ */
+export function apartmentStayProblem(profile, { checkIn, checkOut, adults, childAges = [] }, today) {
+  if (!validDate(checkIn) || !validDate(checkOut)) return { code: 'DATES_INVALID', message: 'Choose check-in and check-out dates.' };
+  if (checkOut <= checkIn) return { code: 'DATES_INVALID', message: 'Check-out must be after check-in.' };
+  if (checkIn < today || checkIn > addDays(today, APARTMENT_HORIZON_DAYS)) return { code: 'OUTSIDE_BOOKING_WINDOW', message: 'These dates cannot be booked.' };
+  const nights = Math.round((Date.parse(`${checkOut}T00:00:00Z`) - Date.parse(`${checkIn}T00:00:00Z`)) / DAY_MS);
+  if (nights > profile.maxNights) return { code: 'MAX_NIGHTS', message: `Maximum ${profile.maxNights} night${profile.maxNights === 1 ? '' : 's'}` };
+  const { min, reason } = arrivalMinimum(profile, checkIn);
+  if (nights < min) return { code: 'MIN_NIGHTS', message: `Minimum ${min} night${min === 1 ? '' : 's'}${reason ? ` ${reason}` : ''}` };
+  if (!Number.isInteger(adults) || adults < 1) return { code: 'OCCUPANCY', message: 'At least one adult is needed.' };
+  if (!Array.isArray(childAges) || childAges.some((age) => !int(age, 0, 17))) return { code: 'OCCUPANCY', message: 'Enter each child’s age from 0 to 17.' };
+  if (adults > profile.maxAdults) return { code: 'OCCUPANCY', message: `Up to ${profile.maxAdults} adult${profile.maxAdults === 1 ? '' : 's'}` };
+  if (childAges.length > profile.maxChildren) return { code: 'OCCUPANCY', message: profile.maxChildren ? `Up to ${profile.maxChildren} child${profile.maxChildren === 1 ? '' : 'ren'}` : 'This apartment does not take children' };
+  if (adults + childAges.length > profile.maxOccupants) return { code: 'OCCUPANCY', message: `Up to ${profile.maxOccupants} guests in total` };
+  return null;
+}
+
+/** Each night's flat unit price (weekend nights by `weekendNights`, Date#getUTCDay of the night). */
+export function apartmentNights(profile, checkIn, checkOut) {
+  const nights = [];
+  for (let night = checkIn; night < checkOut; night = addDays(night, 1)) {
+    const weekend = profile.weekendNights.includes(dayIndex(night));
+    nights.push({ night, rateMinor: weekend ? profile.weekendMinor : profile.weekdayMinor, taxMinor: 0, weekend });
+  }
+  return nights;
+}
+
+/** Rent (nights), the one-off cleaning fee and the pet charge, in integer paise. */
+export function apartmentPrice(profile, nights, petMinor = 0) {
+  const rentMinor = nights.reduce((sum, n) => sum + n.rateMinor, 0);
+  const cleaningMinor = profile.cleaningMinor;
+  [rentMinor, cleaningMinor, petMinor].forEach((v) => { if (!Number.isSafeInteger(v) || v < 0) throw new RangeError('Invalid apartment amount'); });
+  return { rentMinor, cleaningMinor, petMinor, stayMinor: rentMinor + cleaningMinor + petMinor };
+}
+
+/** Local midnight (IST) of a date, as an ISO instant. */
+export const localMidnight = (date, timeZone) => propertyLocalInstant(date, '00:00', timeZone);
+/** The exclusive range one stay holds: check-in midnight up to midnight of checkout + turnover nights, [). */
+export const reservationRange = (checkIn, checkOut, turnoverNights) =>
+  ({ blockedStartAt: localMidnight(checkIn), blockedEndAt: localMidnight(addDays(checkOut, turnoverNights)) });

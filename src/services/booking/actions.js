@@ -8,7 +8,10 @@ import { measure } from '../operations/measurement.js';
 import { measurementError } from '../domain/measurement.js';
 
 /** Story 3.9: pet refusals are 422s the guest fixes by changing the pet count. */
-const petStatus = (error) => (error.code?.startsWith('PETS_') ? { status: 422 } : {});
+// Story 3.11: apartment date, night and occupancy rules are 422s too; dates already taken are 409.
+const APARTMENT_422 = ['DATES_INVALID', 'OUTSIDE_BOOKING_WINDOW', 'MIN_NIGHTS', 'MAX_NIGHTS', 'OCCUPANCY'];
+const petStatus = (error) => (error.code?.startsWith('PETS_') || APARTMENT_422.includes(error.code) ? { status: 422 }
+  : error.code === 'DATES_UNAVAILABLE' ? { status: 409 } : {});
 
 /** No browser-supplied customer id, prices, policy or provider identity is accepted. */
 export async function requestBookingQuote(input) {

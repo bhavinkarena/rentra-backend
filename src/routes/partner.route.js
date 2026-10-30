@@ -358,6 +358,19 @@ router.post(
   validate({ params: listingIdParam }),
   hotelOps.ariChange,
 );
+// Story 3.11: a whole apartment's calendar (block and unblock nights).
+router.get(
+  '/listings/:id/calendar/apartment',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  hotelOps.apartmentGrid,
+);
+router.post(
+  '/listings/:id/calendar/apartment',
+  requireActiveClient,
+  validate({ params: listingIdParam }),
+  hotelOps.apartmentChange,
+);
 router.get(
   '/listings/:id/calendar',
   requireActiveClient,

@@ -71,6 +71,21 @@ export function checkoutHoldDeadline(now, startsAt, minutes = BOOKING_POLICY.hol
 
 /** Listing -> customer/session -> gateway mutex -> payment rows; no network. */
 export async function createCheckoutHold(database, session, input, env = process.env) {
+  try {
+    return await holdCheckout(database, session, input, env);
+  } catch (error) {
+    // The exclusion constraint is the last word on overlapping stays (Story 3.11).
+    // Scoped to apartment holds; other kinds keep their earlier behaviour.
+    if (error.code === '23P01' && typeof input?.quoteId === 'string'
+      && /^[0-9a-f-]{36}$/i.test(input.quoteId)
+      && (await database`SELECT 1 FROM booking_quote WHERE id=${input.quoteId}::uuid AND selection->>'kind'='apartment'`).length) {
+      throw new CheckoutError('DATES_UNAVAILABLE', 'These dates were just taken. Choose other dates.');
+    }
+    throw error;
+  }
+}
+
+async function holdCheckout(database, session, input, env) {
   const value = inputSchema.parse(input);
   const requestHash = quoteDigest(value);
   return withListingInventory(database, value.rentableId, async (tx, listing) => {
@@ -89,9 +104,15 @@ export async function createCheckoutHold(database, session, input, env = process
     if (held >= MAX_LIVE_HOLDS) throw new CheckoutError('TOO_MANY_HOLDS', 'Finish or release one of your open checkouts first.');
     const [savedQuote] = await tx`SELECT * FROM booking_quote WHERE id=${value.quoteId} AND rentable_id=${listing.id} AND customer_id=${customer.id}`;
     if (savedQuote?.selection?.kind === 'stay') return holdStay(tx, listing, customer, value, savedQuote, requestHash, env);
+    // Story 3.11: a whole apartment takes the lead guest's details like a hotel stay.
+    const apartment = savedQuote?.selection?.kind === 'apartment';
+    if (apartment && !value.stay) throw new CheckoutError('GUEST_DETAILS_REQUIRED', 'Add the lead guest’s name.');
     const quote = await revalidateBookingQuote(tx, listing, { ...value, customerId: customer.id }, env);
     const pets = confirmedPets(quote.policy.pets, value);
     if (pets) quote.policy = { ...quote.policy, pets };
+    const details = apartment ? { ...value.stay, guestNames: value.stay.guestNames.slice(0, 1), gstin: value.stay.gstin || null, businessName: value.stay.businessName || null,
+      arrivalTime: value.stay.arrivalTime || null, requests: value.stay.requests || null,
+      ...(pets ? { pets: { count: pets.count, confirmation: pets.confirmation, confirmed: true, policyVersion: quote.policy.petPolicy?.version ?? null } } : {}) } : null;
     // A time-booked visit gets its court now, under the listing mutex: the requested court, else the first free one.
     let court = null;
     if (quote.selection.kind === 'hourly') {
@@ -109,11 +130,11 @@ export async function createCheckoutHold(database, session, input, env = process
     const listingSnapshot = { ownerId: listing.client_id, photos: listing.photos ?? [], title: listing.title, publicCode: listing.public_code, rentableId: listing.id, purpose: value.purpose ?? null, contact: { name: customer.name, phone: customer.phone } };
     await tx`INSERT INTO booking_order(id,reference,customer_id,rentable_id,state,currency,time_zone,quote_id,quote_version,quote_hash,
       quote_expires_at,pricing_version,policy_version,policy_snapshot,listing_snapshot,amount_rent_minor,amount_fee_minor,
-      amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,idempotency_key,request_hash,hold_expires_at)
+      amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,idempotency_key,request_hash,hold_expires_at,guest_details)
       VALUES(${orderId},${'TEST_' + orderId},${customer.id},${listing.id},'held','INR',${quote.timeZone},${quote.id},${quote.version},${quote.hash},
       ${quote.expiresAt},${quote.pricingVersion},${quote.policy.version},${JSON.stringify(quote.policy)}::text::jsonb,${JSON.stringify(listingSnapshot)}::text::jsonb,
       ${quote.totals.rentMinor},${quote.totals.feeMinor},${quote.totals.depositMinor},${quote.totals.illustrativeAdvanceMinor},
-      'real','test',${value.idempotencyKey},${requestHash},${expires.toISOString()})`;
+      'real','test',${value.idempotencyKey},${requestHash},${expires.toISOString()},${details ? JSON.stringify(details) : null}::text::jsonb)`;
     for (const [position, visit] of quote.visits.entries()) {
       const id = randomUUID();
       // Listing and policy snapshots, and the pricing/policy versions, live on the order.
@@ -121,12 +142,12 @@ export async function createCheckoutHold(database, session, input, env = process
       await tx`INSERT INTO booking(id,reference,rentable_id,customer_id,order_id,item_position,local_day,slot,guests,
         starts_at,ends_at,blocked_start_at,blocked_end_at,hours_known,currency,time_zone,
         amount_rent_minor,amount_fee_minor,amount_deposit_minor,amount_advance_minor,payment_mode,visit_provenance,slot_snapshot,resource_id)
-        VALUES(${id},${'T' + id.replaceAll('-','').slice(0,15)},${listing.id},${customer.id},${orderId},${position+1},${visit.date},${visit.slot},${quote.selection.guests},
+        VALUES(${id},${'T' + id.replaceAll('-','').slice(0,15)},${listing.id},${customer.id},${orderId},${position+1},${visit.date},${visit.slot},${quote.selection.guests ?? visit.guests},
         ${visit.startsAt},${visit.endsAt},${visit.blockedStartAt},${visit.blockedEndAt},true,'INR',${quote.timeZone},
         ${visit.rentMinor},${visit.feeMinor},${visit.depositMinor},${visit.illustrativeAdvanceMinor},'real','test',
         ${JSON.stringify(snapshot)}::text::jsonb,${court?.id ?? null})`;
       await tx`INSERT INTO inventory_reservation(booking_id,rentable_id,resource_id,source,blocked_start_at,blocked_end_at,state,hold_expires_at)
-        VALUES(${id},${listing.id},${court?.id ?? null},'booking',${visit.blockedStartAt},${visit.blockedEndAt},'held',${expires.toISOString()})`;
+        VALUES(${id},${listing.id},${court?.id ?? null},'booking',${visit.blockedStartAt},${visit.reservationEndAt ?? visit.blockedEndAt},'held',${expires.toISOString()})`;
     }
     await tx`INSERT INTO payment_order(id,booking_order_id,provider,environment,mode,currency,purpose,expected_minor,idempotency_key,request_hash,due_at)
       VALUES(${paymentId},${orderId},'razorpay','test','real','INR',${quote.payment.collectionPurpose},${quote.payment.expectedMinor},${value.idempotencyKey},${requestHash},${expires.toISOString()})`;

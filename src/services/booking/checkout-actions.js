@@ -21,6 +21,9 @@ async function failure(error) {
   const code=/^[A-Z_]{1,64}$/.test(error.code ?? '')?error.code:'CHECKOUT_UNAVAILABLE';
   // Story 3.9: a pet refusal says what to fix.
   if (code.startsWith('PETS_')) return { error: error.message, code, status: 422 };
+  // Story 3.11: apartment dates taken meanwhile, or rules the guest can fix.
+  if (code === 'DATES_UNAVAILABLE') return { error: error.message, code, status: 409 };
+  if (['MIN_NIGHTS', 'MAX_NIGHTS', 'OCCUPANCY', 'GUEST_DETAILS_REQUIRED'].includes(code)) return { error: error.message, code, status: 422 };
   return { error:'Your test booking could not complete this step. Check its current status before trying again.',code };
 }
 export async function holdCustomerCheckout(input) {

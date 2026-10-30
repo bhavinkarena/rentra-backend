@@ -149,12 +149,12 @@ export async function getAdminHotelAnalytics(database, adminId, input) {
     // §12.3 weekly KPIs (Phase 10): funnel from quote to paid, booking quality, supply freshness, payouts on time.
     const [funnel] = await sql`SELECT
         (SELECT count(*)::int FROM booking_quote q WHERE q.selection->>'kind' = 'stay' AND q.created_at::date BETWEEN ${from}::date AND ${to}::date) AS quotes,
-        (SELECT count(*)::int FROM booking_order o WHERE o.policy_snapshot->>'kind' = 'stay' AND o.created_at::date BETWEEN ${from}::date AND ${to}::date) AS holds,
-        (SELECT count(*)::int FROM booking_order o WHERE o.policy_snapshot->>'kind' = 'stay' AND o.confirmed_at::date BETWEEN ${from}::date AND ${to}::date) AS paid,
-        (SELECT count(*)::int FROM booking b WHERE b.slot = 'stay' AND b.state = 'cancelled' AND b.cancelled_by_kind = 'customer' AND b.cancelled_at::date BETWEEN ${from}::date AND ${to}::date) AS guest_cancelled,
-        (SELECT count(*)::int FROM booking b WHERE b.slot = 'stay' AND b.state = 'cancelled' AND b.cancelled_by_kind IN ('client', 'admin') AND b.cancelled_at::date BETWEEN ${from}::date AND ${to}::date) AS hotel_cancelled,
+        (SELECT count(*)::int FROM booking_order o WHERE o.policy_snapshot->>'kind' = 'stay' AND NOT (o.policy_snapshot ? 'apartment') AND o.created_at::date BETWEEN ${from}::date AND ${to}::date) AS holds,
+        (SELECT count(*)::int FROM booking_order o WHERE o.policy_snapshot->>'kind' = 'stay' AND NOT (o.policy_snapshot ? 'apartment') AND o.confirmed_at::date BETWEEN ${from}::date AND ${to}::date) AS paid,
+        (SELECT count(*)::int FROM booking b WHERE b.slot = 'stay' AND b.slot_snapshot->'apartment' IS NULL AND b.state = 'cancelled' AND b.cancelled_by_kind = 'customer' AND b.cancelled_at::date BETWEEN ${from}::date AND ${to}::date) AS guest_cancelled,
+        (SELECT count(*)::int FROM booking b WHERE b.slot = 'stay' AND b.slot_snapshot->'apartment' IS NULL AND b.state = 'cancelled' AND b.cancelled_by_kind IN ('client', 'admin') AND b.cancelled_at::date BETWEEN ${from}::date AND ${to}::date) AS hotel_cancelled,
         (SELECT count(*)::int FROM booking_case c JOIN booking_case_visit cv ON cv.case_id = c.id JOIN booking b ON b.id = cv.booking_id
-          WHERE b.slot = 'stay' AND c.created_at::date BETWEEN ${from}::date AND ${to}::date) AS cases,
+          WHERE b.slot = 'stay' AND b.slot_snapshot->'apartment' IS NULL AND c.created_at::date BETWEEN ${from}::date AND ${to}::date) AS cases,
         (SELECT count(DISTINCT t.rentable_id)::int FROM room_type t JOIN rentable r ON r.id = t.rentable_id AND r.status = 'live'
           WHERE EXISTS (SELECT 1 FROM room_night n WHERE n.room_type_id = t.id AND n.updated_at > now() - interval '7 days')
              OR EXISTS (SELECT 1 FROM rate_plan p WHERE p.room_type_id = t.id AND p.updated_at > now() - interval '7 days')

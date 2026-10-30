@@ -30,7 +30,7 @@ export async function readOperations(database, adminId, env = process.env) {
       (SELECT count(*)::int FROM booking_room br JOIN booking b ON b.id=br.booking_id JOIN booking_order o ON o.id=b.order_id
         WHERE br.state='held' AND o.hold_expires_at<clock_timestamp()-interval '15 minutes') AS stuck_room_holds,
       (SELECT CASE WHEN count(*)>=20 THEN count(*)::int ELSE 0 END FROM booking_order o
-        WHERE o.policy_snapshot->>'kind'='stay' AND o.state='expired' AND o.created_at>clock_timestamp()-interval '1 hour') AS stay_hold_expiry_spike`;
+        WHERE o.policy_snapshot->>'kind'='stay' AND NOT (o.policy_snapshot ? 'apartment') AND o.state='expired' AND o.created_at>clock_timestamp()-interval '1 hour') AS stay_hold_expiry_spike`;
     const health = await tx`SELECT service,healthy,checked_at,last_success_at,
       checked_at<clock_timestamp()-interval '2 minutes' stale FROM service_health ORDER BY service`;
     const measurements = await tx`SELECT event,source,device,visits,sum(count)::text count FROM customer_measurement

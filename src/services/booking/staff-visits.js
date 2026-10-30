@@ -40,7 +40,7 @@ const visitDTO = (row) => ({
   propertyTitle: row.title,
   date: dayOf(row),
   slot: row.slot,
-  guests: row.slot==='stay' && new Date(row.ends_at)>new Date() && ['confirmed','handed_over','returned','disputed'].includes(row.state) ? row.active_guests : row.guests,
+  guests: row.slot==='stay' && !row.slot_snapshot?.apartment && new Date(row.ends_at)>new Date() && ['confirmed','handed_over','returned','disputed'].includes(row.state) ? row.active_guests : row.guests,
   ...(row.slot==='stay' ? {originalGuests:row.guests, rooms:row.rooms ?? []} : {}),
   state: row.state,
   startsAt: row.hours_known ? instant(row.starts_at) : null,

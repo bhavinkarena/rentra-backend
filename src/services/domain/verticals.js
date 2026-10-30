@@ -3,7 +3,7 @@ export const DEFAULT_VERTICAL = 'farmhouse';
 export const VERTICAL_PATTERN = /^[a-z][a-z0-9_]{0,23}$/;
 
 /** The booking engine branches on this and nothing else. */
-// Story 3.10: 'apartment' (unit_night) never enters the slot or hourly engines; Story 3.11 books it.
+// 'apartment' (unit_night, Stories 3.10/3.11) never enters the slot or hourly engines; apartment-stays.js books it.
 export const bookingModel = (listing) =>
   listing?.rental_unit === 'hour' ? 'hourly' : listing?.rental_unit === 'unit_night' ? 'apartment' : 'slot';
 /** Slot-calendar writers refuse whole apartments (Story 3.10). */

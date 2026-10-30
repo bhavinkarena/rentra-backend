@@ -44,7 +44,7 @@ export async function startCheckoutPayment(database, session, orderId, options =
     await requireNewPaymentConfiguration(tx, { expectedVersion:scope.config_version }, env);
     const [current] = await tx`SELECT state,hold_expires_at>clock_timestamp() active FROM booking_order WHERE id=${orderId}`;
     if (current.state !== 'held' || !current.active) throw new CheckoutError('HOLD_EXPIRED');
-    if (order.policy_snapshot?.kind === 'stay') await revalidateHeldStayTerms(tx, order);
+    if (order.policy_snapshot?.kind === 'stay' && !order.policy_snapshot.apartment) await revalidateHeldStayTerms(tx, order);
     else await revalidateHeldQuoteTerms(tx, listing, { ...order, approved: status.approval === 'approved' }, env);
     adapter(scope, options); // Validate pinned credentials before reserving the external dispatch.
     await tx`INSERT INTO payment_attempt(payment_order_id,provider,environment,mode,currency,attempt_number,expected_minor,state)

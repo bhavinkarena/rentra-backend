@@ -9,6 +9,11 @@ import { DEFAULT_VERTICAL } from '../domain/verticals.js';
 import { STAY_VERTICAL } from '../domain/discovery.js';
 import { getSearchTimeSlots } from '../booking/time-slots.js';
 import { hotelSearchOffers } from '../booking/hotel-stays.js';
+import { apartmentSearchOffers } from '../booking/apartment-stays.js';
+
+/** Story 3.11: an apartment guests can book has every part of its setup saved. */
+const APARTMENT_PRICED = (database) => database`EXISTS (SELECT 1 FROM apartment_profile ap WHERE ap.rentable_id=r.id
+  AND ap.weekday_minor IS NOT NULL AND ap.weekend_minor IS NOT NULL AND ap.check_in_minute IS NOT NULL AND ap.check_out_minute IS NOT NULL)`;
 import { distanceKm, parsePoint } from '../domain/geo.js';
 import { betaVerticals, visibleVertical } from '../auth/beta-access.js';
 
@@ -35,8 +40,7 @@ export async function getDiscoveryRegistry(database = sql) {
     database`SELECT a.id,a.city_id AS "cityId",a.slug,a.name FROM area a JOIN city c ON c.id=a.city_id WHERE c.is_active=true AND a.is_active=true ORDER BY a.sort_order,a.name,a.id`,
     database`SELECT c.id,c.slug,c.name,c.vertical_code AS vertical,c.icon_key AS "iconKey",c.default_rental_unit::text AS "rentalUnit"
       FROM category c JOIN vertical v ON v.code=c.vertical_code AND ${visibleVertical(database)}
-      -- Story 3.10: no "Whole apartment" tab until Story 3.11 makes apartments bookable.
-      WHERE c.is_active=true AND c.default_rental_unit::text<>'unit_night' ORDER BY v.sort_order,c.sort_order,c.name,c.id`,
+      WHERE c.is_active=true ORDER BY v.sort_order,c.sort_order,c.name,c.id`,
     database`SELECT a.slug,a.label_en AS name,
         COALESCE(json_agg(av.vertical_code ORDER BY av.vertical_code) FILTER (WHERE av.vertical_code IS NOT NULL), '[]'::json) AS verticals
       FROM amenity a LEFT JOIN amenity_vertical av ON av.amenity_id=a.id
@@ -76,7 +80,7 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
   const [row] = await database`SELECT count(*)::int AS n FROM rentable r
     JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${vertical}
-    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND c.is_active AND a.is_active AND cat.is_active AND u.role='client' AND u.account_status='active'
+    WHERE r.status='live' AND c.is_active AND a.is_active AND cat.is_active AND u.role='client' AND u.account_status='active'
       AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area})
       AND (${!category} OR cat.slug=${category} OR (r.rental_unit::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource_activity ra
         JOIN category ac ON ac.id=ra.category_id WHERE ra.rentable_id=r.id AND ac.slug=${category})))
@@ -85,7 +89,8 @@ export async function searchDiscovery(filters, route = null, database = sql, reg
       -- freecancel/breakfast filters). Remaining gap: farm/venue inventory-readiness and the hotel
       -- landmark radius are not mirrored, so a hidden-by-readiness listing still counts as inventory.
       AND (${vertical !== STAY_VERTICAL} OR (r.rental_unit::text='night' AND EXISTS (SELECT 1 FROM rate_plan rp
-        JOIN room_type rt ON rt.id=rp.room_type_id AND rt.is_active WHERE rp.rentable_id=r.id AND rp.is_active)))`;
+        JOIN room_type rt ON rt.id=rp.room_type_id AND rt.is_active WHERE rp.rentable_id=r.id AND rp.is_active))
+        OR (r.rental_unit::text='unit_night' AND ${APARTMENT_PRICED(database)}))`;
   return { ...result, meta: { ...result.meta, inventory: row.n } };
 }
 
@@ -365,9 +370,74 @@ async function searchHotels({ filters, city, area, category, amenities, policy, 
       photos, photo: photos[0] ?? null, photoCount: photos.length, createdAt: new Date(row.created_at).toISOString(),
     });
   }
+  if (!category || category.rentalUnit === 'unit_night') cards.push(...await apartmentCards({ filters, city, area, category, amenities, landmark, couples, localId, term, database }));
   sortDiscoveryCards(cards, filters.sort === 'distance' && !landmark ? 'recommended' : filters.sort);
   const total = cards.length, totalPages = Math.max(1, Math.ceil(total / 12)), page = Math.min(filters.page, totalPages);
   return { items: cards.slice((page - 1) * 12, page * 12), total, totalPages, page, errors: [], landmark: landmark ? { slug: landmark.slug, name: landmark.name, km: NEAR_KM } : null };
+}
+
+/**
+ * Story 3.11: whole apartments in the stay vertical (all stays, or the Whole apartment tab). Dated searches
+ * keep only apartments free for the dates (turnover included) that take the party, nights rules and pets,
+ * and show the full-stay total (nights, cleaning, pets and the service fee). Hotel-only filters exclude them.
+ */
+async function apartmentCards({ filters, city, area, category, amenities, landmark, couples, localId, term, database }) {
+  if (couples || localId || filters.freecancel === '1' || filters.breakfast === '1') return [];
+  const rows = await database`
+    SELECT r.id,r.slug,r.public_code,r.title,r.highlight,r.photos,r.created_at,r.rating_avg,r.review_count,r.pet_policy,r.location,a.centre,
+      (r.verified_at IS NOT NULL AND EXISTS (SELECT 1 FROM verification_visit vv WHERE vv.rentable_id=r.id AND vv.mode='physical' AND vv.outcome='passed' AND vv.completed_at IS NOT NULL)) AS physically_verified,
+      a.name AS area_name,c.name AS city_name,cat.name AS category_name, least(ap.weekday_minor, ap.weekend_minor) AS from_minor,
+      ap.bedrooms, ap.max_occupants, ap.cleaning_fee_minor
+    FROM rentable r JOIN apartment_profile ap ON ap.rentable_id=r.id
+    JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id
+    JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
+    JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${STAY_VERTICAL}
+    WHERE r.status='live' AND r.rental_unit::text='unit_night' AND u.role='client' AND u.account_status='active'
+      AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND ${APARTMENT_PRICED(database)}
+      AND (${!city} OR c.slug=${city}) AND (${!area} OR a.slug=${area}) AND (${!category} OR cat.id=${category?.id ?? null}::uuid)
+      AND (${!landmark} OR (c.id=${landmark?.cityId ?? null}::uuid AND r.location IS NOT NULL))
+      AND (${!filters.q} OR a.name ILIKE ${term} OR c.name ILIKE ${term} OR r.title ILIKE ${term})
+      AND (${!filters.pets} OR ${petsFit(database, database`r.house_rules->>'petsAllowed'`, filters.pets)})
+      AND (${!filters.rating} OR r.rating_avg>=${filters.rating || 0}::numeric)
+      AND (${filters.verified !== '1'} OR (r.verified_at IS NOT NULL AND EXISTS (SELECT 1 FROM verification_visit vv
+        WHERE vv.rentable_id=r.id AND vv.mode='physical' AND vv.outcome='passed' AND vv.completed_at IS NOT NULL)))
+      AND NOT EXISTS (SELECT 1 FROM unnest(${amenities}::text[]) wanted(slug) WHERE NOT EXISTS (
+        SELECT 1 FROM rentable_amenity ra JOIN amenity am ON am.id=ra.amenity_id
+        WHERE ra.rentable_id=r.id AND am.slug=wanted.slug AND am.is_active=true))
+    ORDER BY r.id`;
+  for (const row of rows) {
+    const pin = parsePoint(row.location);
+    row.distance_km = landmark && pin ? Math.round(distanceKm(pin, landmark) * 10) / 10 : null;
+  }
+  const candidates = landmark ? rows.filter(row => row.distance_km != null && row.distance_km <= NEAR_KM) : rows;
+  const dated = Boolean(filters.checkin);
+  const stay = dated ? { checkIn: filters.checkin, checkOut: filters.checkout, adults: filters.adults, childAges: filters.children } : null;
+  const offers = dated ? await apartmentSearchOffers(database, candidates, { ...stay, pets: filters.pets }) : null;
+  const guests = `${filters.adults} adult${filters.adults === 1 ? '' : 's'}${filters.children.length ? `, ${filters.children.length} child${filters.children.length === 1 ? '' : 'ren'}` : ''}`;
+  const cards = [];
+  for (const row of candidates) {
+    const offer = offers?.get(row.id) ?? null;
+    if (dated && !offer) continue;
+    const price = offer ? offer.totalMinor / 100 : Number(row.from_minor) / 100;
+    const perNight = offer ? price / offer.nights : price;
+    if (filters.min != null && perNight < filters.min || filters.max != null && perNight > filters.max) continue;
+    const photos = normalizePublicPhotos(row.photos, { cloudName: process.env.CLOUDINARY_CLOUD_NAME, title: row.title, place: `${row.area_name}, ${row.city_name}` });
+    const query = stay ? `?${new URLSearchParams({ checkin: stay.checkIn, checkout: stay.checkOut, adults: String(stay.adults), ...(stay.childAges.length ? { children: stay.childAges.join(',') } : {}), ...(filters.pets ? { pets: String(filters.pets) } : {}) })}` : '';
+    cards.push({
+      id: row.id, vertical: STAY_VERTICAL, rentalUnit: 'unit_night', href: `${listingPath(row.slug, row.public_code)}${query}`, selection: stay,
+      title: row.title, area: `${row.area_name}, ${row.city_name}`, highlight: row.highlight, categoryName: row.category_name,
+      bedrooms: row.bedrooms, maxOccupants: row.max_occupants, distanceKm: row.distance_km, landmark: landmark ? landmark.name : null,
+      location: parsePoint(row.centre),
+      offer: offer ? { nights: offer.nights, cleaningMinor: offer.cleaningMinor, petMinor: offer.petMinor, feeMinor: offer.feeMinor } : null,
+      price, priceMinor: offer?.totalMinor ?? null, isFromPrice: !offer,
+      unit: offer ? `${offer.nights} night${offer.nights === 1 ? '' : 's'}, whole apartment, ${guests}` : 'night',
+      priceNote: offer ? `Total for your stay${offer.cleaningMinor ? ', cleaning' : ''}${offer.petMinor ? ', pet fee' : ''} and service fee included. Availability can change.`
+        : `Whole apartment per night${Number(row.cleaning_fee_minor) ? ', plus a one-off cleaning fee' : ''}. Add dates for the total.`,
+      rating: row.rating_avg == null ? null : Number(row.rating_avg), reviewCount: Number(row.review_count), badge: row.physically_verified ? 'verified' : null,
+      photos, photo: photos[0] ?? null, photoCount: photos.length, createdAt: new Date(row.created_at).toISOString(),
+    });
+  }
+  return cards;
 }
 
 /** Undated landing pages need enough live places before they are indexable. */
@@ -385,7 +455,7 @@ export async function getLandingRoutes(database = sql) {
     FROM rentable r
     JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND v.status='public'
-    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'`;
+    WHERE r.status='live' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'`;
   const scopes = [
     ...registry.categories.map((row) => row.slug),
     ...registry.verticals.map((row) => row.slug).filter((slug) => !registry.categories.some((row) => row.slug === slug)),
@@ -427,7 +497,7 @@ export async function countDiscoveryRoute(route, database = sql) {
   const [row] = await database`SELECT count(*)::int AS n FROM rentable r
     JOIN city c ON c.id=r.city_id JOIN area a ON a.id=r.area_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND v.status='public' AND v.code=${vertical}
-    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'
+    WHERE r.status='live' AND c.is_active=true AND a.is_active=true AND cat.is_active=true AND u.role='client' AND u.account_status='active'
     AND r.city_id=${route.city.id} AND (${!route.category} OR r.category_id=${route.category?.id ?? null}::uuid
       OR (r.rental_unit::text='hour' AND EXISTS (SELECT 1 FROM rentable_resource_activity ra WHERE ra.rentable_id=r.id AND ra.category_id=${route.category?.id ?? null}::uuid)))
     AND (${!route.area} OR r.area_id=${route.area?.id ?? null}::uuid)
@@ -451,7 +521,7 @@ export async function suggestDestinations(q, vertical = STAY_VERTICAL, database 
   const hotels = await database`SELECT r.slug,r.public_code,r.title,a.name AS area_name,c.name AS city_name
     FROM rentable r JOIN area a ON a.id=r.area_id JOIN city c ON c.id=r.city_id JOIN category cat ON cat.id=r.category_id JOIN "user" u ON u.id=r.client_id
     JOIN vertical v ON v.code=cat.vertical_code AND ${visibleVertical(database)} AND v.code=${vertical}
-    WHERE r.status='live' AND r.rental_unit::text<>'unit_night' AND u.role='client' AND u.account_status='active' AND c.is_active AND a.is_active AND cat.is_active AND r.title ILIKE ${term}
+    WHERE r.status='live' AND u.role='client' AND u.account_status='active' AND c.is_active AND a.is_active AND cat.is_active AND r.title ILIKE ${term}
     ORDER BY r.review_count DESC, r.title LIMIT 5`;
   return {
     cities: registry.cities.filter(c => hit(c.name)).slice(0, 5).map(c => ({ slug: c.slug, name: c.name })),

@@ -279,6 +279,8 @@ export async function readBookingRecord(database, actor, orderId, env = process.
         id: room.id, name: room.name, state: room.state, departedAt: instant(room.departed_at), inventoryEnd: room.inventory_end, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
         plan: room.plan_snapshot, room: room.room_snapshot ?? null, roomMinor: amount(room.amount_room_minor), taxMinor: amount(room.amount_tax_minor) })),
       details: order.guest_details ?? null,
+      // Story 3.11: a whole apartment's guests, nightly breakdown, cleaning and pet rows, as accepted.
+      apartment: stayRow.slot_snapshot?.apartment ?? null,
       // Phase 10: the hotel page, for "Change dates or rooms".
       listingHref: (await tx`SELECT slug, public_code FROM rentable WHERE id=${order.rentable_id}`).map((r) => listingPath(r.slug, r.public_code))[0] ?? null,
     } : null;

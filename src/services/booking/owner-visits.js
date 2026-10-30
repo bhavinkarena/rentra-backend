@@ -26,7 +26,7 @@ export async function ownerDayVisits(database, ownerId, { date = propertyToday()
   const joins = database`FROM booking b JOIN booking_order o ON o.id=b.order_id JOIN rentable r ON r.id=b.rentable_id
     JOIN "user" u ON u.id=r.client_id JOIN category c ON c.id=r.category_id`;
   const [counts] = await database`SELECT count(*)::int total ${joins} WHERE ${where}`;
-  const rows = await database`SELECT b.*,CASE WHEN b.slot='stay' THEN (SELECT coalesce(sum(br.adults+cardinality(br.child_ages)),0)::int FROM booking_room br WHERE br.booking_id=b.id AND br.state='booked') ELSE b.guests END AS active_guests, r.booking_config,r.title, r.photos, c.vertical_code, o.listing_snapshot,
+  const rows = await database`SELECT b.*,CASE WHEN b.slot='stay' AND b.slot_snapshot->'apartment' IS NULL THEN (SELECT coalesce(sum(br.adults+cardinality(br.child_ages)),0)::int FROM booking_room br WHERE br.booking_id=b.id AND br.state='booked') ELSE b.guests END AS active_guests, r.booking_config,r.title, r.photos, c.vertical_code, o.listing_snapshot,
     o.reference order_reference,o.state order_state,o.amount_rent_minor order_rent,o.amount_fee_minor order_fee,o.amount_deposit_minor order_deposit,
     (SELECT jsonb_agg(jsonb_build_object('environment',p.environment,'state',p.state)) FROM payment_order p WHERE p.booking_order_id=o.id) payments,
     (SELECT string_agg(x.n||' × '||x.name, ', ' ORDER BY x.name) FROM (SELECT coalesce(br.room_snapshot->>'name',t.name) AS name, count(*) n FROM booking_room br JOIN room_type t ON t.id=br.room_type_id

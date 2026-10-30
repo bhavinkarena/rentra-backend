@@ -133,9 +133,11 @@ async function audit(tx, { adminId, id, action, after, reason = null, ip = null 
 /** Saleable inventory facts shared by the admin publish panel and the owner overview. */
 export async function listingInventory(database, id, row) {
   const config = row.booking_config;
-  // Story 3.10: apartments are reviewed now but take no bookings until Story 3.11.
+  // Story 3.11: an apartment is bookable once its stay rules and prices are saved; its calendar is its reservations.
   if (row.rental_unit === 'unit_night') {
-    return { scheduleReady: false, openDates: null, bookable: false, note: 'Not bookable yet: apartments go live for guests soon.' };
+    const [p] = await database`SELECT weekday_minor, check_in_minute FROM apartment_profile WHERE rentable_id=${id}`;
+    const ready = Boolean(p && p.weekday_minor != null && p.check_in_minute != null);
+    return { scheduleReady: ready, openDates: null, bookable: ready, note: ready ? 'Booked by dates; the owner blocks nights on the apartment calendar.' : 'Not bookable yet: save the stay rules and prices.' };
   }
   if (row.rental_unit === 'night') {
     // A hotel sells room types by the night: it needs active rooms, a priced base rate for each, and check-in times.

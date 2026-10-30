@@ -16,6 +16,7 @@ import { priceVisitsMinor, sumVisitTotals, visitMoneyMinor } from '../domain/boo
 import { getPaymentConfiguration } from '../payments/gateway-settings.js';
 import { withListingSnapshot, expireInventoryHolds, findInventoryConflicts, prepareInventoryCheck,
   prepareHourlyInventoryCheck, inventoryWindow, isReadOnlyInventory } from './inventory.js';
+import { checkedApartmentQuote, heldApartmentTerms } from './apartment-stays.js';
 
 
 /** Launch default when no fee setting is passed (pure callers and tests). */
@@ -163,7 +164,7 @@ export function petTerms(petPolicy, legacyAllowed, pets, units) {
 export function prepareQuote(selection, listing, rates, overrides, payment, now, publications, fee = DEFAULT_FEE) {
   if (listing.status !== 'live' || listing.total_units !== 1) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   if (bookingModel(listing) === 'hourly') throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This venue is booked by time, not by slot.');
-  if (bookingModel(listing) === 'apartment') throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
+  if (bookingModel(listing) === 'apartment') throw new BookingQuoteError('SLOT_UNAVAILABLE', 'This apartment is booked by dates, not by slot.');
   const config = listingConfiguration(listing);
   const schedule = config.slots[selection.slot];
   const rate = rates.find((row) => row.slot === selection.slot);
@@ -243,8 +244,7 @@ export async function requireBookableListing(tx, listing) {
     EXISTS (SELECT 1 FROM "user" WHERE id=${listing.client_id} AND role='client' AND account_status='active') AS owner_active,
     EXISTS (SELECT 1 FROM category c JOIN vertical v ON v.code=c.vertical_code WHERE c.id=${listing.category_id} AND ${visibleVertical(tx)}) AS vertical_public,
     owner_repayment_overdue(${listing.client_id}) AS overdue`;
-  // Story 3.10: whole apartments take no quotes, holds or bookings until Story 3.11.
-  if (!row.owner_active || !row.vertical_public || listing.rental_unit === 'unit_night') throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
+  if (!row.owner_active || !row.vertical_public) throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This property is not available for booking.');
   // Story 2.20: evaluated in this transaction; covers quote, hold (both models) and held-term revalidation.
   if (row.overdue) throw new BookingQuoteError('OWNER_REPAYMENT_OVERDUE', 'This property is not taking bookings right now.');
 }
@@ -274,6 +274,11 @@ async function currentInputs(tx, listing, selection, variables) {
  * is stripped from public responses.
  */
 async function checkedQuote(tx, listing, selection, variables) {
+  // Story 3.11: whole apartments have their own price and exclusive-range check.
+  if (selection.kind === 'apartment' || bookingModel(listing) === 'apartment') {
+    if (selection.kind !== 'apartment' || bookingModel(listing) !== 'apartment') throw new BookingQuoteError('LISTING_UNAVAILABLE', 'This booking type is not offered here.');
+    return checkedApartmentQuote(tx, listing, selection, variables);
+  }
   const inputs = await currentInputs(tx, listing, selection, variables);
   const quote = quoteFor(selection, listing, inputs, inputs.publications);
   const stamps = { createdAt: new Date(inputs.now).toISOString(), expiresAt: new Date(new Date(inputs.now).getTime() + BOOKING_POLICY.quoteMinutes * 60_000).toISOString() };
@@ -339,6 +344,12 @@ export async function revalidateBookingQuote(tx, listing, { quoteId, customerId,
 export async function revalidateHeldQuoteTerms(tx, listing, order, variables = process.env) {
   const [saved] = await tx`SELECT * FROM booking_quote WHERE id=${order.quote_id} AND customer_id=${order.customer_id}`;
   if (!saved) throw new BookingQuoteError('QUOTE_NOT_FOUND', 'Request a fresh quote.');
+  if (saved.selection?.kind === 'apartment') {
+    // A held apartment is governed by its hold deadline (checked by the caller), as for hotels, not the quote's life.
+    const quote = await heldApartmentTerms(tx, listing, order, bookingSelectionSchema.parse(saved.selection), variables);
+    if (quote.hash !== order.quote_hash || saved.version !== order.quote_version) throw new BookingQuoteError('QUOTE_CHANGED', 'Review the changed terms.');
+    return quote;
+  }
   const inputs = await currentInputs(tx, listing, bookingSelectionSchema.parse(saved.selection), variables);
   // An owner-approved request is paid long after its quote: its terms are judged as at the request (lead time
   // included), and the hash below still refuses any change in price or rules since then.

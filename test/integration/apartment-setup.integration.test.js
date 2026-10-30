@@ -260,22 +260,21 @@ test(
       assert.ok(review.checklist.some((c) => c.key === 'unitMatches'));
     });
 
-    await t.test('an approved apartment stays off every guest surface', async () => {
+    // Story 3.11 lifted the 3.10 guest gate: an approved apartment is a guest-facing stay (see apartment-booking).
+    await t.test('an approved apartment is on guest surfaces and refuses slot quotes', async () => {
       await sql`UPDATE rentable SET status='live' WHERE id=${apt.id}`;
       clearDiscoveryRegistryCache(sql);
       const registry = await getDiscoveryRegistry(sql);
-      assert.ok(!registry.categories.some((c) => c.slug === 'whole-apartment'));
+      assert.ok(registry.categories.some((c) => c.slug === 'whole-apartment'));
       const { filters } = parseDiscoveryQuery({ vertical: 'hotel', city: 'surat' });
       const result = await searchDiscovery(filters, null, sql);
-      assert.ok(result.items.every((item) => item.id !== apt.id));
       assert.ok(
         result.items.some((item) => item.id === hotel.hotel),
         'hotels unchanged',
       );
-      assert.equal(await getListingByCode('apt00001'), null);
-      assert.ok(await getListingByCode('apt00001', hotel.owner), 'the owner preview still works');
+      assert.ok(await getListingByCode('apt00001'));
       const [card] = await savedPlaceCards(sql, [{ rentableId: apt.id, selection: null }]);
-      assert.equal(card.available, false);
+      assert.equal(card.available, true);
       const day = addLocalDays(propertyToday(), 5);
       await rejects(
         previewBookingQuote(sql, { rentableId: apt.id, dates: [day], slot: 'day', guests: 2 }),

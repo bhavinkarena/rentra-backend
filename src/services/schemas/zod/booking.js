@@ -43,8 +43,20 @@ export const hourlySelectionSchema = z.object({
   guests: z.number().int().min(1).max(500),
 }).strict();
 
+/** Story 3.11: a whole-apartment stay; every occupant declared (adults plus each child's age). */
+export const apartmentSelectionSchema = z.object({
+  kind: z.literal('apartment'),
+  rentableId: z.string().uuid(),
+  currency: z.literal(BOOKING_POLICY.currency).default(BOOKING_POLICY.currency),
+  checkIn: localDateSchema,
+  checkOut: localDateSchema,
+  adults: z.number().int().min(1).max(50),
+  childAges: z.array(z.number().int().min(0).max(17)).max(20).default([]),
+  pets: petsSchema,
+}).strict();
+
 /** A body without `kind` is a slot selection exactly as before; old clients and saved selections keep working. */
-export const bookingSelectionSchema = z.union([slotSelectionSchema, hourlySelectionSchema]);
+export const bookingSelectionSchema = z.union([slotSelectionSchema, hourlySelectionSchema, apartmentSelectionSchema]);
 
 /** GET /discovery/listings/:code/times */
 export const timesQuerySchema = z.object({

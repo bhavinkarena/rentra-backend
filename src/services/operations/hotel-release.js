@@ -57,7 +57,7 @@ export async function inspectHotelRelease(database, stage = 'beta') {
     check('no overbooked room-night', over === 0, { over });
     const [{ mismatched }] = await tx`SELECT count(*)::int AS mismatched FROM booking_order o
       JOIN payment_order p ON p.booking_order_id = o.id
-      WHERE o.state = 'confirmed' AND o.policy_snapshot->>'kind' = 'stay'
+      WHERE o.state = 'confirmed' AND o.policy_snapshot->>'kind' = 'stay' AND NOT (o.policy_snapshot ? 'apartment')
         AND p.expected_minor <> (SELECT coalesce(sum(t.captured_minor), 0) FROM payment_transaction t JOIN payment_attempt a ON a.id = t.attempt_id
           WHERE a.payment_order_id = p.id AND t.kind = 'capture' AND t.outcome = 'succeeded')`;
     check('every confirmed stay is paid exactly', mismatched === 0, { mismatched });
@@ -65,7 +65,7 @@ export async function inspectHotelRelease(database, stage = 'beta') {
       JOIN booking_order o ON o.id = b.order_id WHERE br.state = 'held' AND o.hold_expires_at < now() - interval '1 hour'`;
     check('no expired room hold older than an hour', stuck === 0, { stuck });
     const [{ refunds }] = await tx`SELECT count(*)::int AS refunds FROM refund f JOIN refund_allocation ra ON ra.refund_id = f.id
-      JOIN booking b ON b.id = ra.booking_id AND b.slot = 'stay' WHERE f.state = 'unknown' AND f.created_at < now() - interval '1 day'`;
+      JOIN booking b ON b.id = ra.booking_id AND b.slot = 'stay' AND b.slot_snapshot->'apartment' IS NULL WHERE f.state = 'unknown' AND f.created_at < now() - interval '1 day'`;
     check('no stay refund stuck for a day', refunds === 0, { refunds });
 
     if (stage === 'public') {

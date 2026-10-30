@@ -164,8 +164,6 @@ const nightPrice = and(
  */
 const publiclyListed = () => and(
   eq(rentable.status, 'live'),
-  // Story 3.10: whole apartments stay off every guest surface until Story 3.11 makes them bookable.
-  raw`${rentable.rentalUnit}::text <> 'unit_night'`,
   raw`exists (select 1 from "user" o where o.id = ${rentable.clientId}
     and o.role = 'client' and o.account_status = 'active')`,
   // A vertical that is not public yet (hidden, or open to partners only) never
@@ -343,9 +341,10 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
   ]);
 
   const agg = subScoreRows[0] ?? {};
-  const venue = row.vertical === 'hotel' && row.rentalUnit === 'night' ? await hotelDetail(row) : row.rentalUnit === 'hour' ? await venueDetail(row) : {};
+  const venue = row.vertical === 'hotel' && row.rentalUnit === 'night' ? await hotelDetail(row) : row.rentalUnit === 'hour' ? await venueDetail(row)
+    : row.rentalUnit === 'unit_night' ? await apartmentDetail(row) : {};
   const petPolicy = row.rentalUnit === 'hour' ? null : publicPetPolicy(effectivePetPolicy(row.petPolicy,
-    row.vertical === 'hotel' ? venue.hotel?.policies?.pets === true : row.houseRules?.petsAllowed === true));
+    row.rentalUnit === 'night' ? venue.hotel?.policies?.pets === true : row.houseRules?.petsAllowed === true));
   const amenities = amenityStates({
     selected: selectedAmenities,
     catalogue: amenityCatalogue,
@@ -457,6 +456,22 @@ const HOTEL_PUBLIC_POLICIES = ['couples', 'localId', 'idTypes', 'pets', 'smoking
  * plans (no prices: those come from /rooms for the guest's dates and party),
  * and the nearest landmarks. The exact pin only when the owner chose to show it.
  */
+/**
+ * Story 3.11: the public facts of a whole apartment (rules and flat prices in whole rupees). The quote
+ * decides availability and the total; null while the owner's setup is incomplete.
+ */
+async function apartmentDetail(row) {
+  const [p] = await sql`SELECT * FROM apartment_profile WHERE rentable_id=${row.id}`;
+  if (!p || p.weekday_minor == null || p.check_in_minute == null) return { apartment: null };
+  const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  return { apartment: {
+    bedrooms: p.bedrooms, bathrooms: p.bathrooms, beds: p.beds ?? [], maxAdults: p.max_adults, maxChildren: p.max_children, maxOccupants: p.max_occupants,
+    minNights: p.min_nights, maxNights: p.max_nights, arrivalRules: p.arrival_rules, checkInTime: hhmm(p.check_in_minute), checkOutTime: hhmm(p.check_out_minute),
+    turnoverNights: p.turnover_nights, weekday: Number(p.weekday_minor) / 100, weekend: Number(p.weekend_minor) / 100,
+    cleaningFee: Number(p.cleaning_fee_minor) / 100, weekendNights: (p.weekend_nights ?? []).map(Number),
+  } };
+}
+
 async function hotelDetail(row) {
   const [[profile], roomTypes, plans, landmarks] = await Promise.all([
     sql`SELECT p.star_rating, p.check_in_minute, p.check_out_minute, p.child_free_age, p.child_policy, p.policies, p.show_exact_address,

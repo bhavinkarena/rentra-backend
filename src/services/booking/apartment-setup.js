@@ -10,7 +10,7 @@ import { apartmentProblem, clockOf, minuteOf, normalizeArrivalRules } from '../d
  * Story 3.10: a whole apartment's own setup (unit, stay rules, price), saved part by part like
  * hotel-setup.js: owner and listing checked under the listing lock, the rendered content version
  * must match (409 otherwise), and every real change bumps apartment_profile.version and is audited.
- * Bookings (Story 3.11) are not taken yet; turnover nights are stored for it.
+ * Story 3.11 books it (apartment-stays.js) and enforces the turnover nights.
  */
 const int = z.coerce.number().int();
 const schemas = {

@@ -9,7 +9,7 @@ export function earlyDepartureRoom(room, now) {
   try {
     if (!isLocalDate(room.checkIn) || !isLocalDate(room.checkOut) || room.checkOut <= room.checkIn
       || !Number.isInteger(room.checkInMinute) || room.checkInMinute < 0 || room.checkInMinute > 1439
-      || !Array.isArray(room.nights) || room.nights.length < 1 || room.nights.length > 30
+      || !Array.isArray(room.nights) || room.nights.length < 1 || room.nights.length > 90 // hotels stop at 30; whole apartments (Story 3.11) at 90
       || room.policy?.version !== 1 || typeof room.policy.earlyDeparture?.offered !== 'boolean'
       || !Number.isInteger(room.policy.earlyDeparture.pct) || room.policy.earlyDeparture.pct < 0 || room.policy.earlyDeparture.pct > 100) fail();
     const at = new Date(now).getTime();
