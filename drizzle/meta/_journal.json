@@ -631,6 +631,13 @@
       "when": 1790591519015,
       "tag": "0089_apartment_departure",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1790591520015,
+      "tag": "0090_stay_issue",
+      "breakpoints": true
     }
   ]
 }

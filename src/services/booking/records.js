@@ -222,6 +222,9 @@ export async function readBookingRecord(database, actor, orderId, env = process.
       startsAt: row.hours_known ? instant(row.starts_at) : null, endsAt: row.hours_known ? instant(row.ends_at) : null,
       rentMinor: amount(row.amount_rent_minor), feeMinor: amount(row.amount_fee_minor), depositMinor: amount(row.amount_deposit_minor),
       includedGuests:row.slot_snapshot?.includedGuests??null,
+      // Story 4.1: what the stay-issue form needs to offer only choices the API accepts.
+      ...(actor.kind === 'customer' ? { issue: { startsAt: instant(row.starts_at), endsAt: instant(row.ends_at), cancelledAt: instant(row.cancelled_at),
+        roomTypeIds: (row.slot_snapshot?.rooms || []).map(r => String(r.roomTypeId)) } } : {}),
       // BOOK-05/08: an arrival that started and was never checked in can be reported as a no-show.
       ...(actor.kind === 'owner' ? { noShowEligible: row.state === 'confirmed' && row.hours_known && new Date(row.starts_at) <= new Date(now) } : {}),
       // Story 2.15: when the host cancelled, the guest sees the host's reason.
@@ -274,9 +277,9 @@ export async function readBookingRecord(database, actor, orderId, env = process.
     const stay = stayRow ? {
       checkIn: stayRow.slot_snapshot?.checkIn ?? null, checkOut: stayRow.slot_snapshot?.checkOut ?? null, nights: stayRow.slot_snapshot?.nights ?? null,
       roomMinor: amount(stayRow.slot_snapshot?.roomMinor), taxMinor: amount(stayRow.slot_snapshot?.taxMinor),
-      rooms: (await tx`SELECT br.id,br.state,br.departed_at,br.inventory_end::text,br.adults,br.child_ages,br.guest_name,br.amount_room_minor,br.amount_tax_minor,br.plan_snapshot,br.room_snapshot,coalesce(br.room_snapshot->>'name',t.name) AS name
+      rooms: (await tx`SELECT br.id,br.room_type_id,br.state,br.departed_at,br.inventory_end::text,br.adults,br.child_ages,br.guest_name,br.amount_room_minor,br.amount_tax_minor,br.plan_snapshot,br.room_snapshot,coalesce(br.room_snapshot->>'name',t.name) AS name
         FROM booking_room br JOIN room_type t ON t.id=br.room_type_id WHERE br.booking_id=${stayRow.id} ORDER BY name,br.id`).map(room => ({
-        id: room.id, name: room.name, state: room.state, departedAt: instant(room.departed_at), inventoryEnd: room.inventory_end, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
+        id: room.id, roomTypeId: room.room_type_id, name: room.name, state: room.state, departedAt: instant(room.departed_at), inventoryEnd: room.inventory_end, adults: room.adults, childAges: room.child_ages, guestName: room.guest_name,
         plan: room.plan_snapshot, room: room.room_snapshot ?? null, roomMinor: amount(room.amount_room_minor), taxMinor: amount(room.amount_tax_minor) })),
       details: order.guest_details ?? null,
       // Story 3.11: a whole apartment's guests, nightly breakdown, cleaning and pet rows, as accepted.

@@ -183,3 +183,38 @@ test(
     }
   },
 );
+
+test(
+  'Story 4.1 keeps the old subject/body rules for non-stay categories',
+  { skip: !process.env.PORTAL_TEST_DATABASE_URL },
+  async () => {
+    const db = await createDisposableDatabase(process.env.PORTAL_TEST_DATABASE_URL),
+      sql = db.sql;
+    try {
+      const f = await seedReviewFixture(sql),
+        booking = await seedConfirmedBooking(sql, f.listing);
+      const [session] =
+        await sql`INSERT INTO auth_session(user_id,expires_at) VALUES(${booking.customer},now()+interval '1 day') RETURNING id`;
+      const customer = {
+        kind: 'customer',
+        session: { role: 'customer', userId: booking.customer, sessionId: session.id },
+      };
+      const value = (extra) => ({
+        category: 'booking',
+        subject: 'Arrival support case',
+        body: 'Please help with the arrival instructions for this booking.',
+        orderId: booking.order,
+        privacyRequestId: null,
+        requestKey: randomUUID(),
+        ...extra,
+      });
+      for (const extra of [{ subject: null }, { subject: 'Hi' }, { body: 'Too short body.' }])
+        await assert.rejects(createSupportRequest(sql, customer, value(extra)), {
+          name: 'ZodError',
+        });
+      assert.equal((await sql`SELECT count(*)::int n FROM support_request`)[0].n, 0);
+    } finally {
+      await db.drop();
+    }
+  },
+);

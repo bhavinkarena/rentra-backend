@@ -74,7 +74,14 @@ router.post('/reviews/report', customer, formFields(), reviews.reportByCustomer)
  * Support
  * ---------------------------------------------------------------- */
 router.get('/support', customer, validate({ query: supportListQuery }), support.list);
-router.post('/support', customer, formFields(), support.open);
+// Only a request that carries photos counts against the upload limit.
+router.post(
+  '/support',
+  customer,
+  evidencePhotos(),
+  (req, res, next) => (req.files?.length ? uploadLimiter(req, res, next) : next()),
+  support.open,
+);
 router.get('/support/:id', customer, validate({ params: supportIdParam }), support.detail);
 router.get('/support/:id/thread', customer, validate({ params: supportIdParam }), support.thread);
 router.post(

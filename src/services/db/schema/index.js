@@ -2057,6 +2057,9 @@ export const supportRequest = pgTable('support_request', {
   version: integer('version').notNull().default(0),
   requestKey: uuid('request_key').notNull(),
   requestHash: varchar('request_hash', { length: 64 }).notNull(),
+  /** Story 4.1 stay issues only: when the guest found the problem, and whether it was reported >72 h later. */
+  discoveredAt: timestamp('discovered_at', { withTimezone: true }),
+  late: boolean('late'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [uniqueIndex('support_request_client_replay_idx').on(t.clientId, t.requestKey),
@@ -2067,12 +2070,13 @@ export const supportRequest = pgTable('support_request', {
   index('support_request_property_idx').on(t.propertyId).where(sql`${t.propertyId} IS NOT NULL`),
   index('support_request_assignee_idx').on(t.assignedTo, t.state).where(sql`${t.assignedTo} IS NOT NULL`),
   index('support_request_privacy_idx').on(t.privacyRequestId).where(sql`${t.privacyRequestId} IS NOT NULL`),
-  check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other','verification','account','property','calendar','earnings')
+  check('support_request_valid_chk', sql`${t.category} IN ('booking','change','cancellation','payment','privacy','other','verification','account','property','calendar','earnings','stay_issue')
     AND ${t.state} IN ('open','in_progress','waiting_customer','resolved') AND ${t.version}>=0
     AND length(trim(${t.subject})) BETWEEN 5 AND 120 AND ${t.requestHash} ~ '^[a-f0-9]{64}$'
     AND (${t.clientId} IS NOT NULL OR ${t.category} NOT IN ('booking','change','cancellation','payment') OR ${t.orderId} IS NOT NULL)
     AND (${t.clientId} IS NOT NULL OR ${t.category} NOT IN ('verification','account','property','calendar','earnings'))
-    AND (${t.privacyRequestId} IS NULL OR (${t.category}='privacy' AND ${t.orderId} IS NULL))`)]);
+    AND (${t.privacyRequestId} IS NULL OR (${t.category}='privacy' AND ${t.orderId} IS NULL))
+    AND (${t.category}<>'stay_issue' OR (${t.customerId} IS NOT NULL AND ${t.orderId} IS NOT NULL AND ${t.discoveredAt} IS NOT NULL AND ${t.late} IS NOT NULL))`)]);
 
 export const supportMessage = pgTable('support_message', {
   id: uuid('id').primaryKey().defaultRandom(),

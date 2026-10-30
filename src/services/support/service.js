@@ -7,6 +7,7 @@ import { quoteDigest } from '../booking/quotes.js';
 import { publicContent } from '../content/service.js';
 import { preparePhotos } from '../booking/visit-evidence.js';
 import { evidenceStore } from '../uploads/evidence-store.js';
+import { ISSUE_TYPES, REMEDIES, ISSUE_LABELS, issuePriority, isLateReport, discoveryProblem, issueEligibility } from '../domain/stay-issue.js';
 
 export class SupportError extends AppError {
   constructor(code, message = code, statusCode = 409) {
@@ -15,7 +16,21 @@ export class SupportError extends AppError {
 }
 const uuid = z.string().uuid(),
   body = z.string().trim().min(2).max(5000);
-const categories = ['booking', 'change', 'cancellation', 'payment', 'privacy', 'other', 'verification', 'account', 'property', 'calendar', 'earnings'];
+const categories = ['booking', 'change', 'cancellation', 'payment', 'privacy', 'other', 'verification', 'account', 'property', 'calendar', 'earnings', 'stay_issue'];
+const stayIssue = z
+  .object({
+    issueType: z.enum(ISSUE_TYPES),
+    discoveredAt: z.string().datetime({ offset: true }),
+    affected: z
+      .array(z.object({ visitId: uuid, roomTypeId: z.string().trim().min(1).max(64).nullable().default(null) }).strict())
+      .min(1)
+      .max(50),
+    remedy: z.enum(REMEDIES),
+    remedyText: z.string().trim().max(500).nullable().default(null),
+    lateReason: z.string().trim().max(500).nullable().default(null),
+  })
+  .strict()
+  .refine((v) => v.remedy !== 'other' || v.remedyText?.length >= 1, { path: ['remedyText'], message: 'Describe the fix you want.' });
 const states = ['open', 'in_progress', 'waiting_customer', 'resolved'];
 const missing = () => new SupportError('NOT_FOUND', 'Support request not found.', 404);
 async function authorize(tx, actor, env, write = false) {
@@ -71,6 +86,8 @@ const dto = (r, admin = false) => ({
   privacyRequestId: r.privacy_request_id,
   context: r.context,
   policyVersion: r.policy_version,
+  discoveredAt: r.discovered_at ? new Date(r.discovered_at).toISOString() : null,
+  late: r.late ?? null,
   ...(admin
     ? {
         clientId: r.client_id,
@@ -91,24 +108,38 @@ export async function createSupportRequest(database, actor, input, env = process
   const value = z
     .object({
       category: z.enum(categories),
-      subject: z.string().trim().min(5).max(120),
-      body: body.min(20),
+      subject: z.string().trim().max(120).nullable().default(null),
+      body,
       orderId: uuid.nullable(),
       privacyRequestId: uuid.nullable(),
       propertyId: uuid.nullable().default(null),
       visitId: uuid.nullable().default(null),
+      stayIssue: stayIssue.nullable().default(null),
       requestKey: uuid,
     })
     .strict()
+    .superRefine((v, ctx) => {
+      const issue = v.category === 'stay_issue';
+      if (issue && !v.stayIssue) ctx.addIssue({ code: 'custom', path: ['stayIssue'], message: 'Describe the problem.' });
+      if (!issue && v.stayIssue) ctx.addIssue({ code: 'custom', path: ['category'], message: 'Choose a supported topic.' });
+      if (issue ? v.body.length < 10 || v.body.length > 2000 : v.body.length < 20)
+        ctx.addIssue({ code: 'custom', path: ['body'], message: issue ? 'Use 10 to 2000 characters.' : 'Use at least 20 characters.' });
+      if (!issue && (v.subject?.length ?? 0) < 5) ctx.addIssue({ code: 'custom', path: ['subject'], message: 'Use 5 to 120 characters.' });
+    })
     .parse(input);
+  // A stay issue's subject is derived, so the guest only describes the problem once.
+  if (value.stayIssue) value.subject = `Stay issue: ${ISSUE_LABELS[value.stayIssue.issueType]}`;
   await database.begin(async tx => authorize(tx, actor, env, true));
   let photos;
   try { photos = await preparePhotos(files); }
   catch (error) { if (error.code === 'INVALID_ATTACHMENT') throw new SupportError(error.code,error.message,422); throw error; }
-  const hashValue = {...value};if(!hashValue.visitId)delete hashValue.visitId;
+  const hashValue = {...value};if(!hashValue.visitId)delete hashValue.visitId;if(!hashValue.stayIssue)delete hashValue.stayIssue;
   const hash = quoteDigest(photos.length ? { ...hashValue, photos: photos.map(p => p.sha256) } : hashValue);
   if (actor?.kind !== 'owner' && ['verification', 'account', 'property', 'calendar', 'earnings'].includes(value.category)) throw new SupportError('INVALID_TOPIC', 'Choose a supported topic.', 422);
   if (!['customer', 'owner'].includes(actor?.kind)) throw missing();
+  if (value.category === 'stay_issue' && actor.kind !== 'customer') throw new SupportError('INVALID_TOPIC', 'Choose a supported topic.', 422);
+  if (value.category === 'stay_issue' && (!value.orderId || value.visitId))
+    throw new SupportError('CONTEXT_REQUIRED', 'Choose a supported record for this topic.', 422);
   if (
     (actor.kind === 'customer' && ['booking', 'change', 'cancellation', 'payment'].includes(value.category) && !value.orderId) ||
     (value.privacyRequestId &&
@@ -142,6 +173,9 @@ export async function createSupportRequest(database, actor, input, env = process
         cancellationTier: order.policy_snapshot?.cancellationTier || null,
       });
     }
+    let issue = null;
+    if (value.stayIssue) issue = await stayIssueContext(tx, value.orderId, value.stayIssue);
+    if (issue) Object.assign(context, { stayIssue: issue.context });
     if (value.visitId) {
       const [visit]=await tx`SELECT reference,local_day::text visit_date,slot FROM booking WHERE id=${value.visitId} AND order_id=${value.orderId}`;
       if(!visit)throw missing();Object.assign(context,{visitReference:visit.reference,visitDate:visit.visit_date,slot:visit.slot});
@@ -164,15 +198,62 @@ export async function createSupportRequest(database, actor, input, env = process
     const termsVersion = (await publicContent(tx,'terms')).version;
     const id = randomUUID(),
       reference = 'SUP-' + id.replaceAll('-', '').slice(0, 16).toUpperCase();
-    await tx`INSERT INTO support_request(id,reference,customer_id,client_id,property_id,order_id,privacy_request_id,category,subject,context,policy_version,request_key,request_hash)
-      VALUES(${id},${reference},${actor.kind === 'customer' ? actorId : null},${actor.kind === 'owner' ? actorId : null},${value.propertyId},${value.orderId},${value.privacyRequestId},${value.category},${value.subject},${JSON.stringify(context)}::text::jsonb,${termsVersion},${value.requestKey},${hash})`;
+    await tx`INSERT INTO support_request(id,reference,customer_id,client_id,property_id,order_id,privacy_request_id,category,subject,context,policy_version,request_key,request_hash,priority,discovered_at,late)
+      VALUES(${id},${reference},${actor.kind === 'customer' ? actorId : null},${actor.kind === 'owner' ? actorId : null},${value.propertyId},${value.orderId},${value.privacyRequestId},${value.category},${value.subject},${JSON.stringify(context)}::text::jsonb,${termsVersion},${value.requestKey},${hash},
+        ${issue ? issuePriority(value.stayIssue.issueType) : 'normal'},${issue ? value.stayIssue.discoveredAt : null},${issue ? issue.late : null})`;
     const [message] = await tx`INSERT INTO support_message(request_id,actor_kind,actor_id,body,state_after,request_key,request_hash) VALUES(${id},${actor.kind},${actorId},${value.body},'open',${value.requestKey},${hash}) RETURNING id`;
     for (const photo of photos) {
       const saved = await store.put({folder: `rentra/support/${id}/${value.requestKey}`,name:photo.sha256,buffer:photo.buffer,mime:photo.mime});
       await tx`INSERT INTO support_attachment(message_id,storage_key,mime_type,bytes,sha256) VALUES(${message.id},${saved.key},${photo.mime},${photo.bytes},${photo.sha256})`;
     }
+    if (issue)
+      await audit(tx, actor, id, 'stay_issue_reported', {
+        orderId: value.orderId, issueType: value.stayIssue.issueType, priority: issuePriority(value.stayIssue.issueType),
+        late: issue.late, remedy: value.stayIssue.remedy, photos: photos.length,
+      });
     return { id };
   });
+}
+
+const issueError = (code, message, status = 422) => new SupportError(code, message, status);
+/**
+ * Story 4.1: validates a stay issue against the guest's own order (already scoped by the caller) and
+ * returns the context snapshot. Reads only — filing never changes the order, bookings or money.
+ */
+async function stayIssueContext(tx, orderId, issue, now = new Date()) {
+  const [order] = await tx`SELECT state FROM booking_order WHERE id=${orderId}`;
+  const visits = await tx`SELECT id,reference,local_day::text AS day,starts_at,ends_at,state,cancelled_at,slot_snapshot FROM booking WHERE order_id=${orderId} ORDER BY item_position`;
+  const eligibility = issueEligibility(order.state, visits.map((v) => ({ ...v, startsAt: v.starts_at, endsAt: v.ends_at, cancelledAt: v.cancelled_at })), now);
+  const stayed = eligibility.visits;
+  if (!eligibility.open)
+    throw issueError('ISSUE_WINDOW_CLOSED', 'Problems can be reported from confirmation until 30 days after checkout.', 409);
+  const problem = discoveryProblem(issue.discoveredAt, eligibility.firstStart, now);
+  if (problem) throw issueError('DISCOVERY_INVALID', problem === 'future' ? 'The discovery time cannot be in the future.' : 'Choose when you noticed it: not in the future and not before your stay.');
+  const affected = [];
+  const seen = new Set();
+  for (const item of issue.affected) {
+    const visit = stayed.find((v) => v.id === item.visitId);
+    const room = item.roomTypeId ? (visit?.slot_snapshot?.rooms || []).find((r) => String(r.roomTypeId) === item.roomTypeId) : null;
+    if (!visit || (item.roomTypeId && !room) || seen.has(item.visitId + ':' + item.roomTypeId))
+      throw issueError('AFFECTED_INVALID', 'Choose visits and rooms from this booking.');
+    seen.add(item.visitId + ':' + item.roomTypeId);
+    affected.push({ visitId: visit.id, visitReference: visit.reference, date: visit.day, roomTypeId: item.roomTypeId, roomName: room?.name || null });
+  }
+  const late = isLateReport(issue.discoveredAt, now);
+  if (late && (issue.lateReason?.length ?? 0) < 10)
+    throw issueError('LATE_REASON_REQUIRED', 'Tell us why this is being reported more than 72 hours after you found it (10 to 500 characters).');
+  return {
+    late,
+    context: {
+      issueType: issue.issueType,
+      discoveredAt: new Date(issue.discoveredAt).toISOString(),
+      affected,
+      remedy: issue.remedy,
+      remedyText: issue.remedy === 'other' ? issue.remedyText : null,
+      late,
+      lateReason: late ? issue.lateReason : null,
+    },
+  };
 }
 
 export async function replySupportRequest(

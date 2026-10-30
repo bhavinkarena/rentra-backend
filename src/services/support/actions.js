@@ -10,18 +10,31 @@ import {
   SupportError,
 } from './service.js';
 
+/** Story 4.1: each `affected` checkbox is a visit id, or `visitId|roomTypeId` for one hotel room line. */
+const stayIssueFields = (form) => ({
+  issueType: form.get('issueType'),
+  discoveredAt: form.get('discoveredAt'),
+  affected: form.getAll('affected').map((value) => {
+    const [visitId, roomTypeId = null] = String(value).split('|');
+    return { visitId, roomTypeId };
+  }),
+  remedy: form.get('remedy'),
+  remedyText: form.get('remedyText') || null,
+  lateReason: form.get('lateReason') || null,
+});
 async function open(kind, form) {
   const actor = await supportActor(kind);
   let result;
   try {
     result = await createSupportRequest(sql, actor, {
       category: form.get('category'),
-      subject: form.get('subject'),
+      subject: form.get('subject') || null,
       body: form.get('body'),
       orderId: form.get('orderId') || null,
       privacyRequestId: form.get('privacyRequestId') || null,
       propertyId: form.get('propertyId') || null,
       visitId: form.get('visitId') || null,
+      stayIssue: form.get('category') === 'stay_issue' ? stayIssueFields(form) : null,
       requestKey: form.get('requestKey'),
     }, process.env, form.getAll('photos'));
   } catch (error) {
