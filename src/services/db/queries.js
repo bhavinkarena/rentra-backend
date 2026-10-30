@@ -107,7 +107,12 @@ function toCard(row) {
     vertical: row.vertical ?? DEFAULT_VERTICAL,
     rentalUnit: row.rentalUnit ?? 'slot',
   };
-  if (row.vertical === 'hotel') return { ...card, ...hotelCardFields(row) };
+  if (row.rentalUnit === 'unit_night') return { ...card,
+    price: row.apartmentFromMinor == null ? null : Number(row.apartmentFromMinor) / 100,
+    priceWeekend: null,
+    priceNote: 'Per night for the whole apartment. Add dates for the total including cleaning and fees.',
+  };
+  if (row.vertical === 'hotel' && row.rentalUnit === 'night') return { ...card, ...hotelCardFields(row) };
   return row.rentalUnit === 'hour' ? { ...card, ...hourlyCardFields(row) } : card;
 }
 
@@ -137,6 +142,7 @@ const cardColumns = {
   // Time-booked venues only (NULL / empty for farmhouses): one subquery each, all index-backed.
   hourFromMinor: raw`(select min(rr.hourly_rate_minor) from rentable_rate rr where rr.rentable_id=${rentable.id})`.as('hour_from_minor'),
   hotelFromMinor: HOTEL_FROM_MINOR(rentable.id).as('hotel_from_minor'),
+  apartmentFromMinor: raw`(select least(ap.weekday_minor, ap.weekend_minor) from apartment_profile ap where ap.rentable_id=${rentable.id})`.as('apartment_from_minor'),
   starRating: raw`(select hp.star_rating from hotel_profile hp where hp.rentable_id=${rentable.id})`.as('star_rating'),
   hotelPolicies: raw`(select hp.policies from hotel_profile hp where hp.rentable_id=${rentable.id})`.as('hotel_policies'),
   resourceCount: raw`(select count(*)::int from rentable_resource rs where rs.rentable_id=${rentable.id} and rs.is_active)`.as('resource_count'),

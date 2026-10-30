@@ -354,6 +354,7 @@ export const rooms = asyncHandler(async (req, res) => {
         rooms: filters.rooms,
         adults: filters.adults,
         childAges: filters.children,
+        pets: filters.pets,
       }),
     );
   } catch (error) {

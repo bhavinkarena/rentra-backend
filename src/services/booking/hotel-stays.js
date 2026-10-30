@@ -6,6 +6,8 @@ import {
 } from '../domain/hotel.js';
 import { resolveInclusions } from '../domain/hotel-rooms.js';
 import { effectiveChildPolicy } from '../domain/child-policy.js';
+import { BOOKING_POLICY } from '../domain/booking-policy.js';
+import { applyBasisPoints } from '../domain/booking-money.js';
 import { quoteDigest } from './quotes.js';
 import { effectivePetPolicy, petChargeMinor, petDeclaration } from '../domain/pet-policy.js';
 import { expireInventoryHolds, withListingSnapshot } from './inventory.js';
@@ -19,6 +21,10 @@ import { expireInventoryHolds, withListingSnapshot } from './inventory.js';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const day = (value) => (value instanceof Date ? value.toISOString().slice(0, 10) : value);
 const int = (value) => (value == null ? null : Number(value));
+const publicPrice = (price, feeBps) => {
+  const feeMinor = applyBasisPoints(price.roomMinor + (price.petMinor ?? 0), feeBps);
+  return { ...price, feeMinor, totalMinor: price.totalMinor + feeMinor };
+};
 
 // Story 3.6: `childPolicy` is the effective { version, source, policy } this room quotes with.
 const roomTypeOf = (row, profile = null) => ({
@@ -61,7 +67,9 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
   if (!ids.length) return new Map();
   const [profiles, rooms, plans, overrides, nightRows, staleHolds, slabs] = await Promise.all([
     tx`SELECT p.rentable_id, p.check_in_minute, p.check_out_minute, p.child_free_age, p.weekend_nights, p.child_policy, p.child_policy_version, p.policies,
-        r.cancellation_policy AS hotel_policy
+        r.cancellation_policy AS hotel_policy,
+        (SELECT rate_bps FROM service_fee_setting s WHERE (s.owner_id=r.client_id OR s.owner_id IS NULL)
+          AND s.effective_at<=now() ORDER BY (s.owner_id IS NULL),s.effective_at DESC LIMIT 1) AS fee_bps
       FROM hotel_profile p JOIN rentable r ON r.id = p.rentable_id JOIN category c ON c.id = r.category_id
       WHERE p.rentable_id IN ${tx(ids)} AND c.vertical_code = 'hotel'`,
     tx`SELECT * FROM room_type WHERE rentable_id IN ${tx(ids)} AND is_active ORDER BY sort_order, name, id`,
@@ -108,6 +116,7 @@ async function loadHotels(tx, listings, checkIn, checkOut, now) {
     const listing = listings.find((l) => l.id === profile.rentable_id);
     result.set(listing.id, {
       listing,
+      feeBps: profile.fee_bps ?? BOOKING_POLICY.platformFeeBps,
       hotel: {
         checkInMinute: profile.check_in_minute, checkOutMinute: profile.check_out_minute,
         childFreeAge: profile.child_free_age, weekendNights: profile.weekend_nights.map(Number),
@@ -178,12 +187,14 @@ function partyPrice(data, nights, roomType, plan, party) {
  * per plan, the price for the party split over `rooms` rooms of that type (the
  * search card's split), or for one room at base occupancy without a party.
  */
-export async function getHotelAvailability(database, { rentableId, checkIn, checkOut, rooms = null, adults = null, childAges = [], now = new Date() }) {
+export async function getHotelAvailability(database, { rentableId, checkIn, checkOut, rooms = null, adults = null, childAges = [], pets = 0, now = new Date() }) {
   if (!UUID.test(rentableId ?? '')) throw new HotelError('NOT_FOUND', 'Hotel unavailable.');
   const nights = stayNights(checkIn, checkOut, now);
   const split = rooms ? splitParty({ rooms, adults, childAges }) : null;
   return withListingSnapshot(database, rentableId, async (tx, listing) => {
     const data = await loadHotel(tx, listing, checkIn, checkOut, new Date(now));
+    const { pets: petTerms } = petDeclaration(effectivePetPolicy(data.listing.pet_policy, data.petsLegacy), pets, nights.length,
+      (code, message) => new HotelError(code, message));
     const { startsAt } = stayInstants({ checkIn, checkOut, ...data.hotel });
     // Story 2.20: an overdue owner shows no bookable rooms; the reason stays generic for guests.
     const [{ stopped }] = await tx`SELECT owner_repayment_overdue(${listing.client_id}) stopped`;
@@ -199,7 +210,10 @@ export async function getHotelAvailability(database, { rentableId, checkIn, chec
             const terms = cancellationTerms(plan, startsAt);
             const base = { id: plan.id, name: plan.name, mealPlan: plan.mealPlan, adults: party[0].adults, terms };
             try {
-              return { ...base, bookable: available >= party.length, ...partyPrice(data, nights, roomType, plan, party) };
+              const price = partyPrice(data, nights, roomType, plan, party);
+              return { ...base, bookable: available >= party.length,
+                ...publicPrice({ ...price,
+                  ...(petTerms ? { petMinor: petTerms.totalMinor, totalMinor: price.totalMinor + petTerms.totalMinor } : {}) }, data.feeBps) };
             } catch (error) {
               if (!(error instanceof HotelError)) throw error;
               return { ...base, bookable: false, reason: error.code, message: error.message };
@@ -251,8 +265,11 @@ function buildQuote(data, { checkIn, checkOut, rooms, pets = 0 }, now) {
 export async function quoteHotelStay(database, { rentableId, checkIn, checkOut, rooms, pets, now = new Date() }) {
   if (!UUID.test(rentableId ?? '')) throw new HotelError('NOT_FOUND', 'Hotel unavailable.');
   return withListingSnapshot(database, rentableId, async (tx, listing) => {
-    const quote = buildQuote(await loadHotel(tx, listing, checkIn, checkOut, new Date(now)), { checkIn, checkOut, rooms, pets }, now);
-    return { ...quote, expiresAt: new Date(new Date(now).getTime() + HOTEL_POLICY.holdMinutes * 60_000).toISOString() };
+    const data = await loadHotel(tx, listing, checkIn, checkOut, new Date(now));
+    const quote = buildQuote(data, { checkIn, checkOut, rooms, pets }, now);
+    // Keep the room-inventory hash used by holdHotelRooms; persisted checkout separately binds the fee rate.
+    return { ...quote, totals: publicPrice(quote.totals, data.feeBps),
+      expiresAt: new Date(new Date(now).getTime() + HOTEL_POLICY.holdMinutes * 60_000).toISOString() };
   });
 }
 
@@ -381,6 +398,8 @@ export async function hotelSearchOffers(database, listings, { checkIn, checkOut,
     const offers = new Map();
     for (const [id, data] of all) {
       const { startsAt } = stayInstants({ checkIn, checkOut, ...data.hotel });
+      const policy = effectivePetPolicy(data.listing.pet_policy, data.petsLegacy);
+      const petMinor = pets && policy.status === 'allowed' && pets <= policy.maxPets ? petChargeMinor(policy, pets, nights.length) : 0;
       let best = null;
       for (const roomType of data.roomTypes) {
         const { available } = availabilityFor(data, roomType, nights);
@@ -394,6 +413,7 @@ export async function hotelSearchOffers(database, listings, { checkIn, checkOut,
           let price;
           try {
             price = partyPrice(data, nights, roomType, plan, party);
+            price = publicPrice({ ...price, ...(petMinor ? { petMinor, totalMinor: price.totalMinor + petMinor } : {}) }, data.feeBps);
           } catch (error) {
             if (error instanceof HotelError) continue;
             throw error;
@@ -407,10 +427,6 @@ export async function hotelSearchOffers(database, listings, { checkIn, checkOut,
           }
         }
       }
-      // Story 3.9: the card total includes the declared pets' charge (the search filter already dropped refusals).
-      const policy = effectivePetPolicy(data.listing.pet_policy, data.petsLegacy);
-      const petMinor = pets && policy.status === 'allowed' && pets <= policy.maxPets ? petChargeMinor(policy, pets, nights.length) : 0;
-      if (best && petMinor) Object.assign(best, { petMinor, totalMinor: best.totalMinor + petMinor });
       if (best) offers.set(id, best);
     }
     return offers;

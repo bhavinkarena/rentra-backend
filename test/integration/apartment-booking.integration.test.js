@@ -634,7 +634,14 @@ test(
         assert.ok(
           (await getDiscoveryRegistry(sql)).categories.some((c) => c.slug === 'whole-apartment'),
         );
-        assert.ok(await getListingByCode('apt31100'));
+        const detail = await getListingByCode('apt31100');
+        assert.equal(
+          detail.rentalUnit,
+          'unit_night',
+          'public detail must render whole-unit booking',
+        );
+        assert.equal(detail.price, 5000, 'undated price comes from the apartment profile');
+        assert.ok(detail.apartment);
         const a = on(220, 2);
         const search = (checkin, checkout, extra = {}) =>
           searchDiscovery(

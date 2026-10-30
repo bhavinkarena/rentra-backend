@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
-import { seedHotel } from '../helpers/hotel-fixture.js';
+import { seedHotel, seedCustomer } from '../helpers/hotel-fixture.js';
 import { addLocalDays, propertyToday } from '../../src/services/domain/booking-dates.js';
 import { parseDiscoveryQuery } from '../../src/services/domain/discovery.js';
 import { pointHex } from '../../src/services/domain/geo.js';
@@ -78,52 +78,110 @@ test('Phase 6: hotel discovery', { skip: !process.env.PORTAL_TEST_DATABASE_URL }
   });
 
   await t.test('dated search prices the party; card = page = quote', async () => {
-    const result = await search({
-      city: 'surat',
-      checkin,
-      checkout,
-      rooms: '2',
-      adults: '3',
-      children: '7',
+    const { createStayQuote } = await import('@/services/booking/hotel-checkout.js');
+    const { setPaymentGatewayConfiguration } =
+      await import('@/services/payments/gateway-settings.js');
+    Object.assign(process.env, {
+      NODE_ENV: 'test',
+      RAZORPAY_KEY_ID: 'rzp_test_DISCOVERY',
+      RAZORPAY_KEY_SECRET: 'discovery-fixture-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'discovery-fixture-webhook',
     });
-    assert.equal(result.total, 3);
-    const card = result.items.find((item) => item.id === a.hotel);
-    assert.equal(card.isFromPrice, false);
-    assert.ok(card.offer.roomTypeName);
-    assert.match(
-      card.href,
-      new RegExp(`checkin=${checkin}&checkout=${checkout}&rooms=2&adults=3&children=7`),
+    await setPaymentGatewayConfiguration(
+      sql,
+      {
+        actorId: a.admin,
+        expectedVersion: 0,
+        provider: 'razorpay',
+        environment: 'test',
+        enabled: true,
+        collectionPurpose: 'advance',
+      },
+      process.env,
     );
-    const page = await getHotelAvailability(sql, {
-      rentableId: a.hotel,
-      checkIn: checkin,
-      checkOut: checkout,
-      rooms: 2,
-      adults: 3,
-      childAges: [7],
-    });
-    const plans = page.roomTypes.flatMap((room) => room.plans.filter((plan) => plan.bookable));
-    const cheapest = Math.min(...plans.map((plan) => plan.totalMinor));
-    assert.equal(
-      cheapest,
-      card.priceMinor,
-      'card total equals the cheapest bookable plan on the page',
-    );
-    const roomType = page.roomTypes.find((room) =>
-      room.plans.some((plan) => plan.totalMinor === cheapest),
-    );
-    const plan = roomType.plans.find((row) => row.totalMinor === cheapest);
-    const quote = await quoteHotelStay(sql, {
-      rentableId: a.hotel,
-      checkIn: checkin,
-      checkOut: checkout,
-      rooms: page.party.map((guests) => ({
-        roomTypeId: roomType.id,
-        ratePlanId: plan.id,
-        ...guests,
-      })),
-    });
-    assert.equal(quote.totals.totalMinor, card.priceMinor, 'quote total equals the card');
+    const customerId = await seedCustomer(sql);
+    // Exercise the independent public fee SQL against checkout's authoritative resolver.
+    for (const [owner, bps, future, expectedBps] of [
+      [null, 500, false, 500],
+      [null, 700, false, 700],
+      [null, 1100, true, 700],
+      [a.owner, 1200, true, 700],
+      [a.owner, 300, false, 300],
+      [a.owner, 0, false, 0],
+      [a.owner, 1300, true, 0],
+    ]) {
+      await sql`INSERT INTO service_fee_setting(owner_id,rate_bps,effective_at,reason)
+        VALUES (${owner},${bps},clock_timestamp()+${future ? '1 day' : '0 seconds'}::interval,'Discovery fee regression')`;
+      const result = await search({
+        city: 'surat',
+        checkin,
+        checkout,
+        rooms: '2',
+        adults: '3',
+        children: '7',
+      });
+      assert.equal(result.total, 3);
+      const card = result.items.find((item) => item.id === a.hotel);
+      assert.equal(card.isFromPrice, false);
+      assert.ok(card.offer.roomTypeName);
+      assert.match(
+        card.href,
+        new RegExp(`checkin=${checkin}&checkout=${checkout}&rooms=2&adults=3&children=7`),
+      );
+      const page = await getHotelAvailability(sql, {
+        rentableId: a.hotel,
+        checkIn: checkin,
+        checkOut: checkout,
+        rooms: 2,
+        adults: 3,
+        childAges: [7],
+      });
+      const plans = page.roomTypes.flatMap((room) => room.plans.filter((plan) => plan.bookable));
+      const cheapest = Math.min(...plans.map((plan) => plan.totalMinor));
+      assert.equal(
+        cheapest,
+        card.priceMinor,
+        'card total equals the cheapest bookable plan on the page',
+      );
+      const roomType = page.roomTypes.find((room) =>
+        room.plans.some((plan) => plan.totalMinor === cheapest),
+      );
+      const plan = roomType.plans.find((row) => row.totalMinor === cheapest);
+      const selection = {
+        rentableId: a.hotel,
+        checkIn: checkin,
+        checkOut: checkout,
+        rooms: page.party.map((guests) => ({
+          roomTypeId: roomType.id,
+          ratePlanId: plan.id,
+          ...guests,
+        })),
+      };
+      const quote = await quoteHotelStay(sql, selection);
+      assert.equal(quote.totals.totalMinor, card.priceMinor, 'quote total equals the card');
+      const persisted = await createStayQuote(sql, selection, { customerId });
+      assert.equal(
+        persisted.totals.feeMinor,
+        Math.round((persisted.totals.roomMinor * expectedBps) / 10000),
+      );
+      assert.equal(
+        persisted.totals.totalMinor,
+        card.priceMinor,
+        `checkout agrees at ${expectedBps}bps`,
+      );
+      assert.equal(quote.totals.feeMinor, persisted.totals.feeMinor);
+      const [saved] =
+        await sql`SELECT amount_rent_minor+amount_fee_minor AS total,policy_snapshot FROM booking_quote WHERE id=${persisted.id}`;
+      assert.equal(
+        Number(saved.total),
+        card.priceMinor,
+        'saved checkout quote agrees with public surfaces',
+      );
+      assert.equal(saved.policy_snapshot.pricing.platformFeeBps, expectedBps);
+    }
+    // Restore launch pricing for the later pet assertions without mutating immutable history.
+    await sql`INSERT INTO service_fee_setting(owner_id,rate_bps,effective_at,reason)
+      VALUES (${a.owner},500,clock_timestamp(),'Restore discovery fixture')`;
   });
 
   await t.test('filters: free cancellation, breakfast, couples, rating, budget', async () => {
@@ -175,7 +233,44 @@ test('Phase 6: hotel discovery', { skip: !process.env.PORTAL_TEST_DATABASE_URL }
       const priced = (await search({ city: 'surat', checkin, checkout, pets: '1' })).items.find(
         (i) => i.id === a.hotel,
       );
-      assert.equal(priced.priceMinor, before.priceMinor + 50000);
+      assert.equal(
+        priced.priceMinor,
+        before.priceMinor + 52500,
+        'pet charge plus its 5% service fee',
+      );
+      const available = (pets = 0) =>
+        getHotelAvailability(sql, {
+          rentableId: a.hotel,
+          checkIn: checkin,
+          checkOut: checkout,
+          rooms: 1,
+          adults: 2,
+          pets,
+        });
+      const basePlan = (await available()).roomTypes
+        .find((r) => r.id === a.deluxe)
+        .plans.find((p) => p.id === a.deluxeBase);
+      const petPlan = (await available(1)).roomTypes
+        .find((r) => r.id === a.deluxe)
+        .plans.find((p) => p.id === a.deluxeBase);
+      assert.equal(petPlan.totalMinor, basePlan.totalMinor + 52500);
+      assert.equal(petPlan.feeMinor, Math.round((petPlan.roomMinor + 50000) * 0.05));
+      assert.equal(petPlan.taxMinor, basePlan.taxMinor, 'pet fee does not change room tax');
+      await assert.rejects(available(3), (error) => error.code === 'PETS_OVER_LIMIT');
+      const { stayQuoteBody } = await import('../../src/validations/discovery.validation.js');
+      const input = {
+        checkIn: checkin,
+        checkOut: checkout,
+        pets: 1,
+        rooms: [{ roomTypeId: a.deluxe, ratePlanId: a.deluxeBase, adults: 2, childAges: [] }],
+      };
+      const accepted = stayQuoteBody.parse(input);
+      assert.equal(accepted.pets, 1, 'HTTP validator must retain declared pets');
+      assert.equal(
+        (await quoteHotelStay(sql, { rentableId: a.hotel, ...accepted })).totals.totalMinor,
+        petPlan.totalMinor,
+      );
+      assert.equal(stayQuoteBody.safeParse({ ...input, pets: 6 }).success, false);
       // Legacy: no saved policy, the yes flag allows one pet.
       await sql`UPDATE rentable SET pet_policy=NULL WHERE id=${c.hotel}`;
       await sql`UPDATE hotel_profile SET policies=policies || '{"pets":true}'::jsonb WHERE rentable_id=${c.hotel}`;

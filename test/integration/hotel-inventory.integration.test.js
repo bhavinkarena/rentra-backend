@@ -152,9 +152,10 @@ test('hotel inventory: schema, pricing, holds, overbooking and expiry', { skip }
     assert.deepEqual(
       room.plans.map((p) => [p.name, p.totalMinor]),
       [
-        ['Room only', 260000 + 300000 + 13000 + 15000],
-        ['Breakfast included', 310000 + 350000 + 15500 + 17500],
-        ['Non-refundable', 234000 + 270000 + 11700 + 13500],
+        // Room rent + GST + the existing 5% service fee on room rent (never GST).
+        ['Room only', 260000 + 300000 + 13000 + 15000 + 28000],
+        ['Breakfast included', 310000 + 350000 + 15500 + 17500 + 33000],
+        ['Non-refundable', 234000 + 270000 + 11700 + 13500 + 25200],
       ],
     );
     assert.equal(
@@ -174,7 +175,11 @@ test('hotel inventory: schema, pricing, holds, overbooking and expiry', { skip }
       ],
       '3 adults: +₹700 extra adult, +₹250 breakfast each; the 4-year-old is free',
     );
-    assert.equal(quote.totals.totalMinor, quote.lines[0].roomMinor + quote.lines[0].taxMinor);
+    assert.equal(quote.totals.feeMinor, 42500, '5% of ₹8,500 room rent, excluding tax');
+    assert.equal(
+      quote.totals.totalMinor,
+      quote.lines[0].roomMinor + quote.lines[0].taxMinor + 42500,
+    );
     await rejectsWith(
       quoteHotelStay(sql, {
         rentableId: fixture.hotel,

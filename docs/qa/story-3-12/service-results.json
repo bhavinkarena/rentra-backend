@@ -1,0 +1,47 @@
+[
+  {
+    "source": "service",
+    "name": "apartment pet and cleaning extras have authoritative amounts",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "apartment pet limit refuses quote",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "accepted hold replay creates one order",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "held whole unit and turnover cannot be quoted again",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "fake Test capture confirms apartment",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "record preserves cleaning charge and refuses another identity",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "booked dates protected from owner block",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "cancellation reconciles accepted total and releases inventory",
+    "ok": true
+  },
+  {
+    "source": "service",
+    "name": "partial unblock retains other nights; stale save refused",
+    "ok": true
+  }
+]
