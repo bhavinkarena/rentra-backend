@@ -8,6 +8,8 @@ import {
   openOwnerSupport,
   replyOwnerSupport,
   manageSupport,
+  previewRemedy,
+  decideRemedy,
 } from '@/services/support/actions.js';
 import {
   listSupportRequests,
@@ -72,3 +74,5 @@ export const attachment = asyncHandler(async (req, res) => {
   });
   return Readable.fromWeb(file.body).pipe(res);
 });
+export const remedyPreview = runAction(previewRemedy);
+export const remedyDecide = runAction(decideRemedy);

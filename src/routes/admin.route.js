@@ -349,6 +349,19 @@ router.get('/operations/incidents/:code', admin.incident);
 router.post('/operations/incidents/:code', formFields(), admin.incidentCommand);
 
 router.get('/support/:id/attachments/:attachmentId', support.attachment);
+for (const [path, handler] of [
+  ['remedy/preview', support.remedyPreview],
+  ['remedy/decide', support.remedyDecide],
+])
+  router.post(
+    `/support/:id/${path}`,
+    formFields(),
+    (req, res, next) => {
+      req.body = { ...(req.body || {}), id: req.params.id };
+      next();
+    },
+    handler,
+  );
 router.post(
   '/support/:id/manage',
   formFields(),

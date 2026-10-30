@@ -10,6 +10,7 @@ import {
   manageSupportRequest,
   SupportError,
 } from './service.js';
+import { previewIncidentRemedy, decideIncidentRemedy } from './remedy.js';
 
 /** Story 4.1: each `affected` checkbox is a visit id, or `visitId|roomTypeId` for one hotel room line. */
 const stayIssueFields = (form) => ({
@@ -125,4 +126,38 @@ export async function manageSupport(previous, form) {
     if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };
     throw error;
   }
+}
+
+/* Story 4.4: incident remedy preview and reviewed decision. Refusals return the fresh preview on PREVIEW_CHANGED. */
+const remedyFields = (form) => ({
+  supportRequestId: form.get('id'),
+  // Absent visitIds = the reported visits; an empty or missing % stays undefined so validation refuses it.
+  visitIds: form.has('visitIds') ? form.getAll('visitIds').map(String).filter(Boolean) : undefined,
+  targetPct: form.get('targetPct') || undefined,
+  responsibility: form.get('responsibility') || undefined,
+});
+async function remedyCall(run) {
+  try {
+    return await run();
+  } catch (error) {
+    if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };
+    if (error.isOperational && error.code !== 'NOT_FOUND')
+      return { error: error.message, code: error.code, status: error.statusCode, ...(error.preview ? { preview: error.preview } : {}) };
+    throw error;
+  }
+}
+export async function previewRemedy(previous, form) {
+  return remedyCall(async () => ({ preview: await previewIncidentRemedy(sql, await supportActor('admin'), remedyFields(form)) }));
+}
+export async function decideRemedy(previous, form) {
+  return remedyCall(async () => {
+    const decision = await decideIncidentRemedy(sql, await supportActor('admin'), {
+      ...remedyFields(form),
+      kind: form.get('kind'),
+      reason: form.get('reason'),
+      digest: form.get('digest') || undefined,
+      requestKey: form.get('requestKey'),
+    });
+    return { decision, message: 'Decision saved. No money moves until Story 4.5 execution.' };
+  });
 }

@@ -41,7 +41,7 @@ async function requireAdmin(tx, actor) {
 }
 
 /** One row per refund obligation with its payment, booking and execution. */
-function ledger(tx) {
+export function ledger(tx) {
   return tx`SELECT r.id,r.reference,r.provider,r.environment::text environment,r.mode::text mode,r.currency,
       r.state::text state,r.reason,r.expected_minor,r.actual_minor,r.provider_refund_id,r.created_at,r.completed_at,r.verified_at,
       x.dispatched_at,x.next_check_at,x.failure_code,

@@ -1,5 +1,4 @@
 import 'server-only';
-import { AppError } from '../../utils/apiError.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { lockCustomerAccount } from '../auth/customer-access.js';
@@ -8,13 +7,11 @@ import { publicContent } from '../content/service.js';
 import { preparePhotos } from '../booking/visit-evidence.js';
 import { raiseAdminAlert } from '../admin/admin-alerts.js';
 import { evidenceStore } from '../uploads/evidence-store.js';
+import { decisionView, remedyCaps } from './remedy.js';
 import { ISSUE_TYPES, REMEDIES, ISSUE_LABELS, issuePriority, isLateReport, discoveryProblem, issueEligibility } from '../domain/stay-issue.js';
 
-export class SupportError extends AppError {
-  constructor(code, message = code, statusCode = 409) {
-    super(message, statusCode, { code });
-  }
-}
+import { SupportError } from './errors.js';
+export { SupportError };
 const uuid = z.string().uuid(),
   body = z.string().trim().min(2).max(5000);
 const categories = ['booking', 'change', 'cancellation', 'payment', 'privacy', 'other', 'verification', 'account', 'property', 'calendar', 'earnings', 'stay_issue'];
@@ -443,6 +440,11 @@ export async function readSupportRequest(database, actor, id, env = process.env)
     const [staff] = admin
       ? await tx`SELECT permissions FROM admin_user WHERE id=${actorId} AND is_active=true`
       : [];
+    // Story 4.4: the active reviewed remedy decision; controls only with payments access.
+    const [decision] = admin && row.category === 'stay_issue'
+      ? await tx`SELECT * FROM incident_remedy_decision WHERE support_request_id=${row.id} AND superseded_at IS NULL`
+      : [];
+    const caps = remedyCaps(staff);
     const history = admin
       ? await tx`SELECT action,at,"after" FROM audit_log WHERE entity='support_request' AND entity_id=${row.id} ORDER BY at,id`
       : [];
@@ -453,6 +455,9 @@ export async function readSupportRequest(database, actor, id, env = process.env)
         ? {
             operators,
             history,
+            remedy: row.category === 'stay_issue' && row.order_id
+              ? { decision: decision ? decisionView(decision) : null, canPreview: caps.canPreview, canDecide: caps.canDecide }
+              : null,
             canReply:
               !!staff &&
               (staff.permissions == null ||
