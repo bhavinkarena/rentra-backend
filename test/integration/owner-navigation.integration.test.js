@@ -66,7 +66,6 @@ test(
               body: 'Please confirm the document type.',
               state: 'waiting_customer',
               requestKey: randomUUID(),
-              internal: false,
             },
           );
       }

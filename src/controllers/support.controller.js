@@ -4,6 +4,7 @@ import {
   openSupport,
   replyCustomerSupport,
   replyAdminSupport,
+  noteAdminSupport,
   openOwnerSupport,
   replyOwnerSupport,
   manageSupport,
@@ -49,6 +50,7 @@ export const thread = asyncHandler(async (req, res) =>
 export const open = runAction(openSupport);
 export const replyAsCustomer = runAction(replyCustomerSupport);
 export const replyAsAdmin = runAction(replyAdminSupport);
+export const noteAsAdmin = runAction(noteAdminSupport);
 
 export const openAsOwner = runAction(openOwnerSupport);
 export const replyAsOwner = runAction(replyOwnerSupport);

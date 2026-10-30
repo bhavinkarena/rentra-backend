@@ -310,6 +310,16 @@ router.post(
   },
   support.replyAsAdmin,
 );
+router.post(
+  '/support/:id/note',
+  uploadLimiter,
+  evidencePhotos(),
+  (req, res, next) => {
+    req.body.id = req.params.id;
+    next();
+  },
+  support.noteAsAdmin,
+);
 
 router.get('/notifications', notifications.monitor);
 router.get('/notifications/:id', notifications.detail);

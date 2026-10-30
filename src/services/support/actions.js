@@ -6,6 +6,7 @@ import { sql } from '../db/index.js';
 import {
   createSupportRequest,
   replySupportRequest,
+  addSupportNote,
   manageSupportRequest,
   SupportError,
 } from './service.js';
@@ -58,7 +59,6 @@ async function reply(kind, form) {
         state: form.get('state'),
         version: Number(form.get('version')),
         requestKey: form.get('requestKey'),
-        internal: form.get('internal') === 'true',
       },
       process.env,
       form.getAll('photos'),
@@ -67,7 +67,7 @@ async function reply(kind, form) {
       revalidatePath(base);
       revalidatePath(`${base}/${result.id}`);
     }
-    return { message: 'Reply saved. The conversation status is updated.' };
+    return { message: 'Posted to the support case.' };
   } catch (error) {
     if (error instanceof SupportError) throw error;
     if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };
@@ -79,6 +79,24 @@ export async function replyCustomerSupport(previous, form) {
 }
 export async function replyAdminSupport(previous, form) {
   return reply('admin', form);
+}
+export async function noteAdminSupport(previous, form) {
+  try {
+    const result = await addSupportNote(
+      sql,
+      await supportActor('admin'),
+      { id: form.get('id'), body: form.get('body'), requestKey: form.get('requestKey') },
+      process.env,
+      form.getAll('photos'),
+    );
+    revalidatePath('/admin/support');
+    revalidatePath('/admin/support/' + result.id);
+    return { message: 'Private note saved. Only Rentra admins can see it.' };
+  } catch (error) {
+    if (error instanceof SupportError) throw error;
+    if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };
+    throw error;
+  }
 }
 
 export async function openSupport(previous, form) {

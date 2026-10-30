@@ -6,6 +6,7 @@ import { seedReviewFixture, seedConfirmedBooking } from '../helpers/listing-revi
 import {
   createSupportRequest,
   replySupportRequest,
+  addSupportNote,
   readSupportRequest,
   listSupportRequests,
   manageSupportRequest,
@@ -79,13 +80,10 @@ test(
         });
       const note = {
         id,
-        version: 1,
         body: 'Internal investigation: never disclose to either participant.',
-        state: 'resolved',
-        internal: true,
         requestKey: randomUUID(),
       };
-      await replySupportRequest(sql, admin, note, process.env, [png()], store);
+      await addSupportNote(sql, admin, note, process.env, [png()], store);
       const privateRecord = await readSupportRequest(sql, admin, id),
         publicRecord = await readSupportRequest(sql, owner, id);
       assert.equal(privateRecord.messages.length, 2);
@@ -113,7 +111,7 @@ test(
         replySupportRequest(
           sql,
           owner,
-          { ...note, version: 2, requestKey: randomUUID() },
+          { ...note, state: 'in_progress', version: 1, requestKey: randomUUID() },
           process.env,
           [],
           store,
@@ -122,7 +120,7 @@ test(
       );
       const reply = {
         id,
-        version: 2,
+        version: 1,
         body: 'Client-visible reply with a private photo.',
         state: 'waiting_customer',
         requestKey: randomUUID(),
@@ -159,15 +157,15 @@ test(
         replySupportRequest(
           sql,
           owner,
-          { ...reply, version: 3, state: 'open', requestKey: randomUUID() },
+          { ...reply, version: 2, state: 'open', requestKey: randomUUID() },
           process.env,
           [new File(['<script>bad</script>'], 'fake.png', { type: 'image/png' })],
           store,
         ),
         { code: 'INVALID_ATTACHMENT' },
       );
-      assert.equal((await readSupportRequest(sql, owner, id)).version, 3);
-      const closing = { ...reply, version: 3, state: 'resolved', requestKey: randomUUID() };
+      assert.equal((await readSupportRequest(sql, owner, id)).version, 2);
+      const closing = { ...reply, version: 2, state: 'resolved', requestKey: randomUUID() };
       await replySupportRequest(sql, owner, closing, process.env, [], store);
       assert.equal((await readSupportRequest(sql, owner, id)).state, 'resolved');
       assert.equal(

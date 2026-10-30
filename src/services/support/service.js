@@ -34,6 +34,7 @@ const stayIssue = z
   .refine((v) => v.remedy !== 'other' || v.remedyText?.length >= 1, { path: ['remedyText'], message: 'Describe the fix you want.' });
 const states = ['open', 'in_progress', 'waiting_customer', 'resolved'];
 const missing = () => new SupportError('NOT_FOUND', 'Support request not found.', 404);
+// mode: false=read, true=write, 'note'=read or write (Story 4.3).
 async function authorize(tx, actor, env, write = false) {
   if (actor?.kind === 'customer') return (await lockCustomerAccount(tx, actor.session, env)).id;
   if (actor?.kind === 'owner' && uuid.safeParse(actor.id).success) {
@@ -47,7 +48,9 @@ async function authorize(tx, actor, env, write = false) {
     if (
       staff &&
       (staff.permissions == null ||
-        staff.permissions.includes(`admin.support.${write ? 'write' : 'read'}`))
+        (write === 'note'
+          ? ['admin.support.read', 'admin.support.write'].some((p) => staff.permissions.includes(p))
+          : staff.permissions.includes(`admin.support.${write ? 'write' : 'read'}`)))
     )
       return staff.id;
   }
@@ -282,19 +285,32 @@ export async function replySupportRequest(
       state: z.enum(states),
       version: z.number().int().nonnegative(),
       requestKey: uuid,
-      internal: z.boolean().default(false),
     })
     .strict()
     .parse(input);
-  if (actor.kind !== 'admin' && (value.internal || !['open', 'resolved'].includes(value.state)))
-    throw new SupportError(
-      'INVALID_STATE',
-      'Only support staff can set this visibility or status.',
-      403,
-    );
+  if (actor.kind !== 'admin' && !['open', 'resolved'].includes(value.state))
+    throw new SupportError('INVALID_STATE', 'Only support staff can set this status.', 403);
+  return postMessage(database, actor, value, false, env, files, store);
+}
+
+/** Story 4.3: private admin note. Needs only support read; never changes case state, version or timestamps. */
+export async function addSupportNote(
+  database,
+  actor,
+  input,
+  env = process.env,
+  files = [],
+  store = evidenceStore(),
+) {
+  if (actor?.kind !== 'admin') throw missing();
+  const value = z.object({ id: uuid, body, requestKey: uuid }).strict().parse(input);
+  return postMessage(database, actor, value, true, env, files, store);
+}
+
+async function postMessage(database, actor, value, internal, env, files, store) {
   // Authorize before storage; recheck under the case lock before persisting.
   await database.begin(async (tx) =>
-    owned(tx, actor, await authorize(tx, actor, env, true), value.id),
+    owned(tx, actor, await authorize(tx, actor, env, internal ? 'note' : true), value.id),
   );
   let photos;
   try {
@@ -303,9 +319,9 @@ export async function replySupportRequest(
     if (error.code === 'INVALID_ATTACHMENT') throw new SupportError(error.code, error.message, 422);
     throw error;
   }
-  const hash = quoteDigest({ ...value, photos: photos.map((p) => p.sha256) });
+  const hash = quoteDigest({ ...value, internal, photos: photos.map((p) => p.sha256) });
   return database.begin(async (tx) => {
-    const actorId = await authorize(tx, actor, env, true);
+    const actorId = await authorize(tx, actor, env, internal ? 'note' : true);
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${actor.kind + actorId + value.requestKey},0))`;
     const request = await owned(tx, actor, actorId, value.id, true);
     const [existing] =
@@ -320,8 +336,7 @@ export async function replySupportRequest(
         'Photo storage is unavailable. Your message has not been saved.',
         503,
       );
-
-    if (value.version !== request.version)
+    if (!internal && value.version !== request.version)
       throw new SupportError(
         'STALE_REQUEST',
         'This conversation changed. Reload and review the latest version before sending.',
@@ -334,9 +349,9 @@ export async function replySupportRequest(
       await tx`SELECT count(*)::int n FROM support_attachment a JOIN support_message m ON m.id=a.message_id WHERE m.request_id=${request.id}`;
     if (n + photos.length > 30)
       throw new SupportError('ATTACHMENT_LIMIT', 'This conversation can hold 30 photos.', 422);
-    const state = value.internal ? request.state : value.state;
+    const state = internal ? request.state : value.state;
     const [message] =
-      await tx`INSERT INTO support_message(request_id,actor_kind,actor_id,body,state_after,request_key,request_hash,internal) VALUES(${request.id},${actor.kind},${actorId},${value.body},${state},${value.requestKey},${hash},${value.internal}) RETURNING id`;
+      await tx`INSERT INTO support_message(request_id,actor_kind,actor_id,body,state_after,request_key,request_hash,internal) VALUES(${request.id},${actor.kind},${actorId},${value.body},${state},${value.requestKey},${hash},${internal}) RETURNING id`;
     for (const photo of photos) {
       const saved = await store.put({
         folder: `rentra/support/${request.id}/${value.requestKey}`,
@@ -346,18 +361,18 @@ export async function replySupportRequest(
       });
       await tx`INSERT INTO support_attachment(message_id,storage_key,mime_type,bytes,sha256) VALUES(${message.id},${saved.key},${photo.mime},${photo.bytes},${photo.sha256})`;
     }
-    // Story 4.2: only the first public admin reply counts as the first human response.
-    const responded = actor.kind === 'admin' && !value.internal;
-    await tx`UPDATE support_request SET state=${state},version=version+1,
-      first_response_at=${responded ? tx`coalesce(first_response_at, clock_timestamp())` : tx`first_response_at`},updated_at=clock_timestamp() WHERE id=${request.id}`;
+    // Notes leave support_request untouched (updated_at drives guest "new reply" cues).
+    if (!internal) {
+      // Story 4.2: only the first public admin reply counts as the first human response.
+      const responded = actor.kind === 'admin';
+      await tx`UPDATE support_request SET state=${state},version=version+1,
+        first_response_at=${responded ? tx`coalesce(first_response_at, clock_timestamp())` : tx`first_response_at`},updated_at=clock_timestamp() WHERE id=${request.id}`;
+    }
     if (actor.kind === 'admin')
-      await audit(
-        tx,
-        actor,
-        request.id,
-        value.internal ? 'support_internal_note' : 'support_reply',
-        { state, internal: value.internal },
-      );
+      await audit(tx, actor, request.id, internal ? 'support_internal_note' : 'support_reply', {
+        ...(internal ? {} : { state }),
+        internal,
+      });
     return { id: request.id };
   });
 }
@@ -425,6 +440,9 @@ export async function readSupportRequest(database, actor, id, env = process.env)
       ? await tx`SELECT a.id, a.kind, a.email_state, a.email_failure, a.created_at, u.name admin_name
           FROM admin_alert a JOIN admin_user u ON u.id=a.admin_id WHERE a.support_request_id=${row.id} ORDER BY a.created_at, u.name`
       : [];
+    const [staff] = admin
+      ? await tx`SELECT permissions FROM admin_user WHERE id=${actorId} AND is_active=true`
+      : [];
     const history = admin
       ? await tx`SELECT action,at,"after" FROM audit_log WHERE entity='support_request' AND entity_id=${row.id} ORDER BY at,id`
       : [];
@@ -435,6 +453,11 @@ export async function readSupportRequest(database, actor, id, env = process.env)
         ? {
             operators,
             history,
+            canReply:
+              !!staff &&
+              (staff.permissions == null ||
+                (Array.isArray(staff.permissions) &&
+                  staff.permissions.includes('admin.support.write'))),
             alerts: alerts.map((a) => ({
               id: a.id,
               kind: a.kind,

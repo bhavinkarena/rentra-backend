@@ -6,6 +6,7 @@ import { seedReviewFixture, seedConfirmedBooking } from '../helpers/listing-revi
 import {
   createSupportRequest,
   replySupportRequest,
+  addSupportNote,
   readSupportRequest,
   listSupportRequests,
 } from '../../src/services/support/service.js';
@@ -78,14 +79,16 @@ test(
       // Internal note does not count; a public reply sets first_response_at once.
       const reply = async (id, internal) => {
         const [r] = await sql`SELECT version FROM support_request WHERE id=${id}`;
-        await replySupportRequest(sql, admin, {
+        const input = {
           id,
           body: 'Looking into it.',
           state: 'in_progress',
           version: r.version,
           requestKey: randomUUID(),
-          internal,
-        });
+        };
+        await (internal
+          ? addSupportNote(sql, admin, { id, body: input.body, requestKey: input.requestKey })
+          : replySupportRequest(sql, admin, input));
         return (await sql`SELECT first_response_at FROM support_request WHERE id=${id}`)[0]
           .first_response_at;
       };
