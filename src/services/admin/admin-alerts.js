@@ -15,8 +15,18 @@ const TITLES = {
   property_resubmitted: (d) => `Owner resubmitted “${d.title}” (pass ${d.pass})`,
   correction_unanswered: (d) =>
     `Correction unanswered for ${d.days} days: “${d.title}” (pass ${d.pass})`,
+  support_urgent: (d) => `Urgent stay issue ${d.reference}: ${d.subject}`,
+  support_unanswered: (d) => `No reply after ${d.hours} h: ${d.reference} (${d.priority})`,
 };
 export const alertTitle = (row) => TITLES[row.kind]?.(row.detail ?? {}) ?? 'Rentra review alert';
+
+/** Story 4.2: every active admin with support read and write access (null permissions = full access). */
+async function supportRecipients(tx) {
+  const ids = (await tx`SELECT id FROM admin_user WHERE is_active
+    AND (permissions IS NULL OR permissions @> '["admin.support.read","admin.support.write"]'::jsonb)`).map((r) => r.id);
+  // Nobody holds support access: alert every active admin rather than nobody.
+  return ids.length ? ids : (await tx`SELECT id FROM admin_user WHERE is_active`).map((r) => r.id);
+}
 
 async function recipients(tx, assignedTo) {
   const reviewers = await tx`SELECT id FROM admin_user
@@ -28,13 +38,19 @@ async function recipients(tx, assignedTo) {
   return (await tx`SELECT id FROM admin_user WHERE is_active`).map((r) => r.id);
 }
 
-export async function raiseAdminAlert(tx, { kind, eventKey, rentableId, submissionId = null, detail, assignedTo }) {
-  for (const adminId of await recipients(tx, assignedTo)) {
-    await tx`INSERT INTO admin_alert(admin_id, event_key, kind, rentable_id, submission_id, detail)
-      VALUES (${adminId}, ${eventKey}, ${kind}, ${rentableId}, ${submissionId},
+export async function raiseAdminAlert(
+  tx,
+  { kind, eventKey, rentableId = null, submissionId = null, supportRequestId = null, detail, assignedTo },
+) {
+  const admins = supportRequestId ? await supportRecipients(tx) : await recipients(tx, assignedTo);
+  let inserted = 0;
+  for (const adminId of admins) {
+    inserted += (await tx`INSERT INTO admin_alert(admin_id, event_key, kind, rentable_id, submission_id, support_request_id, detail)
+      VALUES (${adminId}, ${eventKey}, ${kind}, ${rentableId}, ${submissionId}, ${supportRequestId},
         ${JSON.stringify(detail)}::text::jsonb)
-      ON CONFLICT (admin_id, event_key) DO NOTHING`;
+      ON CONFLICT (admin_id, event_key) DO NOTHING RETURNING id`).length;
   }
+  return inserted;
 }
 
 /**
@@ -72,6 +88,39 @@ export async function scheduleCorrectionMilestones(database, now = new Date()) {
   return raised;
 }
 
+export const URGENT_REPLY_HOURS = 1;
+export const REPLY_HOURS = 12;
+/**
+ * Story 4.2: a case with no first public admin reply raises one alert per milestone (event key):
+ * urgent cases at 1 h, every case at 12 h. Resolved or replied cases raise nothing.
+ */
+export async function scheduleSupportMilestones(database, now = new Date()) {
+  // Only cases whose 12 h milestone is still unraised; a case first seen at >=12 h gets the 12 h alert only.
+  const due = await database`SELECT id, reference, subject, priority, created_at FROM support_request s
+    WHERE state<>'resolved' AND first_response_at IS NULL
+      AND created_at <= ${now.toISOString()}::timestamptz - make_interval(hours => ${URGENT_REPLY_HOURS})
+      AND NOT EXISTS(SELECT 1 FROM admin_alert a WHERE a.event_key='support_unanswered:12h:' || s.id::text)`;
+  let raised = 0;
+  for (const c of due) {
+    const age = +now - +new Date(c.created_at);
+    const hours = age >= REPLY_HOURS * 3600000 ? REPLY_HOURS : c.priority === 'urgent' ? URGENT_REPLY_HOURS : null;
+    if (!hours) continue;
+    raised += await database.begin(async (tx) => {
+      // Re-check under lock: a reply or resolution since the scan cancels the alert.
+      const [open] = await tx`SELECT 1 FROM support_request WHERE id=${c.id}
+        AND first_response_at IS NULL AND state<>'resolved' FOR UPDATE`;
+      if (!open) return 0;
+      return raiseAdminAlert(tx, {
+        kind: 'support_unanswered',
+        eventKey: `support_unanswered:${hours}h:${c.id}`,
+        supportRequestId: c.id,
+        detail: { hours, reference: c.reference, subject: c.subject, priority: c.priority },
+      });
+    });
+  }
+  return raised;
+}
+
 /** Sends due alert emails. Failures stay visible on the row; the alert itself is never removed. */
 export async function deliverAdminAlertEmails(database, options = {}) {
   const env = options.env || process.env;
@@ -94,7 +143,7 @@ export async function deliverAdminAlertEmails(database, options = {}) {
     WHERE id IN (SELECT id FROM admin_alert
       WHERE email_state IN ('pending','retry','blocked','sending') AND email_next_at<=now()
       ORDER BY email_next_at LIMIT 10 FOR UPDATE SKIP LOCKED)
-    RETURNING id, admin_id, kind, rentable_id, detail, email_attempts`;
+    RETURNING id, admin_id, kind, rentable_id, support_request_id, detail, email_attempts`;
   const adapter = options.adapter?.(config) || ownerChannelAdapter(config, options.fetcher);
   const origin = new URL(env.NEXT_PUBLIC_SITE_URL).origin;
   let sent = 0;
@@ -108,7 +157,9 @@ export async function deliverAdminAlertEmails(database, options = {}) {
     try {
       const outcome = await adapter.send(
         { id: row.id, recipient: admin.email, title },
-        `${title}\n\nOpen the review: ${origin}/admin/properties/${row.rentable_id}`,
+        row.support_request_id
+          ? `${title}\n\nOpen the case: ${origin}/admin/support/${row.support_request_id}`
+          : `${title}\n\nOpen the review: ${origin}/admin/properties/${row.rentable_id}`,
       );
       await database`UPDATE admin_alert SET email_state='sent', email_provider_id=${outcome.id},
         email_sent_at=now(), email_failure=NULL WHERE id=${row.id}`;
@@ -126,12 +177,13 @@ export async function deliverAdminAlertEmails(database, options = {}) {
 
 export async function runAdminAlertJobs(database, options = {}) {
   await scheduleCorrectionMilestones(database);
+  await scheduleSupportMilestones(database);
   return deliverAdminAlertEmails(database, options);
 }
 
 /** Admin portal inbox: only the signed-in admin's own alerts. */
 export async function listAdminAlerts(database, adminId) {
-  const rows = await database`SELECT id, kind, rentable_id, submission_id, detail, created_at, read_at,
+  const rows = await database`SELECT id, kind, rentable_id, submission_id, support_request_id, detail, created_at, read_at,
       email_state, email_failure
     FROM admin_alert WHERE admin_id=${adminId} ORDER BY read_at IS NOT NULL, created_at DESC LIMIT 50`;
   return rows.map((r) => ({
@@ -140,6 +192,7 @@ export async function listAdminAlerts(database, adminId) {
     title: alertTitle(r),
     propertyId: r.rentable_id,
     submissionId: r.submission_id,
+    supportRequestId: r.support_request_id,
     createdAt: r.created_at,
     read: Boolean(r.read_at),
     email: { state: r.email_state, failure: r.email_failure },

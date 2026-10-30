@@ -12,6 +12,7 @@ test('stay issue rules: priority, lateness, discovery bounds and window', () => 
     h = 3_600_000;
   assert.equal(issuePriority('access'), 'urgent');
   assert.equal(issuePriority('safety'), 'urgent');
+  assert.equal(issuePriority('stranded'), 'urgent');
   assert.equal(issuePriority('cleanliness'), 'normal');
   assert.equal(isLateReport(new Date(now - 72 * h), now), false);
   assert.equal(isLateReport(new Date(now - 80 * h), now), true);

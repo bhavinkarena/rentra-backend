@@ -2060,6 +2060,8 @@ export const supportRequest = pgTable('support_request', {
   /** Story 4.1 stay issues only: when the guest found the problem, and whether it was reported >72 h later. */
   discoveredAt: timestamp('discovered_at', { withTimezone: true }),
   late: boolean('late'),
+  /** Story 4.2: first public admin reply (set once); resolution stays in state. */
+  firstResponseAt: timestamp('first_response_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [uniqueIndex('support_request_client_replay_idx').on(t.clientId, t.requestKey),

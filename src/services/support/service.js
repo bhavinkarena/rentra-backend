@@ -6,6 +6,7 @@ import { lockCustomerAccount } from '../auth/customer-access.js';
 import { quoteDigest } from '../booking/quotes.js';
 import { publicContent } from '../content/service.js';
 import { preparePhotos } from '../booking/visit-evidence.js';
+import { raiseAdminAlert } from '../admin/admin-alerts.js';
 import { evidenceStore } from '../uploads/evidence-store.js';
 import { ISSUE_TYPES, REMEDIES, ISSUE_LABELS, issuePriority, isLateReport, discoveryProblem, issueEligibility } from '../domain/stay-issue.js';
 
@@ -88,12 +89,14 @@ const dto = (r, admin = false) => ({
   policyVersion: r.policy_version,
   discoveredAt: r.discovered_at ? new Date(r.discovered_at).toISOString() : null,
   late: r.late ?? null,
+  firstResponseAt: r.first_response_at ? new Date(r.first_response_at).toISOString() : null,
   ...(admin
     ? {
+        alertFailed: Boolean(r.alert_failed),
+        priority: r.priority,
         clientId: r.client_id,
         customerId: r.customer_id,
         assignedTo: r.assigned_to,
-        priority: r.priority,
         relatedRequestId: r.related_request_id,
       }
     : {}),
@@ -206,6 +209,14 @@ export async function createSupportRequest(database, actor, input, env = process
       const saved = await store.put({folder: `rentra/support/${id}/${value.requestKey}`,name:photo.sha256,buffer:photo.buffer,mime:photo.mime});
       await tx`INSERT INTO support_attachment(message_id,storage_key,mime_type,bytes,sha256) VALUES(${message.id},${saved.key},${photo.mime},${photo.bytes},${photo.sha256})`;
     }
+    // Story 4.2: urgent cases alert every support admin in the same transaction; replays return above.
+    if (issue && issuePriority(value.stayIssue.issueType) === 'urgent')
+      await raiseAdminAlert(tx, {
+        kind: 'support_urgent',
+        eventKey: `support_urgent:${id}`,
+        supportRequestId: id,
+        detail: { reference, subject: value.subject, issueType: value.stayIssue.issueType },
+      });
     if (issue)
       await audit(tx, actor, id, 'stay_issue_reported', {
         orderId: value.orderId, issueType: value.stayIssue.issueType, priority: issuePriority(value.stayIssue.issueType),
@@ -335,7 +346,10 @@ export async function replySupportRequest(
       });
       await tx`INSERT INTO support_attachment(message_id,storage_key,mime_type,bytes,sha256) VALUES(${message.id},${saved.key},${photo.mime},${photo.bytes},${photo.sha256})`;
     }
-    await tx`UPDATE support_request SET state=${state},version=version+1,updated_at=clock_timestamp() WHERE id=${request.id}`;
+    // Story 4.2: only the first public admin reply counts as the first human response.
+    const responded = actor.kind === 'admin' && !value.internal;
+    await tx`UPDATE support_request SET state=${state},version=version+1,
+      first_response_at=${responded ? tx`coalesce(first_response_at, clock_timestamp())` : tx`first_response_at`},updated_at=clock_timestamp() WHERE id=${request.id}`;
     if (actor.kind === 'admin')
       await audit(
         tx,
@@ -407,13 +421,30 @@ export async function readSupportRequest(database, actor, id, env = process.env)
     const operators = admin
       ? await tx`SELECT id,name FROM admin_user WHERE is_active=true AND (permissions IS NULL OR permissions @> '["admin.support.read","admin.support.write"]'::jsonb) ORDER BY name,id`
       : [];
+    const alerts = admin
+      ? await tx`SELECT a.id, a.kind, a.email_state, a.email_failure, a.created_at, u.name admin_name
+          FROM admin_alert a JOIN admin_user u ON u.id=a.admin_id WHERE a.support_request_id=${row.id} ORDER BY a.created_at, u.name`
+      : [];
     const history = admin
       ? await tx`SELECT action,at,"after" FROM audit_log WHERE entity='support_request' AND entity_id=${row.id} ORDER BY at,id`
       : [];
     return {
       ...dto(row, admin),
       privacy,
-      ...(admin ? { operators, history } : {}),
+      ...(admin
+        ? {
+            operators,
+            history,
+            alerts: alerts.map((a) => ({
+              id: a.id,
+              kind: a.kind,
+              admin: a.admin_name,
+              emailState: a.email_state,
+              emailFailure: a.email_failure,
+              at: new Date(a.created_at).toISOString(),
+            })),
+          }
+        : {}),
       messages: messages.map((m) => ({
         id: m.id,
         author:
@@ -442,14 +473,25 @@ export async function listSupportRequests(database, actor, input = {}, env = pro
   const participant = ['client', 'customer'].includes(input.participant)
       ? input.participant
       : 'all',
-    assignment = ['mine', 'unassigned'].includes(input.assignment) ? input.assignment : 'all';
+    assignment = ['mine', 'unassigned'].includes(input.assignment) ? input.assignment : 'all',
+    view =
+      actor.kind === 'admin' && ['urgent', 'aged', 'unassigned', 'failed_delivery'].includes(input.view)
+        ? input.view
+        : 'all';
+  // Story 4.2 views. Aged: not resolved and no first public reply for 12 elapsed hours.
+  const aged = (tx) => tx`(state<>'resolved' AND first_response_at IS NULL AND created_at<=clock_timestamp()-interval '12 hours')`;
+  const failed = (tx) =>
+    tx`EXISTS(SELECT 1 FROM admin_alert a WHERE a.support_request_id=support_request.id AND a.email_state IN ('failed','blocked'))`;
   return database.begin(async (tx) => {
     const actorId = await authorize(tx, actor, env);
-    const condition = tx`${scope(tx, actor, actorId)} AND ${state === 'all' ? tx`true` : state === 'unresolved' ? tx`state<>'resolved'` : tx`state=${state}`} AND ${actor.kind !== 'admin' || participant === 'all' ? tx`true` : participant === 'client' ? tx`client_id IS NOT NULL` : tx`customer_id IS NOT NULL`} AND ${actor.kind !== 'admin' || assignment === 'all' ? tx`true` : assignment === 'mine' ? tx`assigned_to=${actorId}` : tx`assigned_to IS NULL`}`;
+    const condition = tx`${scope(tx, actor, actorId)} AND ${state === 'all' ? tx`true` : state === 'unresolved' ? tx`state<>'resolved'` : tx`state=${state}`} AND ${actor.kind !== 'admin' || participant === 'all' ? tx`true` : participant === 'client' ? tx`client_id IS NOT NULL` : tx`customer_id IS NOT NULL`} AND ${actor.kind !== 'admin' || assignment === 'all' ? tx`true` : assignment === 'mine' ? tx`assigned_to=${actorId}` : tx`assigned_to IS NULL`} AND ${
+      view === 'urgent' ? tx`priority='urgent' AND state<>'resolved'` : view === 'aged' ? aged(tx) : view === 'unassigned' ? tx`assigned_to IS NULL AND state<>'resolved'` : view === 'failed_delivery' ? failed(tx) : tx`true`}`;
+    const order =
+      view === 'urgent' ? tx`${aged(tx)} DESC,` : view === 'aged' ? tx`priority='urgent' DESC,` : tx``;
     const [{ count }] =
       await tx`SELECT count(*)::int count FROM support_request WHERE ${condition}`;
     const rows =
-      await tx`SELECT support_request.*, ${actor.kind === 'owner' ? tx`EXISTS(SELECT 1 FROM client_update u WHERE u.client_id=${actorId} AND u.read_at IS NULL AND u.detail->>'supportId'=support_request.id::text)` : tx`false`} unread FROM support_request WHERE ${condition} ORDER BY updated_at DESC,id DESC LIMIT 20 OFFSET ${(page - 1) * 20}`;
+      await tx`SELECT support_request.*, ${actor.kind === 'owner' ? tx`EXISTS(SELECT 1 FROM client_update u WHERE u.client_id=${actorId} AND u.read_at IS NULL AND u.detail->>'supportId'=support_request.id::text)` : tx`false`} unread, ${actor.kind === 'admin' ? failed(tx) : tx`false`} alert_failed FROM support_request WHERE ${condition} ORDER BY ${order} updated_at DESC,id DESC LIMIT 20 OFFSET ${(page - 1) * 20}`;
     return {
       items: rows.map((r) => dto(r, actor.kind === 'admin')),
       total: count,
@@ -457,6 +499,7 @@ export async function listSupportRequests(database, actor, input = {}, env = pro
       state,
       participant,
       assignment,
+      view,
       hasNext: count > page * 20,
     };
   });

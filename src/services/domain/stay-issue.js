@@ -2,11 +2,12 @@
  * Story 4.1: a guest's contextual stay issue. Pure rules shared by the API and the intake form.
  * Mirror of Rentra/lib/domain/stay-issue.js — keep both in step.
  */
-export const ISSUE_TYPES = ['access', 'safety', 'cleanliness', 'not_as_described', 'amenity_broken', 'other'];
+export const ISSUE_TYPES = ['access', 'safety', 'stranded', 'cleanliness', 'not_as_described', 'amenity_broken', 'other'];
 export const REMEDIES = ['fix_during_stay', 'partial_refund', 'full_refund_or_move', 'other'];
 export const ISSUE_LABELS = {
   access: "Can't get in",
   safety: 'Safety',
+  stranded: 'I have nowhere to stay right now',
   cleanliness: 'Cleanliness',
   not_as_described: 'Not as described',
   amenity_broken: 'Something is broken',
@@ -18,7 +19,7 @@ export const REMEDY_LABELS = {
   full_refund_or_move: 'Full refund or move me',
   other: 'Something else',
 };
-export const URGENT_TYPES = ['access', 'safety'];
+export const URGENT_TYPES = ['access', 'safety', 'stranded'];
 export const LATE_HOURS = 72;
 export const WINDOW_DAYS = 30;
 export const SKEW_MS = 5 * 60_000;
