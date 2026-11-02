@@ -1,4 +1,5 @@
 import 'server-only';
+import { promoteIncidentObligations } from './incident-obligation.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { conflict, forbidden, notFound, unprocessable } from '@/utils/apiError.js';
@@ -185,6 +186,9 @@ export async function dispatchPayoutTransfer(database, actor, id, input = {}, pr
     const [saved] = await tx`UPDATE payout_transfer_fixture SET state=${matches ? 'succeeded' : 'unknown'},
       evidence=${matches ? JSON.stringify(evidence) : null}::text::jsonb,evidence_hash=${matches ? digest(evidence) : null},
       verified_at=${matches ? new Date().toISOString() : null} WHERE id=${id} RETURNING *`;
+    // Story 4.5: a succeeded owner payout makes the order's incident obligations due.
+    if (matches) await promoteIncidentObligations(tx, (await tx`SELECT b.order_id FROM payment_allocation pa
+      JOIN booking b ON b.id=pa.booking_id WHERE pa.id=${saved.source_id}`).map((r) => r.order_id), { type: 'admin', id: actor.id });
     return saved;
   });
 }

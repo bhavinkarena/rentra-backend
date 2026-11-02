@@ -10,7 +10,7 @@ export async function seedFinanceFixture(sql, f) {
     sql.begin(async (tx) => {
       const sim = environment === 'simulated',
         mode = sim ? 'simulated' : 'real',
-        provider = sim ? 'dummy' : 'fixture',
+        provider = sim ? 'dummy' : (options.provider ?? 'fixture'),
         key = randomUUID();
       const snapshot = {
         title: 'Finance Farm',

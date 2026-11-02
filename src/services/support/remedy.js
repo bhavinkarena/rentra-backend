@@ -1,10 +1,12 @@
 import 'server-only';
 import { z } from 'zod';
 import { SupportError } from './errors.js';
-import { forbidden } from '../../utils/apiError.js';
+import { forbidden, unprocessable } from '../../utils/apiError.js';
 import { facts } from '../finance/owner-recovery.js';
 import { payoutStates } from '../finance/payout-state.js';
-import { capturedAllocations, testSourcesOnly } from '../booking/cancellation.js';
+import { capturedAllocations, testSourcesOnly, allocateRefund, createRefundObligations } from '../booking/cancellation.js';
+import { allocateByWeights } from '../domain/booking-money.js';
+import { promoteIncidentObligations, obligationView } from '../finance/incident-obligation.js';
 import { quoteDigest } from '../booking/quotes.js';
 import { withListingInventory } from '../booking/inventory.js';
 import { ledger } from '../payments/refund-operations.js';
@@ -44,7 +46,7 @@ async function access(tx, actor, write) {
 
 async function stayCase(tx, id) {
   if (!uuid.safeParse(id).success) throw missing();
-  const [row] = await tx`SELECT s.id,s.version,s.category,s.order_id,s.context,o.rentable_id,r.client_id owner_id
+  const [row] = await tx`SELECT s.id,s.reference,s.version,s.category,s.order_id,s.context,o.rentable_id,r.client_id owner_id
     FROM support_request s LEFT JOIN booking_order o ON o.id=s.order_id LEFT JOIN rentable r ON r.id=o.rentable_id WHERE s.id=${id}`;
   if (!row) throw missing();
   if (row.category !== 'stay_issue' || !row.order_id)
@@ -200,4 +202,123 @@ export function decisionView(d) {
     createdAt: new Date(d.created_at).toISOString(),
     supersededAt: d.superseded_at ? new Date(d.superseded_at).toISOString() : null,
   };
+}
+
+/* ------------------------------ Story 4.5 execute ------------------------------ */
+
+const executeSchema = z.object({ decisionId: uuid, digest: z.string().regex(/^[a-f0-9]{64}$/), requestKey: uuid });
+const conflictError = (code, message, extra = {}) => Object.assign(new SupportError(code, message, 409), extra);
+
+/** Refund rows of an execution with a display status from the existing refund engine. */
+async function executionView(tx, e) {
+  const refunds = e.refund_ids.length
+    ? await tx`SELECT r.id,r.reference,r.state,r.expected_minor::text expected,r.actual_minor::text actual,x.dispatched_at
+        FROM refund r LEFT JOIN refund_execution x ON x.refund_id=r.id WHERE r.id IN ${tx(e.refund_ids)} ORDER BY r.id`
+    : [];
+  const [obligation] = e.obligation_id ? await tx`SELECT * FROM incident_owner_obligation WHERE id=${e.obligation_id}` : [];
+  const [link] = obligation
+    ? await tx`SELECT id,state,amount_minor::text amount FROM owner_repayment WHERE incident_obligation_id=${obligation.id}
+        ORDER BY (state='open') DESC,created_at DESC LIMIT 1`
+    : [];
+  const status = (r) => r.state === 'succeeded' ? 'verified' : r.state === 'failed' ? 'failed'
+    : r.state === 'requested' && !r.dispatched_at ? 'queued' : r.state === 'unknown' ? 'unknown' : 'sent';
+  return {
+    id: e.id,
+    decisionId: e.decision_id,
+    environment: 'test',
+    refunds: refunds.map((r) => ({ id: r.id, reference: r.reference, status: status(r), amountMinor: r.expected, actualMinor: r.actual })),
+    obligation: obligation ? { ...obligationView(obligation), link: link ? { id: link.id, state: link.state, amountMinor: link.amount } : null } : null,
+    executedBy: e.executed_by,
+    createdAt: new Date(e.created_at).toISOString(),
+  };
+}
+
+/** Every execution on the case, newest first, including those of superseded decisions (read model). */
+export async function readExecutions(tx, supportRequestId) {
+  const rows = await tx`SELECT e.* FROM incident_remedy_execution e JOIN incident_remedy_decision d ON d.id=e.decision_id
+    WHERE d.support_request_id=${supportRequestId} ORDER BY e.created_at DESC,e.id`;
+  const views = [];
+  for (const e of rows) views.push(await executionView(tx, e));
+  return views;
+}
+
+/**
+ * Executes the case's active award once: re-checks the saved decision against a fresh preview under
+ * the listing lock, queues only the additional guest refund (Test sources only) and, for an
+ * owner-funded award, records the owner's extra fee share as an incident obligation. Never offsets
+ * a payout or debits the owner; booking and support state stay unchanged.
+ */
+export async function executeIncidentAward(database, actor, input) {
+  const parsed = executeSchema.safeParse(input ?? {});
+  if (!parsed.success) throw unprocessable(parsed.error.flatten().fieldErrors, 'Reload the decision and try again.');
+  const value = parsed.data;
+  const requestHash = quoteDigest({ decisionId: value.decisionId, digest: value.digest });
+  const [scope] = await database`SELECT d.support_request_id,o.rentable_id FROM incident_remedy_decision d
+    JOIN support_request s ON s.id=d.support_request_id JOIN booking_order o ON o.id=s.order_id WHERE d.id=${value.decisionId}`;
+  if (!scope) {
+    await database.begin((tx) => access(tx, actor, true));
+    throw missing();
+  }
+  return withListingInventory(database, scope.rentable_id, async (tx) => {
+    await access(tx, actor, true);
+    const [previous] = await tx`SELECT * FROM incident_remedy_execution WHERE request_key=${value.requestKey}`;
+    if (previous) {
+      if (previous.request_hash !== requestHash)
+        throw conflictError('IDEMPOTENCY_CONFLICT', 'This request key was already used for a different execution.');
+      return { ...(await executionView(tx, previous)), replayed: true };
+    }
+    const [decision] = await tx`SELECT * FROM incident_remedy_decision WHERE id=${value.decisionId} FOR UPDATE`;
+    if ((await tx`SELECT 1 FROM incident_remedy_execution WHERE decision_id=${decision.id}`).length)
+      throw conflictError('ALREADY_EXECUTED', 'This award was already executed.');
+    if (decision.kind !== 'award' || decision.superseded_at)
+      throw conflictError('DECISION_NOT_ACTIVE', 'Only the active award on this case can be executed.');
+    const row = await stayCase(tx, decision.support_request_id);
+    if (row.rentable_id !== scope.rentable_id) throw conflictError('PREVIEW_CHANGED', 'The case changed. Save a new decision first.');
+    // Story 2.20 lock order: listing mutex, then the owner "user" row.
+    await tx`SELECT 1 FROM "user" WHERE id=${row.owner_id} FOR UPDATE`;
+    const preview = await plan(tx, row, { visitIds: decision.visit_ids, targetPct: decision.target_pct, responsibility: decision.responsibility });
+    if (value.digest !== decision.digest || preview.digest !== decision.digest)
+      throw conflictError('PREVIEW_CHANGED', 'The figures changed since the decision. Save a new decision first.', { preview });
+    const additional = preview.additionalDueMinor;
+    const paid = preview.paidByComponent;
+    const [rent, fee, tax] = additional > 0 ? allocateByWeights(additional, [paid.rent, paid.fee, paid.tax]) : [0, 0, 0];
+    let refundIds = [];
+    if (additional > 0) {
+      const sources = (await capturedAllocations(tx, preview.visitIds)).filter((s) => COMPONENTS.includes(s.component));
+      if (!sources.length || !testSourcesOnly(sources))
+        throw conflictError('REFUND_BLOCKED', 'This payment is outside Razorpay Test; it needs the live refund process.');
+      const lines = allocateRefund(sources, { rent, fee, tax, deposit: 0 }, { remainingOnly: true });
+      if (lines.reduce((a, l) => a + l.amount, 0) !== additional)
+        throw conflictError('REFUND_BLOCKED', 'What remains refundable does not cover this award. Save a new decision first.');
+      const visitOf = new Map(sources.map((s) => [s.id, s.booking_id]));
+      const visits = preview.visitIds.map((id) => ({ id, refunds: lines.filter((l) => visitOf.get(l.allocationId) === id) })).filter((v) => v.refunds.length);
+      refundIds = await createRefundObligations(tx, visits, {
+        // The "Rentra support case " prefix is what the 4.4 preview counts as a case reimbursement.
+        reason: `Rentra support case ${row.reference}: ${decision.reason.trim()}`.slice(0, 160),
+        idempotencyKey: decision.id,
+        requestHash,
+      });
+    }
+    let obligation = null;
+    // Earlier executed awards on this order already hold part of the owner extra (e.g. a reassigned
+    // fee); a later award records only what is new, so the cumulative owner extra is never counted twice.
+    const [{ earlier }] = await tx`SELECT coalesce(sum(amount_minor),0)::text earlier FROM incident_owner_obligation
+      WHERE order_id=${row.order_id} AND state<>'cancelled'`;
+    const owed = decision.responsibility === 'owner_funded'
+      ? Math.max(0, preview.reassignedFromRentraMinor + fee - Number(earlier)) : 0;
+    if (owed > 0) {
+      [obligation] = await tx`INSERT INTO incident_owner_obligation(decision_id,owner_id,order_id,amount_minor,components)
+        VALUES (${decision.id},${row.owner_id},${row.order_id},${owed},
+          ${JSON.stringify({ reassigned_fee_minor: preview.reassignedFromRentraMinor, owner_fee_share_minor: fee })}::text::jsonb) RETURNING *`;
+      await promoteIncidentObligations(tx, [row.order_id], { type: 'admin', id: actor.id });
+    }
+    const [saved] = await tx`INSERT INTO incident_remedy_execution(decision_id,refund_ids,obligation_id,digest,executed_by,request_key,request_hash)
+      VALUES (${decision.id},${refundIds}::uuid[],${obligation?.id ?? null},${decision.digest},${actor.id},${value.requestKey},${requestHash}) RETURNING *`;
+    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after",reason)
+      VALUES('admin',${actor.id},'support_request',${row.id},'incident_award_executed',${JSON.stringify({
+        executionId: saved.id, decisionId: decision.id, orderId: row.order_id, ownerId: row.owner_id,
+        additionalDueMinor: additional, refundIds, obligationId: obligation?.id ?? null, obligationMinor: owed, environment: 'test',
+      })}::text::jsonb,${decision.reason})`;
+    return { ...(await executionView(tx, saved)), replayed: false };
+  });
 }

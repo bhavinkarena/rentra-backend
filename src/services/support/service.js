@@ -7,7 +7,7 @@ import { publicContent } from '../content/service.js';
 import { preparePhotos } from '../booking/visit-evidence.js';
 import { raiseAdminAlert } from '../admin/admin-alerts.js';
 import { evidenceStore } from '../uploads/evidence-store.js';
-import { decisionView, remedyCaps } from './remedy.js';
+import { decisionView, remedyCaps, readExecutions } from './remedy.js';
 import { ISSUE_TYPES, REMEDIES, ISSUE_LABELS, issuePriority, isLateReport, discoveryProblem, issueEligibility } from '../domain/stay-issue.js';
 
 import { SupportError } from './errors.js';
@@ -456,7 +456,7 @@ export async function readSupportRequest(database, actor, id, env = process.env)
             operators,
             history,
             remedy: row.category === 'stay_issue' && row.order_id
-              ? { decision: decision ? decisionView(decision) : null, canPreview: caps.canPreview, canDecide: caps.canDecide }
+              ? { decision: decision ? decisionView(decision) : null, executions: caps.canPreview ? await readExecutions(tx, row.id) : [], canPreview: caps.canPreview, canDecide: caps.canDecide }
               : null,
             canReply:
               !!staff &&

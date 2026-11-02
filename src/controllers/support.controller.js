@@ -10,6 +10,10 @@ import {
   manageSupport,
   previewRemedy,
   decideRemedy,
+  executeRemedy,
+  incidentRepaymentLink,
+  incidentRepaymentCheck,
+  incidentRepaymentResolve,
 } from '@/services/support/actions.js';
 import {
   listSupportRequests,
@@ -76,3 +80,7 @@ export const attachment = asyncHandler(async (req, res) => {
 });
 export const remedyPreview = runAction(previewRemedy);
 export const remedyDecide = runAction(decideRemedy);
+export const remedyExecute = runAction(executeRemedy);
+export const remedyRepaymentLink = runAction(incidentRepaymentLink);
+export const remedyRepaymentCheck = runAction(incidentRepaymentCheck);
+export const remedyRepaymentResolve = runAction(incidentRepaymentResolve);

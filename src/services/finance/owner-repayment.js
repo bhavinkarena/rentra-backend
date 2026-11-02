@@ -29,7 +29,7 @@ const provider = (opts = {}) => {
 };
 const expected = (link) => ({ provider_order_id: link.provider_order_id, expected_minor: link.amount_minor });
 const view = (l) => ({
-  id: l.id, recoveryId: l.recovery_id, environment: 'test', currency: 'INR', state: l.state,
+  id: l.id, recoveryId: l.recovery_id, incidentObligationId: l.incident_obligation_id ?? null, environment: 'test', currency: 'INR', state: l.state,
   amountMinor: String(l.amount_minor), excessMinor: String(l.excess_minor),
   providerOrderId: l.provider_order_id, providerPaymentId: l.provider_payment_id ?? null,
   reviewCode: l.review_code ?? null, createdAt: l.created_at, settledAt: l.settled_at ?? null,
@@ -218,8 +218,9 @@ export async function listOwnerRepayments(database, ownerId, opts = {}) {
     n.received_via notice_received_via,n.reminder_at notice_reminder_at,n.due_at notice_due_at,n.version notice_version,
     (n.reminder_at IS NOT NULL AND now()>=n.reminder_at) notice_reminder_due,
     EXISTS(SELECT 1 FROM owner_repayment_notice_event e WHERE e.notice_id=n.id AND e.type='owner_ack') notice_acknowledged FROM owner_repayment r
-    JOIN owner_recovery o ON o.id=r.recovery_id LEFT JOIN owner_repayment_notice n ON n.recovery_id=r.recovery_id JOIN payment_allocation pa ON pa.id=o.source_id
-    JOIN booking b ON b.id=pa.booking_id JOIN booking_order bo ON bo.id=b.order_id
+    LEFT JOIN owner_recovery o ON o.id=r.recovery_id LEFT JOIN owner_repayment_notice n ON n.recovery_id=r.recovery_id LEFT JOIN payment_allocation pa ON pa.id=o.source_id
+    LEFT JOIN booking b ON b.id=pa.booking_id LEFT JOIN incident_owner_obligation io ON io.id=r.incident_obligation_id
+    JOIN booking_order bo ON bo.id=coalesce(b.order_id,io.order_id)
     WHERE r.owner_id=${ownerId} AND r.state<>'replaced' ORDER BY r.created_at DESC LIMIT 100`;
   // Checkout needs the public Test key id only; the secret never leaves the server.
   const keyId = /^rzp_test_[A-Za-z0-9]+$/.test(env.RAZORPAY_KEY_ID?.trim() ?? '') ? env.RAZORPAY_KEY_ID.trim() : null;
@@ -235,8 +236,9 @@ export async function verifyOwnerRepayment(database, ownerId, id, input, opts = 
   const parsed = verifySchema.safeParse(input);
   if (!parsed.success) throw badRequest('INVALID_PAYMENT', 'The payment response was not valid.');
   const value = parsed.data;
-  const [link] = await database`SELECT r.*,b.rentable_id FROM owner_repayment r JOIN owner_recovery o ON o.id=r.recovery_id
-    JOIN payment_allocation pa ON pa.id=o.source_id JOIN booking b ON b.id=pa.booking_id
+  const [link] = await database`SELECT r.*,coalesce(b.rentable_id,io_o.rentable_id) rentable_id FROM owner_repayment r
+    LEFT JOIN owner_recovery o ON o.id=r.recovery_id LEFT JOIN payment_allocation pa ON pa.id=o.source_id LEFT JOIN booking b ON b.id=pa.booking_id
+    LEFT JOIN incident_owner_obligation io ON io.id=r.incident_obligation_id LEFT JOIN booking_order io_o ON io_o.id=io.order_id
     WHERE r.id=${id} AND r.owner_id=${ownerId}`;
   if (!link) throw notFound();
   if (link.provider_payment_id === value.paymentId) return { ...view(link), replayed: true };
@@ -253,6 +255,13 @@ export async function verifyOwnerRepayment(database, ownerId, id, input, opts = 
   if (outcome === 'pending') return { ...view(link), paymentStatus: 'pending' };
   // A replaced link only ever settles on a verified capture; never parked for review.
   if (link.state === 'replaced' && outcome !== 'captured') return { ...view(link), paymentStatus: 'pending' };
+  if (link.incident_obligation_id)
+    return withListingInventory(database, link.rentable_id, async (tx) => {
+      const { ob, link: current } = await lockIncident(tx, link.incident_obligation_id, id);
+      if (current.provider_payment_id === value.paymentId) return { ...view(current), replayed: true };
+      if (!['open', 'replaced'].includes(current.state)) throw conflict('LINK_CLOSED', 'This repayment link is no longer open.');
+      return view(await settleIncident(tx, ob, current, value.paymentId, outcome, { type: 'client', id: ownerId }));
+    });
   const closeOpenId = link.state === 'replaced' ? await cleanOpenLink(database, rzp, link.recovery_id, link.id) : null;
   return withListingInventory(database, link.rentable_id, async (tx) => {
     const { rec, link: current } = await lockLink(tx, id);
@@ -337,6 +346,175 @@ export async function resolveRepaymentLink(database, actor, sourceId, input, opt
     const [saved] = odd
       ? await tx`UPDATE owner_repayment SET state='replaced',provider_payment_id=${odd.id},excess_minor=${odd.amount},
           settled_at=now() WHERE id=${link.id} RETURNING *`
+      : await tx`UPDATE owner_repayment SET state='replaced',settled_at=now() WHERE id=${link.id} RETURNING *`;
+    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after",reason)
+      VALUES ('admin',${actor.id},'owner_repayment',${link.id},'owner_repayment_closed',${JSON.stringify(view(link))}::text::jsonb,
+        ${JSON.stringify(view(saved))}::text::jsonb,${value.reason})`;
+    return view(saved);
+  });
+}
+
+/* ------------------- Story 4.5: incident obligation repayment links ------------------- */
+// 2.18 rules for a `due` incident obligation: amount = the obligation (settled whole), one open link,
+// replace = resolve the needs_review link then create a new one. No notice, no overdue restriction.
+
+const incidentSchema = z.object({ requestKey: uuid }).strict();
+
+/** The obligation only through its support case; anything else is 404. */
+async function incidentScope(tx, caseId, obligationId) {
+  if (!uuid.safeParse(caseId).success || !uuid.safeParse(obligationId).success) throw notFound();
+  const [ob] = await tx`SELECT io.*,o.rentable_id FROM incident_owner_obligation io
+    JOIN incident_remedy_decision d ON d.id=io.decision_id JOIN booking_order o ON o.id=io.order_id
+    WHERE io.id=${obligationId} AND d.support_request_id=${caseId}`;
+  if (!ob) throw notFound();
+  return ob;
+}
+
+/** 2.20 lock order: owner "user" row, then the obligation, then the link. */
+async function lockIncident(tx, obligationId, linkId = null) {
+  await tx`SELECT 1 FROM "user" WHERE id=(SELECT owner_id FROM incident_owner_obligation WHERE id=${obligationId}) FOR UPDATE`;
+  const [ob] = await tx`SELECT * FROM incident_owner_obligation WHERE id=${obligationId} FOR UPDATE`;
+  const [link] = linkId ? await tx`SELECT * FROM owner_repayment WHERE id=${linkId} FOR UPDATE` : [];
+  return { ob, link };
+}
+
+/**
+ * Settles once: an exact verified capture on a `due` obligation pays the link and marks it repaid;
+ * a capture on a non-due obligation or any other outcome parks the link as needs_review.
+ */
+async function settleIncident(tx, ob, link, paymentId, outcome, actor) {
+  const paid = outcome === 'captured' && ob.state === 'due';
+  const [saved] = paid
+    ? await tx`UPDATE owner_repayment SET state='paid',provider_payment_id=${paymentId},review_code=NULL,settled_at=now() WHERE id=${link.id} RETURNING *`
+    : await tx`UPDATE owner_repayment SET state='needs_review',provider_payment_id=${paymentId},
+        review_code=${outcome === 'captured' ? 'OBLIGATION_NOT_DUE' : outcome},settled_at=now() WHERE id=${link.id} RETURNING *`;
+  if (paid) {
+    await tx`UPDATE incident_owner_obligation SET state='repaid',updated_at=now() WHERE id=${ob.id}`;
+    // ponytail: an unpaid open replacement is closed without a provider re-read; a later capture on it parks as OBLIGATION_NOT_DUE.
+    await tx`UPDATE owner_repayment SET state='replaced',settled_at=now()
+      WHERE incident_obligation_id=${ob.id} AND id<>${link.id} AND state='open' AND provider_payment_id IS NULL`;
+  }
+  await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after",reason)
+    VALUES (${actor.type},${actor.id},'owner_repayment',${link.id},${paid ? 'owner_repayment_paid' : 'owner_repayment_needs_review'},
+      ${JSON.stringify({ link: view(link), obligationState: ob.state })}::text::jsonb,
+      ${JSON.stringify({ link: view(saved), obligationState: paid ? 'repaid' : ob.state })}::text::jsonb,'Test incident repayment verified')`;
+  return saved;
+}
+
+export async function createIncidentRepaymentLink(database, actor, caseId, obligationId, input, opts = {}) {
+  const parsed = incidentSchema.safeParse(input);
+  if (!parsed.success) throw unprocessable({ requestKey: 'Reload and try again.' });
+  const value = parsed.data, requestHash = digest({ obligationId, ...value });
+  const replayed = async (tx) => {
+    const [replay] = await tx`SELECT * FROM owner_repayment WHERE actor_id=${actor.id} AND request_key=${value.requestKey}`;
+    if (!replay) return null;
+    if (replay.request_hash !== requestHash) throw conflict('IDEMPOTENCY_CONFLICT', 'This request key was used for a different link.');
+    return { ...view(replay), replayed: true };
+  };
+  const current = async (tx, ob) => {
+    if (ob.state !== 'due') throw conflict('NOTHING_TO_COLLECT', 'Only a due incident obligation can be collected.');
+    const links = await tx`SELECT state FROM owner_repayment WHERE incident_obligation_id=${ob.id} AND state IN ('open','needs_review','paid')`;
+    if (links.some((l) => l.state === 'needs_review')) throw inFlight();
+    if (links.length) throw conflict('REPAYMENT_LINK_OPEN', 'A repayment link already exists for this obligation.');
+  };
+  const pre = await database.begin(async (tx) => {
+    await authorize(tx, actor, true);
+    const ob = await incidentScope(tx, caseId, obligationId);
+    const replay = await replayed(tx);
+    if (replay) return { replay };
+    await current(tx, ob);
+    return { ob };
+  });
+  if (pre.replay) return pre.replay;
+  assertInitiationEnabled(opts.env ?? process.env);
+  const rzp = provider(opts);
+  const id = randomUUID(), amount = String(pre.ob.amount_minor);
+  let order;
+  try {
+    order = await rzp.createOrder({ id, expected_minor: amount });
+  } catch {
+    throw unavailable('PROVIDER_OUTCOME_UNKNOWN', 'Razorpay Test did not confirm the order. Try again.');
+  }
+  try {
+    return await withListingInventory(database, pre.ob.rentable_id, async (tx) => {
+      await authorize(tx, actor, true);
+      const replay = await replayed(tx);
+      if (replay) return replay;
+      const { ob } = await lockIncident(tx, obligationId);
+      await current(tx, ob);
+      const [link] = await tx`INSERT INTO owner_repayment(id,incident_obligation_id,owner_id,amount_minor,provider_order_id,actor_id,request_key,request_hash)
+        VALUES (${id},${ob.id},${ob.owner_id},${amount},${order.id},${actor.id},${value.requestKey},${requestHash}) RETURNING *`;
+      await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after",reason)
+        VALUES ('admin',${actor.id},'owner_repayment',${link.id},'owner_repayment_created',NULL,${JSON.stringify(view(link))}::text::jsonb,'Test incident repayment link')`;
+      return view(link);
+    });
+  } catch (error) {
+    if (error.code !== '23505') throw error;
+    const outcome = await replayed(database);
+    if (outcome) return outcome;
+    throw conflict('REPAYMENT_LINK_OPEN', 'A repayment link already exists for this obligation.');
+  }
+}
+
+/** Admin re-check (2.18 rules): settles an exact verified capture on any unsettled link of the obligation. */
+export async function checkIncidentRepaymentLink(database, actor, caseId, obligationId, opts = {}) {
+  const pre = await database.begin(async (tx) => {
+    await authorize(tx, actor, true);
+    const ob = await incidentScope(tx, caseId, obligationId);
+    return { ob, links: await tx`SELECT * FROM owner_repayment WHERE incident_obligation_id=${ob.id} AND state IN ('open','needs_review','replaced')` };
+  });
+  const rzp = provider(opts);
+  const found = [];
+  for (const link of pre.links) {
+    const { captured } = await orderState(rzp, link);
+    if (captured) found.push({ link, paymentId: captured.id });
+  }
+  return withListingInventory(database, pre.ob.rentable_id, async (tx) => {
+    await authorize(tx, actor, true);
+    const settled = [];
+    for (const { link, paymentId } of found) {
+      const { ob, link: current } = await lockIncident(tx, pre.ob.id, link.id);
+      if (current.state === 'paid' || ob.state !== 'due') continue;
+      settled.push(view(await settleIncident(tx, ob, current, paymentId, 'captured', { type: 'admin', id: actor.id })));
+    }
+    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after",reason)
+      VALUES ('admin',${actor.id},'incident_owner_obligation',${pre.ob.id},'owner_repayment_checked',NULL,
+        ${JSON.stringify({ settled: settled.map((l) => l.id) })}::text::jsonb,'Test incident repayment provider check')`;
+    const links = await tx`SELECT * FROM owner_repayment WHERE incident_obligation_id=${pre.ob.id} ORDER BY created_at DESC`;
+    return { environment: 'test', settled, links: links.map(view) };
+  });
+}
+
+/**
+ * Admin close of a needs_review incident link (2.18 rules): an exact capture on a due obligation
+ * settles; an authorized payment refuses; otherwise the link becomes `replaced` so a new one can be made.
+ */
+export async function resolveIncidentRepaymentLink(database, actor, caseId, obligationId, input, opts = {}) {
+  const parsed = resolveSchema.safeParse(input);
+  if (!parsed.success) throw unprocessable({ reason: 'Give a reason of 10-500 characters.' });
+  const value = parsed.data;
+  const pre = await database.begin(async (tx) => {
+    await authorize(tx, actor, true);
+    const ob = await incidentScope(tx, caseId, obligationId);
+    const [link] = await tx`SELECT * FROM owner_repayment WHERE id=${value.linkId} AND incident_obligation_id=${ob.id}`;
+    if (!link) throw notFound();
+    if (link.state !== 'needs_review') throw conflict('LINK_NOT_IN_REVIEW', 'Only a link under review can be closed.');
+    return { ob, link };
+  });
+  const state = await orderState(provider(opts), pre.link);
+  if (state.unknown) throw unavailable('PROVIDER_OUTCOME_UNKNOWN', 'Razorpay Test did not answer. Try again.');
+  if (!state.captured && (state.authorized || (state.busy && !state.wrongAmount)))
+    throw conflict('REPAYMENT_IN_FLIGHT', 'The provider shows a payment on this link.');
+  return withListingInventory(database, pre.ob.rentable_id, async (tx) => {
+    await authorize(tx, actor, true);
+    const { ob, link } = await lockIncident(tx, pre.ob.id, value.linkId);
+    if (link.state !== 'needs_review') throw conflict('LINK_NOT_IN_REVIEW', 'Only a link under review can be closed.');
+    if (state.captured && ob.state === 'due')
+      return { ...view(await settleIncident(tx, ob, link, state.captured.id, 'captured', { type: 'admin', id: actor.id })), settled: true };
+    // A capture that cannot settle (wrong amount, or obligation no longer due) is held whole as excess for admin return.
+    const held = state.captured ?? state.wrongAmount;
+    const [saved] = held
+      ? await tx`UPDATE owner_repayment SET state='replaced',provider_payment_id=${held.id},excess_minor=${held.amount},settled_at=now() WHERE id=${link.id} RETURNING *`
       : await tx`UPDATE owner_repayment SET state='replaced',settled_at=now() WHERE id=${link.id} RETURNING *`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after",reason)
       VALUES ('admin',${actor.id},'owner_repayment',${link.id},'owner_repayment_closed',${JSON.stringify(view(link))}::text::jsonb,

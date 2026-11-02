@@ -4,9 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { createDisposableDatabase } from '../helpers/disposable-db.js';
 import { seedReviewFixture } from '../helpers/listing-review-fixture.js';
 import { seedFinanceFixture } from '../helpers/finance-fixture.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileBackedRazorpay } from '../helpers/fake-razorpay.mjs';
 
 test(
-  'Story 4.4 remedy actions: FormData in, refusals as state',
+  'Story 4.4/4.5 remedy actions: FormData in, refusals as state',
   { skip: !process.env.PORTAL_TEST_DATABASE_URL },
   async () => {
     const db = await createDisposableDatabase(process.env.PORTAL_TEST_DATABASE_URL);
@@ -35,7 +39,8 @@ test(
 
       const { runWithContext } = await import('../../src/runtime/context.js');
       const { createAdminSession } = await import('../../src/services/auth/admin.js');
-      const { previewRemedy, decideRemedy } = await import('../../src/services/support/actions.js');
+      const { previewRemedy, decideRemedy, executeRemedy, incidentRepaymentLink } =
+        await import('../../src/services/support/actions.js');
       let token;
       await runWithContext(
         { req: { cookies: {} }, res: { cookie: (_n, value) => (token = value) } },
@@ -109,6 +114,44 @@ test(
       ]);
       assert.equal(none.code, 'REMEDY_UNAVAILABLE');
       assert.equal(none.status, 422);
+
+      // Story 4.5: execute refusals come back as state; bad input as field errors.
+      const staleRun = await call(executeRemedy, [
+        ['id', caseId],
+        ['decisionId', saved.decision.id],
+        ['digest', 'b'.repeat(64)],
+        ['requestKey', randomUUID()],
+      ]);
+      assert.equal(staleRun.code, 'PREVIEW_CHANGED');
+      assert.equal(staleRun.preview.additionalDueMinor, 108000);
+      const bad = await call(executeRemedy, [
+        ['id', caseId],
+        ['decisionId', saved.decision.id],
+        ['digest', 'x'],
+        ['requestKey', 'nope'],
+      ]);
+      assert.equal(bad.status, 422);
+      assert.ok(bad.errors.digest && bad.errors.requestKey);
+      const [ob] =
+        await sql`INSERT INTO incident_owner_obligation(decision_id,owner_id,order_id,amount_minor,components,state)
+        VALUES (${saved.decision.id},${f.owner},${s.orderId},500,'{"reassigned_fee_minor":250,"owner_fee_share_minor":250}','due') RETURNING id`;
+      process.env.RAZORPAY_KEY_ID = 'rzp_test_ACTION45';
+      process.env.RAZORPAY_KEY_SECRET = 'action-disposable-secret';
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = fileBackedRazorpay(
+        join(mkdtempSync(join(tmpdir(), 'act45-')), 'rzp.json'),
+      );
+      try {
+        const linked = await call(incidentRepaymentLink, [
+          ['id', caseId],
+          ['obligationId', ob.id],
+          ['requestKey', randomUUID()],
+        ]);
+        assert.equal(linked.link.amountMinor, '500');
+        assert.equal(linked.link.incidentObligationId, ob.id);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
     } finally {
       await db.drop();
     }

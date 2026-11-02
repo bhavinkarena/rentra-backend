@@ -10,7 +10,12 @@ import {
   manageSupportRequest,
   SupportError,
 } from './service.js';
-import { previewIncidentRemedy, decideIncidentRemedy } from './remedy.js';
+import { previewIncidentRemedy, decideIncidentRemedy, executeIncidentAward } from './remedy.js';
+import {
+  createIncidentRepaymentLink,
+  checkIncidentRepaymentLink,
+  resolveIncidentRepaymentLink,
+} from '../finance/owner-repayment.js';
 
 /** Story 4.1: each `affected` checkbox is a visit id, or `visitId|roomTypeId` for one hotel room line. */
 const stayIssueFields = (form) => ({
@@ -142,7 +147,7 @@ async function remedyCall(run) {
   } catch (error) {
     if (error.name === 'ZodError') return { errors: error.flatten().fieldErrors };
     if (error.isOperational && error.code !== 'NOT_FOUND')
-      return { error: error.message, code: error.code, status: error.statusCode, ...(error.preview ? { preview: error.preview } : {}) };
+      return { error: error.message, code: error.code, status: error.statusCode, ...(error.fields ? { errors: error.fields } : {}), ...(error.preview ? { preview: error.preview } : {}) };
     throw error;
   }
 }
@@ -158,6 +163,39 @@ export async function decideRemedy(previous, form) {
       digest: form.get('digest') || undefined,
       requestKey: form.get('requestKey'),
     });
-    return { decision, message: 'Decision saved. No money moves until Story 4.5 execution.' };
+    return { decision, message: 'Saved. Execute the award to queue the Test refund.' };
   });
+}
+
+/* Story 4.5: execute the active award (Test); PREVIEW_CHANGED returns the fresh figures. */
+export async function executeRemedy(previous, form) {
+  return remedyCall(async () => {
+    const execution = await executeIncidentAward(sql, await supportActor('admin'), {
+      decisionId: form.get('decisionId'),
+      digest: form.get('digest'),
+      requestKey: form.get('requestKey'),
+    });
+    return { execution, message: execution.replayed ? 'Already executed with this request.' : 'Award executed (Test).' };
+  });
+}
+export async function incidentRepaymentLink(previous, form) {
+  return remedyCall(async () => ({
+    link: await createIncidentRepaymentLink(sql, await supportActor('admin'), form.get('id'), form.get('obligationId'), { requestKey: form.get('requestKey') }),
+    message: 'Test repayment link created.',
+  }));
+}
+export async function incidentRepaymentCheck(previous, form) {
+  return remedyCall(async () => ({
+    check: await checkIncidentRepaymentLink(sql, await supportActor('admin'), form.get('id'), form.get('obligationId')),
+    message: 'Provider re-checked (Test).',
+  }));
+}
+export async function incidentRepaymentResolve(previous, form) {
+  return remedyCall(async () => ({
+    link: await resolveIncidentRepaymentLink(sql, await supportActor('admin'), form.get('id'), form.get('obligationId'), {
+      linkId: form.get('linkId'),
+      reason: form.get('reason'),
+    }),
+    message: 'Link closed. Create a new link if the obligation is still due.',
+  }));
 }

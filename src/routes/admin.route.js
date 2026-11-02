@@ -352,6 +352,10 @@ router.get('/support/:id/attachments/:attachmentId', support.attachment);
 for (const [path, handler] of [
   ['remedy/preview', support.remedyPreview],
   ['remedy/decide', support.remedyDecide],
+  ['remedy/execute', support.remedyExecute],
+  ['remedy/repayment-link', support.remedyRepaymentLink],
+  ['remedy/repayment-link/check', support.remedyRepaymentCheck],
+  ['remedy/repayment-link/resolve', support.remedyRepaymentResolve],
 ])
   router.post(
     `/support/:id/${path}`,
