@@ -265,8 +265,12 @@ test(
         message: 'Minimum 3 nights for Saturday arrival',
       });
       await rejects(quote(session, sel(day(40), day(131))), 'MAX_NIGHTS');
-      await rejects(quote(session, sel(day(40), day(42), { adults: 3 })), 'OCCUPANCY');
-      await rejects(quote(session, sel(day(40), day(42), { childAges: [3, 9] })), 'OCCUPANCY');
+      // Tuesday arrival so the Saturday minimum-nights rule never fires first.
+      await rejects(quote(session, sel(tue, addLocalDays(tue, 2), { adults: 3 })), 'OCCUPANCY');
+      await rejects(
+        quote(session, sel(tue, addLocalDays(tue, 2), { childAges: [3, 9] })),
+        'OCCUPANCY',
+      );
     });
 
     await t.test(
