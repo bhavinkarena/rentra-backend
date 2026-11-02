@@ -7,6 +7,7 @@ import { assertInitiationEnabled } from './initiation-switch.js';
 import { facts } from './owner-recovery.js';
 import { issueNotice, noticeView } from './owner-repayment-notice.js';
 import { withListingInventory } from '../booking/inventory.js';
+import { resolutionView } from '../support/remedy.js';
 import {
   razorpayTestAdapter,
   verifyCheckoutSignature,
@@ -225,7 +226,13 @@ export async function listOwnerRepayments(database, ownerId, opts = {}) {
   // Checkout needs the public Test key id only; the secret never leaves the server.
   const keyId = /^rzp_test_[A-Za-z0-9]+$/.test(env.RAZORPAY_KEY_ID?.trim() ?? '') ? env.RAZORPAY_KEY_ID.trim() : null;
   const { overdue, outstandingMinor } = await ownerRepaymentStatus(database, ownerId);
-  return { environment: 'test', keyId, overdue, outstandingMinor, items: rows.map((r) => ({ ...view(r), bookingRef: r.booking_ref, notice: noticeView(r) })) };
+  // Story 4.6: executed owner-funded incident awards (case reference/outcome/reason only).
+  const all = await resolutionView(database, null, 'owner', { ownerId });
+  const byObligation = new Map(all.map((i) => [i.obligation.id, i]));
+  const linked = new Set(rows.map((r) => r.incident_obligation_id).filter(Boolean));
+  const incident = (id) => { const i = id && byObligation.get(id); return i ? { reference: i.reference, outcome: i.outcome, reason: i.reason } : null; };
+  return { environment: 'test', keyId, overdue, outstandingMinor, incidents: all.filter((i) => !linked.has(i.obligation.id)),
+    items: rows.map((r) => ({ ...view(r), bookingRef: r.booking_ref, notice: noticeView(r), incident: incident(r.incident_obligation_id) })) };
 }
 
 const verifySchema = z.object({ paymentId: z.string().regex(/^pay_[A-Za-z0-9]+$/),

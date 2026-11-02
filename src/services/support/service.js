@@ -7,7 +7,7 @@ import { publicContent } from '../content/service.js';
 import { preparePhotos } from '../booking/visit-evidence.js';
 import { raiseAdminAlert } from '../admin/admin-alerts.js';
 import { evidenceStore } from '../uploads/evidence-store.js';
-import { decisionView, remedyCaps, readExecutions } from './remedy.js';
+import { remedyCaps, resolutionView } from './remedy.js';
 import { ISSUE_TYPES, REMEDIES, ISSUE_LABELS, issuePriority, isLateReport, discoveryProblem, issueEligibility } from '../domain/stay-issue.js';
 
 import { SupportError } from './errors.js';
@@ -440,10 +440,6 @@ export async function readSupportRequest(database, actor, id, env = process.env)
     const [staff] = admin
       ? await tx`SELECT permissions FROM admin_user WHERE id=${actorId} AND is_active=true`
       : [];
-    // Story 4.4: the active reviewed remedy decision; controls only with payments access.
-    const [decision] = admin && row.category === 'stay_issue'
-      ? await tx`SELECT * FROM incident_remedy_decision WHERE support_request_id=${row.id} AND superseded_at IS NULL`
-      : [];
     const caps = remedyCaps(staff);
     const history = admin
       ? await tx`SELECT action,at,"after" FROM audit_log WHERE entity='support_request' AND entity_id=${row.id} ORDER BY at,id`
@@ -456,7 +452,11 @@ export async function readSupportRequest(database, actor, id, env = process.env)
             operators,
             history,
             remedy: row.category === 'stay_issue' && row.order_id
-              ? { decision: decision ? decisionView(decision) : null, executions: caps.canPreview ? await readExecutions(tx, row.id) : [], canPreview: caps.canPreview, canDecide: caps.canDecide }
+              ? await (async () => {
+                  // Story 4.4/4.6: active decision; executions only with payments access.
+                  const r = (await resolutionView(tx, row.id, 'admin')) ?? { decision: null, executions: [] };
+                  return { decision: r.decision, executions: caps.canPreview ? r.executions : [], canPreview: caps.canPreview, canDecide: caps.canDecide };
+                })()
               : null,
             canReply:
               !!staff &&
@@ -472,7 +472,9 @@ export async function readSupportRequest(database, actor, id, env = process.env)
               at: new Date(a.created_at).toISOString(),
             })),
           }
-        : {}),
+        : actor.kind === 'customer' && row.category === 'stay_issue' && row.order_id
+          ? { resolution: await resolutionView(tx, row.id, 'guest') }
+          : {}),
       messages: messages.map((m) => ({
         id: m.id,
         author:

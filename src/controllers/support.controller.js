@@ -36,18 +36,21 @@ const kindOf = (req) => {
   return kind;
 };
 
-export const list = asyncHandler(async (req, res) =>
-  ok(res, await listSupportRequests(sql, await supportActor(kindOf(req)), req.query)),
-);
+export const list = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  ok(res, await listSupportRequests(sql, await supportActor(kindOf(req)), req.query));
+});
 
-export const detail = asyncHandler(async (req, res) =>
-  ok(res, await supportRecordPage(kindOf(req), req.params.id)),
-);
+export const detail = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store'); // Story 4.6: carries the case resolution.
+  ok(res, await supportRecordPage(kindOf(req), req.params.id));
+});
 
 /** The raw conversation, without the page wrapper. Used for polling a thread. */
-export const thread = asyncHandler(async (req, res) =>
-  ok(res, await readSupportRequest(sql, await supportActor(kindOf(req)), req.params.id)),
-);
+export const thread = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  ok(res, await readSupportRequest(sql, await supportActor(kindOf(req)), req.params.id));
+});
 
 /**
  * Opening a request redirects to the new conversation on success, so this

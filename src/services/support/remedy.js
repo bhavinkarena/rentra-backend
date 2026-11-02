@@ -212,7 +212,7 @@ const conflictError = (code, message, extra = {}) => Object.assign(new SupportEr
 /** Refund rows of an execution with a display status from the existing refund engine. */
 async function executionView(tx, e) {
   const refunds = e.refund_ids.length
-    ? await tx`SELECT r.id,r.reference,r.state,r.expected_minor::text expected,r.actual_minor::text actual,x.dispatched_at
+    ? await tx`SELECT r.id,r.reference,r.state,r.expected_minor::text expected,r.actual_minor::text actual,x.dispatched_at,x.failure_code
         FROM refund r LEFT JOIN refund_execution x ON x.refund_id=r.id WHERE r.id IN ${tx(e.refund_ids)} ORDER BY r.id`
     : [];
   const [obligation] = e.obligation_id ? await tx`SELECT * FROM incident_owner_obligation WHERE id=${e.obligation_id}` : [];
@@ -220,17 +220,73 @@ async function executionView(tx, e) {
     ? await tx`SELECT id,state,amount_minor::text amount FROM owner_repayment WHERE incident_obligation_id=${obligation.id}
         ORDER BY (state='open') DESC,created_at DESC LIMIT 1`
     : [];
+  // Story 4.6: a provider failure code on a not-yet-verified refund means an operator must review it.
   const status = (r) => r.state === 'succeeded' ? 'verified' : r.state === 'failed' ? 'failed'
-    : r.state === 'requested' && !r.dispatched_at ? 'queued' : r.state === 'unknown' ? 'unknown' : 'sent';
+    : r.state === 'unknown' ? 'unknown'
+    // refund_execution holds only the latest attempt; a successful redispatch clears failure_code.
+    : r.failure_code ? 'needs_review'
+    : r.state === 'requested' && !r.dispatched_at ? 'queued' : 'sent';
   return {
     id: e.id,
     decisionId: e.decision_id,
     environment: 'test',
-    refunds: refunds.map((r) => ({ id: r.id, reference: r.reference, status: status(r), amountMinor: r.expected, actualMinor: r.actual })),
+    refunds: refunds.map((r) => {
+      const st = status(r);
+      return { id: r.id, reference: r.reference, status: st, amountMinor: r.expected, actualMinor: r.actual, needsInvestigation: INVESTIGATE.has(st) };
+    }),
     obligation: obligation ? { ...obligationView(obligation), link: link ? { id: link.id, state: link.state, amountMinor: link.amount } : null } : null,
     executedBy: e.executed_by,
     createdAt: new Date(e.created_at).toISOString(),
   };
+}
+
+const INVESTIGATE = new Set(['failed', 'unknown', 'needs_review']);
+const GUEST_STATUS = { queued: 'queued', sent: 'sent', verified: 'refunded' };
+
+/**
+ * Story 4.6: the case outcome and money progress, scoped per audience. Read-only.
+ * - guest: active decision outcome (deny reason only) + every refund actually queued, incl. from
+ *   superseded executed decisions. No responsibility, obligation, notes or admin award reason.
+ * - owner: only executed owner-funded obligations owned by `ownerId`; never evidence or details.
+ * - admin: active decision + all executions (refund rows flag needsInvestigation).
+ */
+export async function resolutionView(tx, supportRequestId, audience, { ownerId } = {}) {
+  if (audience === 'owner') {
+    // One owner-scoped query; supportRequestId null = every case of this owner.
+    const rows = await tx`SELECT io.id,io.amount_minor::text amount,io.state,s.reference,d.target_pct,d.responsibility,d.reason,
+        d.superseded_at IS NOT NULL superseded,cur.kind current_kind,l.state link_state
+      FROM incident_owner_obligation io JOIN incident_remedy_execution e ON e.obligation_id=io.id
+      JOIN incident_remedy_decision d ON d.id=io.decision_id JOIN support_request s ON s.id=d.support_request_id
+      LEFT JOIN incident_remedy_decision cur ON cur.support_request_id=s.id AND cur.superseded_at IS NULL
+      LEFT JOIN LATERAL (SELECT state FROM owner_repayment WHERE incident_obligation_id=io.id
+        ORDER BY (state='open') DESC,created_at DESC LIMIT 1) l ON true
+      WHERE io.owner_id=${ownerId} AND ${supportRequestId ? tx`s.id=${supportRequestId}` : tx`true`}
+      ORDER BY io.created_at DESC,io.id`;
+    return rows.map((r) => ({
+      reference: r.reference,
+      outcome: { kind: 'award', targetPct: r.target_pct, responsibility: r.responsibility,
+        ...(r.superseded ? { superseded: true, currentKind: r.current_kind ?? null } : {}) },
+      reason: r.reason,
+      obligation: { id: r.id, amountMinor: r.amount, state: r.state, link: r.link_state ? { state: r.link_state } : null },
+    }));
+  }
+  const [c] = await tx`SELECT reference FROM support_request WHERE id=${supportRequestId}`;
+  if (!c) return null;
+  const [decision] = await tx`SELECT * FROM incident_remedy_decision WHERE support_request_id=${supportRequestId} AND superseded_at IS NULL`;
+  const executions = await readExecutions(tx, supportRequestId);
+  if (audience === 'admin') return { decision: decision ? decisionView(decision) : null, executions };
+  const executed = decision && executions.some((e) => e.decisionId === decision.id);
+  const refunds = executions.flatMap((e) => e.refunds).map((r) => ({
+    reference: r.reference,
+    amountMinor: r.amountMinor,
+    status: GUEST_STATUS[r.status] ?? 'needs_attention',
+  }));
+  const outcome = decision?.kind === 'deny' ? { status: 'declined', reason: decision.reason }
+    : decision?.kind === 'award' && decision.target_pct != null ? { status: 'approved', targetPct: decision.target_pct, executed }
+    : { status: 'under_review' };
+  // An earlier executed award's refund stands even when the current outcome is not an award.
+  if (outcome.status !== 'approved' && refunds.length) outcome.earlierRefund = true;
+  return { reference: c.reference, outcome, refunds };
 }
 
 /** Every execution on the case, newest first, including those of superseded decisions (read model). */
