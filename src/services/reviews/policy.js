@@ -23,3 +23,10 @@ export function moderationAllowed(state, category) {
     ? category === 'meets_policy'
     : ['private_information', 'harassment', 'spam', 'unrelated_content'].includes(category);
 }
+export const REVIEW_STATE_MESSAGES = {
+  published: 'Your review is live.',
+  pending:
+    "Thanks — your review is being checked before it appears. This usually happens when it contains contact details, links or language our rules don't allow.",
+  rejected: 'This review was not published. Contact support if you think this is wrong.',
+  hidden: 'This review was not published. Contact support if you think this is wrong.',
+};

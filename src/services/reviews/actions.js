@@ -9,6 +9,7 @@ import {
   reportReview,
   closeReviewReport,
 } from './service.js';
+import { REVIEW_STATE_MESSAGES } from './policy.js';
 async function run(operation) {
   try {
     const result = await operation();
@@ -33,21 +34,23 @@ async function run(operation) {
 }
 export async function submitCustomerReview(previous, form) {
   const actor = await bookingActor('customer');
-  return run(() =>
-    submitReview(sql, actor.session, {
-      visitId: form.get('visitId') || undefined,
-      ref: form.get('ref') || undefined,
-      rating: Number(form.get('rating')),
-      body: form.get('body'),
-      ...Object.fromEntries(
-        ['cleanliness', 'accuracy', 'valueForMoney', 'staff', 'location', 'comfort', 'facilities'].map((k) => [
-          k,
-          form.get(k) ? Number(form.get(k)) : null,
-        ]),
-      ),
-      travellerType: form.get('travellerType') || null,
-    }),
-  );
+  const input = {
+    visitId: form.get('visitId') || undefined,
+    ref: form.get('ref') || undefined,
+    rating: Number(form.get('rating')),
+    body: form.get('body'),
+    ...Object.fromEntries(
+      ['cleanliness', 'accuracy', 'valueForMoney', 'staff', 'location', 'comfort', 'facilities'].map((k) => [
+        k,
+        form.get(k) ? Number(form.get(k)) : null,
+      ]),
+    ),
+    travellerType: form.get('travellerType') || null,
+  };
+  const result = await run(() => submitReview(sql, actor.session, input));
+  // A failed submit hands the entered values back so the form keeps them.
+  if (result.error || result.errors) return { ...result, values: input };
+  return { ...result, message: REVIEW_STATE_MESSAGES[result.state] ?? result.message };
 }
 export async function moderateCustomerReview(previous, form) {
   const actor = await bookingActor('admin');

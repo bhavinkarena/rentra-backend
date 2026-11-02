@@ -1,6 +1,7 @@
 import 'server-only';
 import { visitLabel } from '../domain/booking-record.js';
 import { AppError } from '../../utils/apiError.js';
+import { reviewContentFlags } from './content-check.js';
 import { reviewPreviewToken, moderationAllowed, REVIEW_REASONS } from './policy.js';
 import { z } from 'zod';
 import { withListingInventory } from '../booking/inventory.js';
@@ -90,9 +91,15 @@ export async function submitReview(database, session, input, env = process.env) 
         throw new ReviewError('ALREADY_REVIEWED');
       return { id: old.id, state: old.moderation_state };
     }
+    // FR21: no blanket pre-approval. This is the only writer of 'auto:clean' (the guard accepts it on INSERT only).
+    // Clean text publishes now; flagged text waits in the admin queue.
+    const flags = reviewContentFlags(v.body);
+    const state = flags.length ? 'pending' : 'published';
+    const reason = flags.length ? `auto:${flags.join(',')}` : 'auto:clean';
     const [row] =
-      await tx`INSERT INTO review(booking_id,rentable_id,author_id,author_role,rating,body,cleanliness,accuracy,value_for_money,staff,location,comfort,facilities,traveller_type)
-      VALUES(${visitId},${scope.rentable_id},${customer.id},'customer',${v.rating},${v.body},${v.cleanliness},${v.accuracy},${v.valueForMoney},${v.staff},${v.location},${v.comfort},${v.facilities},${v.travellerType}) RETURNING id,moderation_state`;
+      await tx`INSERT INTO review(booking_id,rentable_id,author_id,author_role,rating,body,cleanliness,accuracy,value_for_money,staff,location,comfort,facilities,traveller_type,moderation_state,moderation_reason,published_at)
+      VALUES(${visitId},${scope.rentable_id},${customer.id},'customer',${v.rating},${v.body},${v.cleanliness},${v.accuracy},${v.valueForMoney},${v.staff},${v.location},${v.comfort},${v.facilities},${v.travellerType},${state},${reason},${state === 'published' ? tx`now()` : null}) RETURNING id,moderation_state`;
+    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES('customer',${customer.id},'review',${row.id},${flags.length ? 'review_auto_flagged' : 'review_auto_published'},${JSON.stringify({ state, reason })}::jsonb)`;
     return { id: row.id, state: row.moderation_state };
   });
 }
@@ -101,7 +108,7 @@ export async function reviewOrder(database, session, orderId, env = process.env)
   return database.begin(async (tx) => {
     const customer = await lockCustomerAccount(tx, session, env);
     const [order] =
-      await tx`SELECT id,reference FROM booking_order WHERE id=${orderId} AND customer_id=${customer.id}`;
+      await tx`SELECT o.id,o.reference,l.slug listing_slug,l.public_code listing_code FROM booking_order o JOIN rentable l ON l.id=o.rentable_id WHERE o.id=${orderId} AND o.customer_id=${customer.id}`;
     if (!order) throw new ReviewError('NOT_FOUND');
     const visits = await tx`SELECT b.id,b.reference,b.local_day::text date,b.slot,b.state,b.starts_at,b.ends_at,b.hours_known,b.time_zone,b.slot_snapshot,
       rentra_review_eligible(b.id,${customer.id},b.rentable_id) eligible,r.id review_id,r.rating,r.body,r.moderation_state,r.moderation_reason
@@ -271,16 +278,16 @@ export async function reviewQueue(database, actor, page = 1, rentableId = null, 
     const rows =
       await tx`SELECT r.id,r.rating,r.body,r.owner_reply,r.version,r.moderation_state,r.rentable_id,l.title,r.created_at,
         split_part(coalesce(u.name,'Guest'),' ',1) guest_first_name,b.local_day::text visit_date,b.reference visit_reference,
-        (SELECT p.created_at FROM review_report p WHERE p.review_id=r.id AND p.reporter_id=${actor.id}) reported_at
+        (SELECT p.created_at FROM review_report p WHERE p.review_id=r.id AND p.reporter_id=${actor.id}) reported_at${actor.kind === 'admin' ? tx`,r.moderation_reason` : tx``}
       FROM review r JOIN rentable l ON l.id=r.rentable_id JOIN "user" u ON u.id=r.author_id JOIN booking b ON b.id=r.booking_id
-      WHERE r.author_role='customer' AND ${condition} ${property} ${actor.kind === 'owner' && tab === 'needs_reply' ? tx`AND r.owner_reply IS NULL AND r.id IN (SELECT id FROM public_customer_review)` : tx``}
+      WHERE r.author_role='customer' AND ${condition} ${property} ${actor.kind === 'owner' && tab === 'needs_reply' ? tx`AND r.owner_reply IS NULL AND r.id IN (SELECT id FROM public_customer_review)` : actor.kind === 'admin' && tab === 'auto_published' ? tx`AND r.moderation_state='published' AND r.moderation_reason='auto:clean'` : tx``}
       ORDER BY r.created_at DESC,r.id DESC LIMIT 31 OFFSET ${offset}`;
     const reports =
       actor.kind === 'admin'
         ? await tx`SELECT p.id,p.review_id,p.reason,r.body,r.rating,r.version FROM review_report p JOIN review r ON r.id=p.review_id WHERE p.state='open' ORDER BY p.created_at,p.id LIMIT 30`
         : [];
     const [stats] = actor.kind === 'owner' ? await tx`SELECT count(*)::int count,round(avg(r.rating)::numeric,1) average FROM public_customer_review r JOIN rentable l ON l.id=r.rentable_id WHERE l.client_id=${actor.id} ${property}` : [{}];
-    return { stats, tab: tab === 'needs_reply' ? 'needs_reply' : 'all', rows: rows.slice(0, 30), reports, hasNext: rows.length > 30, page: offset / 30 + 1 };
+    return { stats, tab: ['needs_reply', 'auto_published'].includes(tab) ? tab : 'all', rows: rows.slice(0, 30), reports, hasNext: rows.length > 30, page: offset / 30 + 1 };
   });
 }
 

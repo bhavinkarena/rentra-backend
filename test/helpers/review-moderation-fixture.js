@@ -2,7 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { recordVisitTransition } from '../../src/services/booking/visit-lifecycle.js';
 import { submitReview } from '../../src/services/reviews/service.js';
 /** Disposable fixtures only: actual provenance tests the real-evidence eligibility contract. */
-export async function seedReviewModeration(sql, f, booking) {
+/** Pending by default (set explicitly, independent of content rules), as the moderation tests need. */
+export async function seedReviewModeration(
+  sql,
+  f,
+  booking,
+  {
+    body = 'The visit did not meet my expectations. The garden was poorly maintained.',
+    pending = true,
+  } = {},
+) {
   const [visit] =
     await sql`UPDATE booking SET visit_provenance='real',hours_known=true,starts_at=now()-interval '4 hours',ends_at=now()-interval '1 hour',blocked_start_at=now()-interval '4 hours',blocked_end_at=now()-interval '1 hour' WHERE order_id=${booking.order} RETURNING id`;
   for (const [i, phase] of ['handover', 'return', 'complete'].entries()) {
@@ -27,7 +36,9 @@ export async function seedReviewModeration(sql, f, booking) {
   const review = await submitReview(sql, customer, {
     visitId: visit.id,
     rating: 1,
-    body: 'The visit did not meet my expectations. The garden was poorly maintained.',
+    body,
   });
+  if (pending)
+    await sql`UPDATE review SET moderation_state='pending',published_at=NULL,moderation_reason=NULL WHERE id=${review.id}`;
   return { reviewId: review.id, visitId: visit.id, customer };
 }
