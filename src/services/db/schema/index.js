@@ -2063,9 +2063,24 @@ export const reviewReport = pgTable('review_report', {
   resolution: text('resolution'),
   resolvedBy: uuid('resolved_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  outcome: varchar('outcome', { length: 16 }),
+  outcomeInferred: boolean('outcome_inferred'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => [uniqueIndex('review_report_author_idx').on(t.reviewId, t.reporterId),
-  check('review_report_valid_chk', sql`${t.state} IN ('open','closed') AND length(trim(${t.reason})) BETWEEN 10 AND 1000 AND (${t.state}='open' OR (${t.resolution} IS NOT NULL AND ${t.resolvedBy} IS NOT NULL AND ${t.resolvedAt} IS NOT NULL))`)]);
+  check('review_report_valid_chk', sql`${t.state} IN ('open','closed') AND length(trim(${t.reason})) BETWEEN 10 AND 1000 AND (${t.state}='open' OR (${t.resolution} IS NOT NULL AND ${t.resolvedBy} IS NOT NULL AND ${t.resolvedAt} IS NOT NULL))`),
+  check('review_report_outcome_chk', sql`(${t.state}='open' AND ${t.outcome} IS NULL) OR (${t.state}='closed' AND ${t.outcome} IN ('upheld','not_violation'))`)]);
+
+/** Story 5.4: append-only photo evidence on a review report; admin and the reporter only. */
+export const reviewReportAttachment = pgTable('review_report_attachment', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  reportId: uuid('report_id').notNull().references(() => reviewReport.id, { onDelete: 'restrict' }),
+  storageKey: text('storage_key').notNull(),
+  mime: varchar('mime', { length: 32 }).notNull(),
+  bytes: integer('bytes').notNull(),
+  sha256: varchar('sha256', { length: 64 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [uniqueIndex('review_report_attachment_hash_idx').on(t.reportId, t.sha256),
+  check('review_report_attachment_valid_chk', sql`${t.mime} IN ('image/jpeg','image/png','image/webp') AND ${t.bytes} BETWEEN 1 AND 2097152`)]);
 
 export const supportRequest = pgTable('support_request', {
   id: uuid('id').primaryKey().defaultRandom(),

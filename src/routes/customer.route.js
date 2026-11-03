@@ -68,7 +68,8 @@ router.get(
 );
 router.get('/reviews/:reviewId', customer, validate({ params: reviewIdParam }), reviews.detail);
 router.post('/reviews', customer, formFields(), reviews.submit);
-router.post('/reviews/report', customer, formFields(), reviews.reportByCustomer);
+router.post('/reviews/report', customer, uploadLimiter, evidencePhotos(), reviews.reportByCustomer);
+router.get('/reviews/reports/:reportId/attachments/:attachmentId', customer, reviews.reportAttachment);
 
 /* ---------------------------------------------------------------- *
  * Support

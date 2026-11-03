@@ -292,6 +292,7 @@ router.post('/records/incident', uploadLimiter, evidencePhotos(), records.adminI
 router.post('/records/incident/close', formFields(), records.closeIncident);
 router.post('/records/evidence/correct', formFields(), records.correctEvidence);
 
+router.get('/reviews/reports/:reportId/attachments/:attachmentId', reviews.reportAttachment);
 router.get('/reviews/:reviewId', reviews.operationalDetail);
 router.get('/reviews', reviews.queue);
 router.post('/reviews/moderate', formFields(), reviews.moderate);

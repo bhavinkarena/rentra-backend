@@ -484,7 +484,8 @@ router.post('/records/cases/update', requireActiveClient, formFields(), records.
 router.get('/reviews/:reviewId', requireActiveClient, reviews.operationalDetail);
 router.get('/reviews', requireActiveClient, reviews.queue);
 router.post('/reviews/reply', requireActiveClient, formFields(), reviews.reply);
-router.post('/reviews/report', requireActiveClient, formFields(), reviews.reportByOwner);
+router.post('/reviews/report', requireActiveClient, uploadLimiter, evidencePhotos(), reviews.reportByOwner);
+router.get('/reviews/reports/:reportId/attachments/:attachmentId', requireActiveClient, reviews.reportAttachment);
 
 router.get('/support', validate({ query: supportListQuery }), support.list);
 router.post('/support', uploadLimiter, evidencePhotos(), support.openAsOwner);

@@ -42,7 +42,7 @@ import {
   replyToReview,
   reviewQueue,
   reportReview,
-  closeReviewReport,
+  resolveReviewReport,
 } from '../../src/services/reviews/service.js';
 import { issuePortalSession, validPortalSession } from '../../src/services/auth/portal-sessions.js';
 import {
@@ -463,10 +463,7 @@ test(
       assert.equal(duplicate.id, report.id);
       assert.equal(duplicate.alreadyReported, true);
       assert.ok(duplicate.reportedAt);
-      await closeReviewReport(sql, f.admin, {
-        id: report.id,
-        resolution: 'The review meets the publication policy and remains public.',
-      });
+      await resolveReviewReport(sql, f.admin, { reportId: report.id, outcome: 'not_violation', note: 'The review meets the publication policy and remains public.' });
       assert.equal(
         (
           await sql`SELECT count(*)::int n FROM client_update WHERE client_id=${f.owner} AND action='review_report_closed'`

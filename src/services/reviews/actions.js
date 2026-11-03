@@ -7,7 +7,7 @@ import {
   moderateReview,
   replyToReview,
   reportReview,
-  closeReviewReport,
+  resolveReviewReport as resolveReport,
 } from './service.js';
 import { REVIEW_STATE_MESSAGES } from './policy.js';
 async function run(operation) {
@@ -81,15 +81,46 @@ export async function ownerReviewReply(previous, form) {
 }
 export async function customerReviewReport(previous, form) {
   const actor = await bookingActor('customer');
-  return run(() => reportReview(sql, actor, { id: form.get('id'), reason: form.get('reason') }));
+  return report(actor, form);
 }
 export async function ownerReviewReport(previous, form) {
-  const actor = await bookingActor('owner');
-  return run(() => reportReview(sql, actor, { id: form.get('id'), reason: form.get('reason') }));
+  return report(await bookingActor('owner'), form);
+}
+async function report(actor, form) {
+  const input = { id: form.get('id'), reason: form.get('reason') };
+  const values = { reason: input.reason };
+  let result;
+  try {
+    result = await run(() => reportReview(sql, actor, input, process.env, form.getAll('photos')));
+  } catch (error) {
+    // Photo refusals keep the typed reason so the form refills.
+    if (!['INVALID_ATTACHMENT', 'UPLOADS_UNAVAILABLE'].includes(error.code)) throw error;
+    return { error: error.message, code: error.code, status: error.statusCode, values };
+  }
+  if (result.error || result.errors) return { ...result, values };
+  if (result.photosIgnored)
+    return { ...result, message: 'You already reported this review; new photos were not added.' };
+  return result;
 }
 export async function resolveReviewReport(previous, form) {
   const actor = await bookingActor('admin');
+  const outcome = form.get('outcome');
   return run(() =>
-    closeReviewReport(sql, actor.id, { id: form.get('id'), resolution: form.get('resolution') }),
+    resolveReport(sql, actor.id, {
+      reportId: form.get('id'),
+      outcome,
+      note: form.get('note'),
+      ...(outcome === 'upheld' && form.get('state')
+        ? {
+            moderation: {
+              state: form.get('state'),
+              reason: form.get('category'),
+              version: form.get('version') ? Number(form.get('version')) : undefined,
+              preview: form.get('mode') === 'preview',
+              previewToken: form.get('previewToken') || undefined,
+            },
+          }
+        : {}),
+    }),
   );
 }

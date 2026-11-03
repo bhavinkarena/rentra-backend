@@ -7,7 +7,7 @@ import {
   moderateReview,
   replyToReview,
   reportReview,
-  closeReviewReport,
+  resolveReviewReport,
   reviewDetail,
   reviewQueue,
   publicReview,
@@ -99,18 +99,12 @@ test(
       );
       const close = await Promise.allSettled(
         [1, 2].map(() =>
-          closeReviewReport(sql, f.admin, {
-            id: report.id,
-            resolution: 'The low score is not a violation. The review remains public.',
-          }),
+          resolveReviewReport(sql, f.admin, { reportId: report.id, outcome: 'not_violation', note: 'The low score is not a violation. The review remains public.' }),
         ),
       );
       assert.equal(close.filter((x) => x.status === 'fulfilled').length, 1);
       assert.equal((await totals()).review_count, 1);
-      await closeReviewReport(sql, f.admin, {
-        id: guestReport.id,
-        resolution: 'No policy violation found; retain the review and its score.',
-      });
+      await resolveReviewReport(sql, f.admin, { reportId: guestReport.id, outcome: 'not_violation', note: 'No policy violation found; retain the review and its score.' });
       const hide = {
         id,
         version: (await current()).version,

@@ -12,7 +12,10 @@ import {
   reviewQueue,
   publicReview,
   reviewDetail,
+  reviewReportAttachment,
 } from '@/services/reviews/service.js';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { bookingActor } from '@/services/booking/record-page.js';
 import { recordKindFromBaseUrl } from '@/services/booking/record-scope.js';
 import { getSession } from '@/services/auth/dal.js';
@@ -28,7 +31,7 @@ export const forOrder = asyncHandler(async (req, res) =>
 
 /** One review, for the form that reports it. */
 export const detail = asyncHandler(async (req, res) =>
-  ok(res, await publicReview(sql, req.params.reviewId)),
+  ok(res, await publicReview(sql, req.params.reviewId, await getSession())),
 );
 
 /** Moderation queue. The actor decides what is visible in it, not the caller. */
@@ -68,3 +71,30 @@ export const operationalDetail = asyncHandler(async (req, res) =>
     ),
   ),
 );
+
+/** Report evidence: admin, or the reporter for their own report; private, never cached. */
+export const reportAttachment = asyncHandler(async (req, res) => {
+  const file = await reviewReportAttachment(
+    sql,
+    await bookingActor(recordKindFromBaseUrl(req.baseUrl)),
+    req.params.reportId,
+    req.params.attachmentId,
+    process.env,
+    undefined,
+    { download: req.query.download === '1' },
+  );
+  res.set({
+    'Content-Type': file.mimeType,
+    'Content-Length': String(file.bytes),
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Disposition': `inline; filename="report-photo.${{ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[file.mimeType] || 'bin'}"`,
+    'Content-Security-Policy': "default-src 'none'; sandbox",
+    'Referrer-Policy': 'no-referrer',
+  });
+  try {
+    await pipeline(Readable.fromWeb(file.body), res);
+  } catch (error) {
+    res.destroy(error);
+  }
+});

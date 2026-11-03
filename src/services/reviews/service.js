@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { withListingInventory } from '../booking/inventory.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
+import { preparePhotos } from '../booking/visit-evidence.js';
+import { evidenceStore } from '../uploads/evidence-store.js';
 const uuid = z.string().uuid();
 const score = z.number().int().min(1).max(5);
 const submission = z
@@ -38,10 +40,12 @@ export class ReviewError extends AppError {
         ALREADY_ELIGIBLE: 'Completed stays use the normal review.',
         NOT_AFFECTED: 'Choose a visit listed on this stay-issue case.',
         REQUEST_REUSED: 'This request key was already used for a different decision.',
+        MODERATION_REQUIRED: 'Upholding a report requires hiding or rejecting the review with a policy reason.',
+        ALREADY_CLOSED: 'This report is already closed.',
       }[code] || code,
       ['NOT_FOUND', 'FORBIDDEN'].includes(code)
         ? 404
-        : ['SCOPED_REVIEW', 'NOT_AFFECTED'].includes(code)
+        : ['SCOPED_REVIEW', 'NOT_AFFECTED', 'MODERATION_REQUIRED'].includes(code)
           ? 422
           : 409,
       { code },
@@ -153,6 +157,12 @@ export async function moderateReview(database, adminId, input) {
     .parse(input);
   return scopedReview(database, v.id, async (tx, row) => {
     await activeAdmin(tx, adminId);
+    return applyModeration(tx, adminId, row, v);
+  });
+}
+/** Shared by moderateReview and an upheld report: version, eligibility, preview token, update, audit. */
+async function applyModeration(tx, adminId, row, v) {
+  {
     if (row.version !== v.version) throw new ReviewError('CHANGED');
     if (!moderationAllowed(v.state, v.category)) throw new ReviewError('INVALID_REASON');
     if (
@@ -185,7 +195,7 @@ export async function moderateReview(database, adminId, input) {
     await tx`UPDATE review SET moderation_state=${v.state},moderation_reason=${v.reason},moderated_by=${adminId},moderated_at=now(),
       published_at=CASE WHEN ${v.state === 'published'} THEN clock_timestamp() ELSE NULL END,version=version+1 WHERE id=${v.id}`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES('admin',${adminId},'review',${v.id},'review_moderated',${JSON.stringify({ state: row.moderation_state, reason: row.moderation_reason, version: row.version })}::text::jsonb,${JSON.stringify({ ...values, version: row.version + 1 })}::text::jsonb)`;
-  });
+  }
 }
 export async function replyToReview(database, ownerId, input) {
   uuid.parse(ownerId);
@@ -235,11 +245,26 @@ export async function replyToReview(database, ownerId, input) {
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES('client',${ownerId},'review',${v.id},'review_reply',${JSON.stringify({ body: row.owner_reply, version: row.version })}::text::jsonb,${JSON.stringify({ body: v.body, version: row.version + 1 })}::text::jsonb)`;
   });
 }
-export async function reportReview(database, actor, input, env = process.env) {
+export async function reportReview(database, actor, input, env = process.env, files = [], store = evidenceStore()) {
   const v = z
     .object({ id: uuid, reason: z.string().trim().min(10).max(1000) })
     .strict()
     .parse(input);
+  let photos;
+  try {
+    // The same image picked twice is stored once (preparePhotos would refuse it outright).
+    const seen = new Set(),
+      unique = [];
+    for (const file of files) {
+      if (!file || typeof file.arrayBuffer !== 'function') continue;
+      const hash = createHash('sha256').update(Buffer.from(await file.arrayBuffer())).digest('hex');
+      if (!seen.has(hash)) seen.add(hash) && unique.push(file);
+    }
+    photos = await preparePhotos(unique);
+  } catch (error) {
+    if (error.code === 'INVALID_ATTACHMENT') throw new AppError(error.message, 422, { code: error.code, fields: { photos: [error.message] } });
+    throw error;
+  }
   return scopedReview(database, v.id, async (tx, row, listing) => {
     let reporter;
     if (actor.kind === 'customer')
@@ -258,25 +283,110 @@ export async function reportReview(database, actor, input, env = process.env) {
     if (!(await tx`SELECT id FROM public_customer_review WHERE id=${row.id}`).length)
       throw new ReviewError('NOT_FOUND');
     const [existing] = await tx`SELECT id,created_at FROM review_report WHERE review_id=${row.id} AND reporter_id=${reporter}`;
-    if (existing) return { id: existing.id, alreadyReported: true, reportedAt: new Date(existing.created_at).toISOString() };
+    if (existing)
+      return {
+        id: existing.id,
+        alreadyReported: true,
+        reportedAt: new Date(existing.created_at).toISOString(),
+        ...(photos.length ? { photosIgnored: true } : {}),
+      };
+    if (photos.length && !store.configured())
+      throw new AppError('Photo storage is unavailable. Your report has not been saved.', 503, { code: 'UPLOADS_UNAVAILABLE' });
     const [report] =
       await tx`INSERT INTO review_report(review_id,reporter_id,reason) VALUES(${row.id},${reporter},${v.reason})
       ON CONFLICT(review_id,reporter_id) DO UPDATE SET reason=review_report.reason RETURNING id,created_at`;
-    return {id: report.id, reportedAt: new Date(report.created_at).toISOString()};
+    // ponytail: uploads run inside the transaction like support evidence; a rollback can orphan a blob.
+    for (const photo of photos) {
+      const saved = await store.put({ folder: `rentra/review-report/${report.id}`, name: photo.sha256, buffer: photo.buffer, mime: photo.mime });
+      await tx`INSERT INTO review_report_attachment(report_id,storage_key,mime,bytes,sha256) VALUES(${report.id},${saved.key},${photo.mime},${photo.bytes},${photo.sha256})`;
+    }
+    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES(${actor.kind === 'owner' ? 'client' : 'customer'},${reporter},'review_report',${report.id},'review_report_created',${JSON.stringify({ reviewId: row.id, reason: v.reason, photos: photos.length })}::text::jsonb)`;
+    return { id: report.id, reportedAt: new Date(report.created_at).toISOString() };
   });
 }
-export async function closeReviewReport(database, adminId, input) {
-  const v = z
-    .object({ id: uuid, resolution: z.string().trim().min(10).max(1000) })
-    .strict()
-    .parse(input);
-  return database.begin(async (tx) => {
+const nonPublishReasons = REVIEW_REASONS.filter((r) => r !== 'meets_policy');
+const resolution = z
+  .object({
+    reportId: uuid,
+    outcome: z.enum(['upheld', 'not_violation']),
+    note: z.string().trim().min(10).max(1000),
+    moderation: z
+      .object({
+        state: z.enum(['hidden', 'rejected']),
+        reason: z.enum(nonPublishReasons),
+        version: z.number().int().nonnegative(),
+        preview: z.boolean().default(false),
+        previewToken: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+/**
+ * Story 5.4: close a report with an outcome. Upheld hides or rejects the review (with the note as
+ * the moderation reason) in the same transaction; not_violation leaves the review untouched.
+ */
+export async function resolveReviewReport(database, adminId, input) {
+  const v = resolution.parse(input);
+  if (v.outcome === 'not_violation' && v.moderation) throw new ReviewError('MODERATION_REQUIRED');
+  const [found] = await database`SELECT review_id FROM review_report WHERE id=${v.reportId}`;
+  if (!found) throw new ReviewError('NOT_FOUND');
+  return scopedReview(database, found.review_id, async (tx, row) => {
     await activeAdmin(tx, adminId);
-    const rows =
-      await tx`UPDATE review_report SET state='closed',resolution=${v.resolution},resolved_by=${adminId},resolved_at=now() WHERE id=${v.id} AND state='open' RETURNING id`;
-    if (!rows.length) throw new ReviewError('CHANGED');
-    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES('admin',${adminId},'review_report',${v.id},'review_report_closed',${JSON.stringify({ resolution: v.resolution })}::text::jsonb)`;
+    const [report] = await tx`SELECT state FROM review_report WHERE id=${v.reportId} FOR UPDATE`;
+    if (!report) throw new ReviewError('NOT_FOUND');
+    if (report.state !== 'open') throw new ReviewError('ALREADY_CLOSED');
+    // Already removed under a policy reason: uphold against that decision instead of re-moderating.
+    const [prior] =
+      v.outcome === 'upheld' && !v.moderation && ['hidden', 'rejected'].includes(row.moderation_state)
+        ? await tx`SELECT id,"after" FROM audit_log WHERE entity='review' AND entity_id=${row.id} AND action='review_moderated' ORDER BY at DESC,id DESC LIMIT 1`
+        : [];
+    const existingDecision =
+      prior && prior.after?.category && prior.after.category !== 'meets_policy'
+        ? { decisionAuditId: prior.id, state: row.moderation_state, category: prior.after.category }
+        : null;
+    if (v.outcome === 'upheld' && !v.moderation && !existingDecision)
+      throw new ReviewError('MODERATION_REQUIRED');
+    if (v.moderation) {
+      const { reason: category, ...m } = v.moderation;
+      const result = await applyModeration(tx, adminId, row, { id: row.id, ...m, category, reason: v.note });
+      if (result?.preview) return result;
+    }
+    await tx`UPDATE review_report SET state='closed',outcome=${v.outcome},resolution=${v.note},resolved_by=${adminId},resolved_at=now() WHERE id=${v.reportId}`;
+    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES('admin',${adminId},'review_report',${v.reportId},'review_report_closed',${JSON.stringify({ reviewId: row.id, outcome: v.outcome, note: v.note, ...(v.moderation ? { state: v.moderation.state, category: v.moderation.reason } : {}), ...(existingDecision ?? {}) })}::text::jsonb)`;
+    return { id: v.reportId, outcome: v.outcome };
   });
+}
+/** Report evidence bytes: admin, or the reporter for their own report. Everyone else gets 404. */
+export async function reviewReportAttachment(database, actor, reportId, attachmentId, env = process.env, store = evidenceStore(), { download = false } = {}) {
+  if (!uuid.safeParse(reportId).success || !uuid.safeParse(attachmentId).success) throw new ReviewError('NOT_FOUND');
+  const file = await database.begin(async (tx) => {
+    let reader = null;
+    if (actor.kind === 'admin') await activeAdmin(tx, actor.id, false);
+    else if (actor.kind === 'customer') reader = (await lockCustomerAccount(tx, actor.session, env)).id;
+    else if (actor.kind === 'owner') {
+      uuid.parse(actor.id);
+      if (!(await tx`SELECT id FROM "user" WHERE id=${actor.id} AND role='client' AND account_status='active' FOR SHARE`).length)
+        throw new ReviewError('FORBIDDEN');
+      reader = actor.id;
+    } else throw new ReviewError('FORBIDDEN');
+    const [row] = await tx`SELECT a.* FROM review_report_attachment a JOIN review_report p ON p.id=a.report_id
+      WHERE a.id=${attachmentId} AND a.report_id=${reportId} AND ${reader ? tx`p.reporter_id=${reader}` : tx`true`}`;
+    if (!row) throw new ReviewError('NOT_FOUND');
+    // Thumbnails are not audited; a full open (?download=1) is.
+    if (download) await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES(${actor.kind === 'owner' ? 'client' : actor.kind},${reader ?? actor.id},'review_report',${reportId},'review_report_attachment_read',${JSON.stringify({ attachmentId })}::text::jsonb)`;
+    return row;
+  });
+  const content = await store.get(file.storage_key);
+  if (!content) throw new AppError('Attachment is temporarily unavailable.', 503, { code: 'ATTACHMENT_UNAVAILABLE' });
+  return { ...content, mimeType: file.mime, bytes: file.bytes };
+}
+async function reportAttachments(tx, reportIds) {
+  if (!reportIds.length) return {};
+  const rows = await tx`SELECT id,report_id,mime,bytes FROM review_report_attachment WHERE report_id IN ${tx(reportIds)} ORDER BY created_at,id`;
+  const out = {};
+  for (const a of rows) (out[a.report_id] ??= []).push({ id: a.id, mime: a.mime, bytes: a.bytes });
+  return out;
 }
 export async function reviewQueue(database, actor, page = 1, rentableId = null, tab = 'all') {
   const offset =
@@ -309,8 +419,12 @@ export async function reviewQueue(database, actor, page = 1, rentableId = null, 
       actor.kind === 'admin'
         ? await tx`SELECT p.id,p.review_id,p.reason,r.body,r.rating,r.version FROM review_report p JOIN review r ON r.id=p.review_id WHERE p.state='open' ORDER BY p.created_at,p.id LIMIT 30`
         : [];
+    const openReportsTotal =
+      actor.kind === 'admin'
+        ? (await tx`SELECT count(*)::int n FROM review_report WHERE state='open'`)[0].n
+        : undefined;
     const [stats] = actor.kind === 'owner' ? await tx`SELECT count(*)::int count,round(avg(r.rating)::numeric,1) average FROM public_customer_review r JOIN rentable l ON l.id=r.rentable_id WHERE l.client_id=${actor.id} ${property}` : [{}];
-    return { stats, tab: ['needs_reply', 'auto_published'].includes(tab) ? tab : 'all', rows: rows.slice(0, 30), reports, hasNext: rows.length > 30, page: offset / 30 + 1 };
+    return { stats, tab: ['needs_reply', 'auto_published'].includes(tab) ? tab : 'all', rows: rows.slice(0, 30), reports, openReportsTotal, hasNext: rows.length > 30, page: offset / 30 + 1 };
   });
 }
 
@@ -321,12 +435,29 @@ export async function reviewQueue(database, actor, page = 1, rentableId = null, 
  * view is already filtered to what a signed-in customer is allowed to see, so
  * a moderated or withdrawn review cannot be surfaced by guessing its id.
  */
-export async function publicReview(database, id) {
-  uuid.parse(id);
-  const [row] = await database`
-    SELECT id, body, owner_reply FROM public_customer_review WHERE id=${id}`;
-  if (!row) throw new ReviewError('NOT_FOUND');
-  return { id: row.id, body: row.body, ownerReply: row.owner_reply ?? null };
+/** Plain read of a signed-in customer; any stale or malformed session is anonymous. */
+async function customerIdOrNull(tx, session) {
+  if (session?.role !== 'customer' || !uuid.safeParse(session.userId).success || !uuid.safeParse(session.sessionId).success)
+    return null;
+  const [me] = await tx`SELECT u.id FROM "user" u JOIN auth_session s ON s.user_id=u.id WHERE u.id=${session.userId} AND s.id=${session.sessionId}
+    AND u.role='customer' AND u.account_status='active' AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp()`;
+  return me?.id ?? null;
+}
+export async function publicReview(database, id, session = null) {
+  if (!uuid.safeParse(id).success) throw new ReviewError('NOT_FOUND');
+  return database.begin(async (tx) => {
+    // Story 5.4: the reporter keeps seeing their own report (outcome, note, evidence), even after removal.
+    const me = await customerIdOrNull(tx, session);
+    const [report] = me
+      ? await tx`SELECT id,reason,state,outcome,resolution,created_at,resolved_at FROM review_report WHERE review_id=${id} AND reporter_id=${me}`
+      : [];
+    const [row] = await tx`SELECT id, body, owner_reply FROM public_customer_review WHERE id=${id}`;
+    if (!row && !report) throw new ReviewError('NOT_FOUND');
+    if (report) report.attachments = (await reportAttachments(tx, [report.id]))[report.id] ?? [];
+    // No longer public: the reporter sees only their own report and its outcome, not the content.
+    if (!row) return { id, body: null, ownerReply: null, public: false, myReport: report };
+    return { id: row.id, body: row.body, ownerReply: row.owner_reply ?? null, public: true, myReport: report ?? null };
+  });
 }
 
 /** Owners see published feedback plus their own reports; private third-party reports stay admin-only. */
@@ -343,9 +474,14 @@ export async function reviewDetail(database, actor, id) {
    WHERE r.id=${id} AND r.author_role='customer' AND ${actor.kind === 'admin' ? tx`true` : tx`l.client_id=${actor.id} AND EXISTS(SELECT 1 FROM "user" WHERE id=${actor.id} AND role='client' AND account_status='active') AND (r.id IN (SELECT id FROM public_customer_review) OR EXISTS(SELECT 1 FROM review_report WHERE review_id=r.id AND reporter_id=${actor.id}))`}`;
     if (!row) throw new ReviewError('NOT_FOUND');
     const reports =
-      await tx`SELECT id,reason,state,resolution,created_at,resolved_at FROM review_report WHERE review_id=${id} AND ${actor.kind === 'admin' ? tx`true` : tx`reporter_id=${actor.id}`} ORDER BY created_at,id`;
+      await tx`SELECT id,reason,state,outcome,resolution,created_at,resolved_at FROM review_report WHERE review_id=${id} AND ${actor.kind === 'admin' ? tx`true` : tx`reporter_id=${actor.id}`} ORDER BY created_at,id`;
+    const files = await reportAttachments(tx, reports.map((p) => p.id));
+    for (const p of reports) p.attachments = files[p.id] ?? [];
+    // Admin history interleaves moderation decisions with report closures for this review.
     const history =
-      await tx`SELECT action,at,"before","after" FROM audit_log WHERE entity='review' AND entity_id=${id} AND ${actor.kind === 'admin' ? tx`true` : tx`action='review_reply' AND actor_id=${actor.id}`} ORDER BY at,id`;
+      actor.kind === 'admin'
+        ? await tx`SELECT action,at,"before","after" FROM audit_log WHERE (entity='review' AND entity_id=${id}) OR (entity='review_report' AND action IN ('review_report_created','review_report_closed') AND entity_id IN (SELECT id::text FROM review_report WHERE review_id=${id})) ORDER BY at,id`
+        : await tx`SELECT action,at,"before","after" FROM audit_log WHERE entity='review' AND entity_id=${id} AND action='review_reply' AND actor_id=${actor.id} ORDER BY at,id`;
     return {
       id: row.id,
       title: row.title,

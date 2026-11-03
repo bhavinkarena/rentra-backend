@@ -5,6 +5,7 @@ export const REVIEW_REASONS = [
   'harassment',
   'spam',
   'unrelated_content',
+  'manipulation',
 ];
 export function reviewPreviewToken(
   actor,
@@ -21,7 +22,7 @@ export function reviewPreviewToken(
 export function moderationAllowed(state, category) {
   return state === 'published'
     ? category === 'meets_policy'
-    : ['private_information', 'harassment', 'spam', 'unrelated_content'].includes(category);
+    : REVIEW_REASONS.includes(category) && category !== 'meets_policy';
 }
 export const REVIEW_STATE_MESSAGES = {
   published: 'Your review is live.',
