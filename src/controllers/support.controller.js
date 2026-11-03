@@ -9,6 +9,7 @@ import {
   replyOwnerSupport,
   manageSupport,
   previewRemedy,
+  reviewEligibilityDecide,
   decideRemedy,
   executeRemedy,
   incidentRepaymentLink,
@@ -82,6 +83,7 @@ export const attachment = asyncHandler(async (req, res) => {
   return Readable.fromWeb(file.body).pipe(res);
 });
 export const remedyPreview = runAction(previewRemedy);
+export const reviewEligibility = runAction(reviewEligibilityDecide);
 export const remedyDecide = runAction(decideRemedy);
 export const remedyExecute = runAction(executeRemedy);
 export const remedyRepaymentLink = runAction(incidentRepaymentLink);

@@ -1452,6 +1452,8 @@ export const review = pgTable(
     comfort: integer('comfort'),
     facilities: integer('facilities'),
     travellerType: text('traveller_type'),
+    /** Story 5.2: arrival_access | arrival_early_stay; set only from an approved exception, never with sub-scores. */
+    experienceScope: text('experience_scope'),
     moderationState: varchar('moderation_state', { length: 16 }).notNull().default('pending'),
     moderationReason: text('moderation_reason'),
     moderatedBy: uuid('moderated_by').references(() => adminUsers.id, { onDelete: 'restrict' }),
@@ -1471,10 +1473,37 @@ export const review = pgTable(
     foreignKey({ name: 'review_author_user_role_fk', columns: [t.authorId, t.authorRole], foreignColumns: [users.id, users.role] }).onDelete('restrict'),
     foreignKey({ name: 'review_booking_rentable_fk', columns: [t.bookingId, t.rentableId], foreignColumns: [booking.id, booking.rentableId] }).onDelete('restrict'),
     check('review_scores_chk', sql`${t.rating} BETWEEN 1 AND 5 AND (${t.cleanliness} IS NULL OR ${t.cleanliness} BETWEEN 1 AND 5) AND (${t.accuracy} IS NULL OR ${t.accuracy} BETWEEN 1 AND 5) AND (${t.valueForMoney} IS NULL OR ${t.valueForMoney} BETWEEN 1 AND 5) AND (${t.staff} IS NULL OR ${t.staff} BETWEEN 1 AND 5) AND (${t.location} IS NULL OR ${t.location} BETWEEN 1 AND 5) AND (${t.comfort} IS NULL OR ${t.comfort} BETWEEN 1 AND 5) AND (${t.facilities} IS NULL OR ${t.facilities} BETWEEN 1 AND 5)`),
+    check('review_experience_scope_chk', sql`${t.experienceScope} IS NULL OR (${t.experienceScope} IN ('arrival_access','arrival_early_stay') AND ${t.cleanliness} IS NULL AND ${t.accuracy} IS NULL AND ${t.valueForMoney} IS NULL AND ${t.behaviour} IS NULL AND ${t.staff} IS NULL AND ${t.location} IS NULL AND ${t.comfort} IS NULL AND ${t.facilities} IS NULL AND ${t.travellerType} IS NULL)`),
     check('review_traveller_type_chk', sql`${t.travellerType} IS NULL OR ${t.travellerType} IN ('business','couple','family','friends','solo')`),
     check('review_moderation_chk', sql`${t.moderationState} IN ('pending','published','rejected','hidden') AND (${t.moderationState}='published') = (${t.publishedAt} IS NOT NULL) AND ${t.version}>=0`),
   ],
 );
+
+/** Story 5.2: admin exception/denial for one affected visit on a stay-issue case. Append-only apart from revoke (0096). */
+export const reviewEligibilityException = pgTable('review_eligibility_exception', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  supportRequestId: uuid('support_request_id').notNull().references(() => supportRequest.id, { onDelete: 'restrict' }),
+  bookingId: uuid('booking_id').notNull().references(() => booking.id, { onDelete: 'restrict' }),
+  authorId: uuid('author_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  rentableId: uuid('rentable_id').notNull().references(() => rentable.id, { onDelete: 'restrict' }),
+  decision: text('decision').notNull(),
+  scope: text('scope'),
+  reason: text('reason').notNull(),
+  windowEndsAt: timestamp('window_ends_at', { withTimezone: true }).notNull(),
+  decidedBy: uuid('decided_by').notNull().references(() => adminUsers.id, { onDelete: 'restrict' }),
+  requestKey: uuid('request_key').notNull().unique(),
+  requestHash: text('request_hash').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (t) => [
+  // Triggers (append-only, revoke once) live in 0096 SQL.
+  check('review_eligibility_exception_decision_check', sql`${t.decision} IN ('approved','denied')`),
+  check('review_eligibility_exception_scope_check', sql`${t.scope} IN ('arrival_access','arrival_early_stay')`),
+  check('review_eligibility_exception_reason_check', sql`char_length(${t.reason}) BETWEEN 10 AND 500`),
+  check('review_eligibility_exception_scope_chk', sql`(${t.decision}='approved') = (${t.scope} IS NOT NULL)`),
+  uniqueIndex('review_eligibility_exception_active_idx').on(t.bookingId, t.authorId).where(sql`${t.revokedAt} IS NULL`),
+  index('review_eligibility_exception_case_idx').on(t.supportRequestId),
+]);
 
 /**
  * 301 map from day one, so a changed area or listing slug never 404s.

@@ -11,6 +11,7 @@ import { remedyCaps, resolutionView } from './remedy.js';
 import { ISSUE_TYPES, REMEDIES, ISSUE_LABELS, issuePriority, isLateReport, discoveryProblem, issueEligibility } from '../domain/stay-issue.js';
 
 import { SupportError } from './errors.js';
+import { reviewEligibilityView } from '../reviews/service.js';
 export { SupportError };
 const uuid = z.string().uuid(),
   body = z.string().trim().min(2).max(5000);
@@ -458,6 +459,9 @@ export async function readSupportRequest(database, actor, id, env = process.env)
                   return { decision: r.decision, executions: caps.canPreview ? r.executions : [], canPreview: caps.canPreview, canDecide: caps.canDecide };
                 })()
               : null,
+            // Story 5.2: per affected visit; decisions need admin.support.write (same as canReply).
+            reviewEligibility:
+              row.category === 'stay_issue' && row.order_id ? await reviewEligibilityView(tx, row, true) : null,
             canReply:
               !!staff &&
               (staff.permissions == null ||
@@ -473,7 +477,10 @@ export async function readSupportRequest(database, actor, id, env = process.env)
             })),
           }
         : actor.kind === 'customer' && row.category === 'stay_issue' && row.order_id
-          ? { resolution: await resolutionView(tx, row.id, 'guest') }
+          ? {
+              resolution: await resolutionView(tx, row.id, 'guest'),
+              reviewEligibility: await reviewEligibilityView(tx, row, false),
+            }
           : {}),
       messages: messages.map((m) => ({
         id: m.id,

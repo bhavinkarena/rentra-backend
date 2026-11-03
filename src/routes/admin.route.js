@@ -351,6 +351,7 @@ router.post('/operations/incidents/:code', formFields(), admin.incidentCommand);
 router.get('/support/:id/attachments/:attachmentId', support.attachment);
 for (const [path, handler] of [
   ['remedy/preview', support.remedyPreview],
+  ['review-eligibility', support.reviewEligibility],
   ['remedy/decide', support.remedyDecide],
   ['remedy/execute', support.remedyExecute],
   ['remedy/repayment-link', support.remedyRepaymentLink],

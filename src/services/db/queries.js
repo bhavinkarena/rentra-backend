@@ -324,6 +324,7 @@ export async function getListingByCode(publicCode, previewOwnerId=null) {
       comfort: review.comfort,
       facilities: review.facilities,
       travellerType: review.travellerType,
+      experienceScope: review.experienceScope,
       publishedAt: review.publishedAt, authorName: users.name,
     })
       .from(review)

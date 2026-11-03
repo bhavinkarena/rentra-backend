@@ -4,6 +4,7 @@ import { AppError } from '../../utils/apiError.js';
 import { reviewContentFlags } from './content-check.js';
 import { reviewPreviewToken, moderationAllowed, REVIEW_REASONS } from './policy.js';
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { withListingInventory } from '../booking/inventory.js';
 import { lockCustomerAccount } from '../auth/customer-access.js';
 const uuid = z.string().uuid();
@@ -33,8 +34,16 @@ export class ReviewError extends AppError {
         PREVIEW_REQUIRED: 'Preview these exact values before confirming.',
         INVALID_REASON: 'Choose a policy basis. Negative sentiment is not a removal reason.',
         NOT_ELIGIBLE: 'Reviews require a completed stay within 30 days.',
+        SCOPED_REVIEW: 'This arrival review takes overall stars and text only.',
+        ALREADY_ELIGIBLE: 'Completed stays use the normal review.',
+        NOT_AFFECTED: 'Choose a visit listed on this stay-issue case.',
+        REQUEST_REUSED: 'This request key was already used for a different decision.',
       }[code] || code,
-      ['NOT_FOUND', 'FORBIDDEN'].includes(code) ? 404 : 409,
+      ['NOT_FOUND', 'FORBIDDEN'].includes(code)
+        ? 404
+        : ['SCOPED_REVIEW', 'NOT_AFFECTED'].includes(code)
+          ? 422
+          : 409,
       { code },
     );
   }
@@ -73,6 +82,17 @@ export async function submitReview(database, session, input, env = process.env) 
     const [eligible] =
       await tx`SELECT id FROM booking WHERE id=${visitId} AND rentra_review_eligible(id,${customer.id},rentable_id)`;
     if (!eligible) throw new ReviewError('NOT_ELIGIBLE');
+    // Story 5.2: an approved arrival exception allows overall stars and text only.
+    const [{ scope: experienceScope }] =
+      await tx`SELECT CASE WHEN rentra_review_completed(${visitId},${customer.id},${scope.rentable_id}) THEN NULL
+        ELSE rentra_review_exception_scope(${visitId},${customer.id},${scope.rentable_id}) END scope`;
+    if (
+      experienceScope &&
+      [v.cleanliness, v.accuracy, v.valueForMoney, v.staff, v.location, v.comfort, v.facilities, v.travellerType].some(
+        (x) => x !== null,
+      )
+    )
+      throw new ReviewError('SCOPED_REVIEW');
     const [old] =
       await tx`SELECT * FROM review WHERE booking_id=${visitId} AND author_id=${customer.id}`;
     if (old) {
@@ -97,8 +117,8 @@ export async function submitReview(database, session, input, env = process.env) 
     const state = flags.length ? 'pending' : 'published';
     const reason = flags.length ? `auto:${flags.join(',')}` : 'auto:clean';
     const [row] =
-      await tx`INSERT INTO review(booking_id,rentable_id,author_id,author_role,rating,body,cleanliness,accuracy,value_for_money,staff,location,comfort,facilities,traveller_type,moderation_state,moderation_reason,published_at)
-      VALUES(${visitId},${scope.rentable_id},${customer.id},'customer',${v.rating},${v.body},${v.cleanliness},${v.accuracy},${v.valueForMoney},${v.staff},${v.location},${v.comfort},${v.facilities},${v.travellerType},${state},${reason},${state === 'published' ? tx`now()` : null}) RETURNING id,moderation_state`;
+      await tx`INSERT INTO review(booking_id,rentable_id,author_id,author_role,rating,body,cleanliness,accuracy,value_for_money,staff,location,comfort,facilities,traveller_type,experience_scope,moderation_state,moderation_reason,published_at)
+      VALUES(${visitId},${scope.rentable_id},${customer.id},'customer',${v.rating},${v.body},${v.cleanliness},${v.accuracy},${v.valueForMoney},${v.staff},${v.location},${v.comfort},${v.facilities},${v.travellerType},${experienceScope},${state},${reason},${state === 'published' ? tx`now()` : null}) RETURNING id,moderation_state`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"after") VALUES('customer',${customer.id},'review',${row.id},${flags.length ? 'review_auto_flagged' : 'review_auto_published'},${JSON.stringify({ state, reason })}::jsonb)`;
     return { id: row.id, state: row.moderation_state };
   });
@@ -111,7 +131,8 @@ export async function reviewOrder(database, session, orderId, env = process.env)
       await tx`SELECT o.id,o.reference,l.slug listing_slug,l.public_code listing_code FROM booking_order o JOIN rentable l ON l.id=o.rentable_id WHERE o.id=${orderId} AND o.customer_id=${customer.id}`;
     if (!order) throw new ReviewError('NOT_FOUND');
     const visits = await tx`SELECT b.id,b.reference,b.local_day::text date,b.slot,b.state,b.starts_at,b.ends_at,b.hours_known,b.time_zone,b.slot_snapshot,
-      rentra_review_eligible(b.id,${customer.id},b.rentable_id) eligible,r.id review_id,r.rating,r.body,r.moderation_state,r.moderation_reason
+      rentra_review_eligible(b.id,${customer.id},b.rentable_id) eligible,r.id review_id,r.rating,r.body,r.moderation_state,r.moderation_reason,
+      coalesce(r.experience_scope,CASE WHEN rentra_review_completed(b.id,${customer.id},b.rentable_id) THEN NULL ELSE rentra_review_exception_scope(b.id,${customer.id},b.rentable_id) END) experience_scope
       FROM booking b LEFT JOIN review r ON r.booking_id=b.id AND r.author_id=${customer.id}
       WHERE b.order_id=${orderId} ORDER BY b.item_position,b.id`;
     return { ...order, visits: visits.map(({ starts_at, ends_at, hours_known, time_zone, slot_snapshot, ...v }) => ({ ...v, label: visitLabel({ ...v, starts_at, ends_at, hours_known, time_zone, slot_snapshot }) })) };
@@ -137,7 +158,9 @@ export async function moderateReview(database, adminId, input) {
     if (
       v.state === 'published' &&
       !(
-        await tx`SELECT 1 WHERE rentra_review_eligible(${row.booking_id},${row.author_id},${row.rentable_id})`
+        (row.experience_scope
+          ? await tx`SELECT 1 WHERE rentra_review_genuine(${row.booking_id},${row.author_id},${row.rentable_id})`
+          : await tx`SELECT 1 WHERE rentra_review_eligible(${row.booking_id},${row.author_id},${row.rentable_id})`)
       ).length
     )
       throw new ReviewError('NOT_ELIGIBLE');
@@ -276,7 +299,7 @@ export async function reviewQueue(database, actor, page = 1, rentableId = null, 
     // PROP: one property's reviews (property hub Reviews tab).
     const property = rentableId ? tx`AND r.rentable_id=${uuid.parse(rentableId)}` : tx``;
     const rows =
-      await tx`SELECT r.id,r.rating,r.body,r.owner_reply,r.version,r.moderation_state,r.rentable_id,l.title,r.created_at,
+      await tx`SELECT r.id,r.rating,r.body,r.owner_reply,r.version,r.experience_scope,r.moderation_state,r.rentable_id,l.title,r.created_at,
         split_part(coalesce(u.name,'Guest'),' ',1) guest_first_name,b.local_day::text visit_date,b.reference visit_reference,
         (SELECT p.created_at FROM review_report p WHERE p.review_id=r.id AND p.reporter_id=${actor.id}) reported_at${actor.kind === 'admin' ? tx`,r.moderation_reason` : tx``}
       FROM review r JOIN rentable l ON l.id=r.rentable_id JOIN "user" u ON u.id=r.author_id JOIN booking b ON b.id=r.booking_id
@@ -328,6 +351,7 @@ export async function reviewDetail(database, actor, id) {
       title: row.title,
       body: row.body,
       rating: row.rating,
+      experienceScope: row.experience_scope,
       ownerReply: row.owner_reply,
       version: row.version,
       state: row.moderation_state,
@@ -345,4 +369,134 @@ export async function reviewDetail(database, actor, id) {
         : {}),
     };
   });
+}
+
+/**
+ * Story 5.2: an admin with admin.support.write records an arrival exception (with scope) or a
+ * denial for one affected visit on a stay-issue case. A new decision revokes the previous one; a
+ * replayed request key returns the original. Never touches booking, money or support state.
+ */
+const decisionInput = z
+  .object({
+    supportRequestId: uuid,
+    bookingId: uuid,
+    decision: z.enum(['approved', 'denied']),
+    scope: z.enum(['arrival_access', 'arrival_early_stay']).optional(),
+    reason: z.string().trim().min(10).max(500),
+    requestKey: uuid,
+  })
+  .strict()
+  .refine((v) => (v.decision === 'approved') === !!v.scope, {
+    message: 'Choose a scope to approve; a denial has none.',
+    path: ['scope'],
+  });
+const decisionView = (x) =>
+  x && {
+    id: x.id,
+    decision: x.decision,
+    scope: x.scope,
+    reason: x.reason,
+    windowEndsAt: new Date(x.window_ends_at).toISOString(),
+    decidedAt: new Date(x.created_at).toISOString(),
+  };
+export async function decideReviewEligibility(database, actor, input) {
+  const v = decisionInput.parse(input);
+  const requestHash = createHash('sha256')
+    .update(
+      JSON.stringify([actor?.id, v.supportRequestId, v.bookingId, v.decision, v.scope ?? null, v.reason]),
+    )
+    .digest('hex');
+  const replay = (previous) => {
+    if (previous.request_hash !== requestHash) throw new ReviewError('REQUEST_REUSED');
+    return { ...decisionView(previous), replayed: true };
+  };
+  return database
+    .begin(async (tx) => {
+    const [staff] =
+      actor?.kind === 'admin' && uuid.safeParse(actor.id).success
+        ? await tx`SELECT permissions FROM admin_user WHERE id=${actor.id} AND is_active FOR SHARE`
+        : [];
+    if (!staff) throw new ReviewError('FORBIDDEN');
+    const p = staff.permissions;
+    if (!(p == null || (Array.isArray(p) && p.includes('admin.support.write'))))
+      throw new ReviewError('FORBIDDEN');
+    const [previous] =
+      await tx`SELECT * FROM review_eligibility_exception WHERE request_key=${v.requestKey}`;
+    if (previous) return replay(previous);
+    const [c] =
+      await tx`SELECT id,customer_id,category,order_id,context,discovered_at FROM support_request WHERE id=${v.supportRequestId} FOR UPDATE`;
+    if (!c || c.category !== 'stay_issue' || !c.order_id) throw new ReviewError('NOT_FOUND');
+    const [b] =
+      await tx`SELECT id,rentable_id,ends_at FROM booking WHERE id=${v.bookingId} AND customer_id=${c.customer_id} FOR UPDATE`;
+    if (!b) throw new ReviewError('NOT_FOUND');
+    if (!(c.context?.stayIssue?.affected || []).some((a) => a.visitId === b.id))
+      throw new ReviewError('NOT_AFFECTED');
+    const [active] =
+      await tx`SELECT * FROM review_eligibility_exception WHERE booking_id=${b.id} AND author_id=${c.customer_id} AND revoked_at IS NULL FOR UPDATE`;
+    // Completed stays (in or past the window) use the normal review; exceptions are for the rest.
+    const [state] = await tx`SELECT rentra_review_completed(${b.id},${c.customer_id},${b.rentable_id}) normal,
+      EXISTS(SELECT 1 FROM review WHERE booking_id=${b.id} AND author_id=${c.customer_id}) reviewed`;
+    // Already reviewed: only a denial of the exception behind that review may follow.
+    if (
+      state.normal ||
+      (state.reviewed && (v.decision === 'approved' || active?.decision !== 'approved'))
+    )
+      throw new ReviewError('ALREADY_ELIGIBLE');
+    if (active)
+      await tx`UPDATE review_eligibility_exception SET revoked_at=clock_timestamp() WHERE id=${active.id}`;
+    const [saved] =
+      await tx`INSERT INTO review_eligibility_exception(support_request_id,booking_id,author_id,rentable_id,decision,scope,reason,window_ends_at,decided_by,request_key,request_hash)
+      VALUES(${c.id},${b.id},${c.customer_id},${b.rentable_id},${v.decision},${v.scope ?? null},${v.reason},
+        coalesce((SELECT greatest(bk.ends_at,sr.discovered_at) FROM booking bk,support_request sr WHERE bk.id=${b.id} AND sr.id=${c.id}),clock_timestamp()) + interval '30 days',${actor.id},${v.requestKey},${requestHash}) RETURNING *`;
+    // A revoked exception takes its review out of public view; refresh the cached totals.
+    // Revocation changes no review row, so review_refresh does not fire; recompute (0018) here.
+    if (state.reviewed) await tx`SELECT rentra_review_totals(${b.rentable_id})`;
+    await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES('admin',${actor.id},'support_request',${c.id},'review_eligibility_decided',
+      ${JSON.stringify(active ? { id: active.id, decision: active.decision, scope: active.scope } : null)}::text::jsonb,
+      ${JSON.stringify({ id: saved.id, bookingId: b.id, decision: v.decision, scope: v.scope ?? null, reason: v.reason, windowEndsAt: saved.window_ends_at })}::text::jsonb)`;
+    return decisionView(saved);
+    })
+    .catch(async (error) => {
+      if (error.code !== '23505') throw error;
+      // Concurrent same key: replay or refuse outside the failed transaction.
+      if (error.constraint_name === 'review_eligibility_exception_request_key_key') {
+        const [previous] =
+          await database`SELECT * FROM review_eligibility_exception WHERE request_key=${v.requestKey}`;
+        if (previous) return replay(previous);
+      }
+      throw new ReviewError('CHANGED');
+    });
+}
+
+/** Per affected visit on a stay-issue case: admin sees status and review effect; the guest sees the decision. */
+export async function reviewEligibilityView(tx, row, admin) {
+  const ids = [...new Set((row.context?.stayIssue?.affected || []).map((a) => a.visitId))];
+  if (!ids.length || !row.customer_id) return [];
+  const visits = await tx`SELECT b.id,b.reference,b.local_day::text date,b.state,
+      rentra_review_completed(b.id,${row.customer_id},b.rentable_id) AND rentra_review_eligible(b.id,${row.customer_id},b.rentable_id) normally_eligible,
+      r.id review_id,EXISTS(SELECT 1 FROM public_customer_review p WHERE p.id=r.id) review_public,
+      x.id x_id,x.decision,x.scope,x.reason,x.window_ends_at,x.created_at,x.support_request_id<>${row.id} from_other_case,sr.reference case_reference
+    FROM booking b LEFT JOIN review r ON r.booking_id=b.id AND r.author_id=${row.customer_id}
+    LEFT JOIN review_eligibility_exception x ON x.booking_id=b.id AND x.author_id=${row.customer_id} AND x.revoked_at IS NULL
+    LEFT JOIN support_request sr ON sr.id=x.support_request_id
+    WHERE b.id IN ${tx(ids)} AND b.customer_id=${row.customer_id} ORDER BY b.local_day,b.id`;
+  return visits
+    .filter((x) => admin || x.x_id)
+    .map((x) => ({
+      visitId: x.id,
+      visitReference: x.reference,
+      date: x.date,
+      decision: decisionView(x.x_id && { ...x, id: x.x_id }),
+      ...(admin
+        ? {
+            visitState: x.state,
+            normallyEligible: x.normally_eligible,
+            reviewId: x.review_id,
+            reviewPublic: x.review_public,
+            // The active decision may come from another case; deciding here replaces it.
+            fromOtherCase: !!x.from_other_case,
+            caseReference: x.case_reference,
+          }
+        : {}),
+    }));
 }

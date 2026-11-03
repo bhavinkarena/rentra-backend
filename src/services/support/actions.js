@@ -10,6 +10,7 @@ import {
   manageSupportRequest,
   SupportError,
 } from './service.js';
+import { decideReviewEligibility } from '../reviews/service.js';
 import { previewIncidentRemedy, decideIncidentRemedy, executeIncidentAward } from './remedy.js';
 import {
   createIncidentRepaymentLink,
@@ -197,5 +198,20 @@ export async function incidentRepaymentResolve(previous, form) {
       reason: form.get('reason'),
     }),
     message: 'Link closed. Create a new link if the obligation is still due.',
+  }));
+}
+
+/* Story 5.2: arrival review exception or denial for one affected visit. */
+export async function reviewEligibilityDecide(previous, form) {
+  return remedyCall(async () => ({
+    decision: await decideReviewEligibility(sql, await supportActor('admin'), {
+      supportRequestId: form.get('id'),
+      bookingId: form.get('bookingId'),
+      decision: form.get('decision'),
+      scope: form.get('scope') || undefined,
+      reason: form.get('reason'),
+      requestKey: form.get('requestKey'),
+    }),
+    message: 'Review eligibility decision saved.',
   }));
 }
