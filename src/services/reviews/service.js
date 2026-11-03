@@ -451,6 +451,13 @@ export async function decideReviewEligibility(database, actor, input) {
     // A revoked exception takes its review out of public view; refresh the cached totals.
     // Revocation changes no review row, so review_refresh does not fire; recompute (0018) here.
     if (state.reviewed) await tx`SELECT rentra_review_totals(${b.rentable_id})`;
+    // Story 5.3: invite now within quiet hours (else next 09:00 IST), never past the window. One per visit, ever.
+    if (v.decision === 'approved')
+      await tx`INSERT INTO notification_outbox(order_id,booking_id,customer_id,event_key,template,scheduled_at)
+        SELECT bk.order_id,bk.id,${c.customer_id},'review:'||bk.id,'review_invitation',t.at
+        FROM booking bk, (SELECT rentra_review_invite_at(clock_timestamp()) at) t
+        WHERE bk.id=${b.id} AND t.at <= ${saved.window_ends_at}
+        ON CONFLICT DO NOTHING`;
     await tx`INSERT INTO audit_log(actor_type,actor_id,entity,entity_id,action,"before","after") VALUES('admin',${actor.id},'support_request',${c.id},'review_eligibility_decided',
       ${JSON.stringify(active ? { id: active.id, decision: active.decision, scope: active.scope } : null)}::text::jsonb,
       ${JSON.stringify({ id: saved.id, bookingId: b.id, decision: v.decision, scope: v.scope ?? null, reason: v.reason, windowEndsAt: saved.window_ends_at })}::text::jsonb)`;

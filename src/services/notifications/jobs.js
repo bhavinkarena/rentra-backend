@@ -20,10 +20,15 @@ async function obsolete(tx, row) {
     if (!guide) return { reason: 'ARRIVAL_GUIDE_EMPTY' };
     return { user, guide };
   }
-  if (row.template === 'review_invitation') {
-    const [valid] = await tx`SELECT b.id FROM booking b JOIN visit_evidence e ON e.booking_id=b.id AND e.kind='complete' AND e.nature='actual'
-      WHERE b.id=${row.booking_id} AND b.state='completed' AND b.visit_provenance='real' AND NOT EXISTS(SELECT 1 FROM review WHERE booking_id=b.id)`;
-    if (!valid) return { reason: 'REVIEW_INELIGIBLE' };
+  if (row.template === 'review_invitation' || row.template === 'review_reminder') {
+    const [v] = await tx`SELECT b.order_id,r.title,rentra_review_eligible(b.id,${row.customer_id},b.rentable_id) eligible,
+      EXISTS(SELECT 1 FROM review WHERE booking_id=b.id AND author_id=${row.customer_id}) reviewed,
+      rentra_review_exception_scope(b.id,${row.customer_id},b.rentable_id) IS NOT NULL arrival,
+      rentra_review_window_end(b.id,${row.customer_id}) window_end
+      FROM booking b JOIN rentable r ON r.id=b.rentable_id WHERE b.id=${row.booking_id}`;
+    if (v?.reviewed) return { reason: 'REVIEW_SUBMITTED' };
+    if (!v?.eligible) return { reason: 'REVIEW_INELIGIBLE' };
+    return { user, review: { listing: v.title, windowEnd: v.window_end, arrival: v.arrival, orderId: v.order_id } };
   }
   if (row.template === 'request_approved') {
     // Paid, expired or released since: the payment prompt would mislead.
@@ -61,6 +66,11 @@ export async function processNotification(database, id, options = {}) {
       row.phone = eligibility.user.phone;
       row.phoneVerified = Boolean(eligibility.user.phone_verified_at);
       row.guide = eligibility.guide;
+      if (eligibility.review) {
+        let link = null;
+        try { link = new URL(`/bookings/${eligibility.review.orderId}/reviews`, env.NEXT_PUBLIC_SITE_URL).href; } catch { /* body omits the link */ }
+        row.review = { ...eligibility.review, link };
+      }
     }
     let config;
     try {
@@ -99,8 +109,29 @@ export async function processNotification(database, id, options = {}) {
   return true;
 }
 
+/**
+ * Story 5.3: one day-7 reminder per sent review invitation, at 10:00 IST on the invitation's IST date + 7,
+ * never past the review window. Pending/blocked/retry invitations wait; suppressed/failed ones get none.
+ * The event key dedupes, so re-runs and restarts are idempotent.
+ */
+export async function queueReviewReminders(database) {
+  // ponytail: anchored to delivered_at, else scheduled_at (no accepted-at column); add one if accepted-only rows matter.
+  const rows = await database`INSERT INTO notification_outbox(order_id,booking_id,customer_id,event_key,template,scheduled_at)
+    SELECT n.order_id,n.booking_id,n.customer_id,'review-reminder:'||n.booking_id,'review_reminder',d.due
+    FROM notification_outbox n JOIN booking b ON b.id=n.booking_id
+    CROSS JOIN LATERAL (SELECT rentra_review_window_end(b.id,n.customer_id) window_end,
+      ((((coalesce(n.delivered_at,n.scheduled_at) AT TIME ZONE 'Asia/Kolkata')::date + 7)::timestamp + time '10:00') AT TIME ZONE 'Asia/Kolkata') due) d
+    WHERE n.template='review_invitation' AND n.state IN ('accepted','delivered','unknown')
+      AND d.window_end > clock_timestamp() AND d.due > clock_timestamp() AND d.due <= d.window_end
+      AND rentra_review_eligible(b.id,n.customer_id,b.rentable_id)
+      AND NOT EXISTS(SELECT 1 FROM review r WHERE r.booking_id=b.id AND r.author_id=n.customer_id)
+    ON CONFLICT DO NOTHING RETURNING id`;
+  return rows.length;
+}
+
 export async function runNotificationJobs(database, options = {}) {
   await queueArrivalGuides(database);
+  await queueReviewReminders(database);
   const rows = await database`SELECT id FROM notification_outbox WHERE state IN ('pending','retry','blocked','accepted','sending')
     AND scheduled_at<=clock_timestamp() AND next_attempt_at<=clock_timestamp() AND (lease_until IS NULL OR lease_until<=clock_timestamp())
     ORDER BY next_attempt_at,id LIMIT 10`;

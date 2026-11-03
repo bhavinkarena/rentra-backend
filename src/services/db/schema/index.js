@@ -2026,7 +2026,7 @@ export const notificationOutbox = pgTable('notification_outbox', {
 }, t => [uniqueIndex('notification_event_recipient_idx').on(t.eventKey, t.customerId, t.channel),
   index('notification_due_idx').on(t.state, t.nextAttemptAt), index('notification_customer_idx').on(t.customerId, t.scheduledAt),
   index('notification_order_idx').on(t.orderId), index('notification_booking_idx').on(t.bookingId).where(sql`${t.bookingId} IS NOT NULL`),
-  check('notification_valid_chk', sql`${t.template} IN ('confirmation','reminder','cancellation','refund','completion','review_invitation','arrival_guide')
+  check('notification_valid_chk', sql`${t.template} IN ('confirmation','reminder','cancellation','refund','completion','review_invitation','arrival_guide','request_approved','request_declined','review_reminder')
     AND ${t.channel}='sms' AND ${t.attempts}>=0 AND ${t.state} IN ('pending','blocked','retry','sending','unknown','accepted','delivered','undelivered','suppressed','failed')`)]);
 
 /**

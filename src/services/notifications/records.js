@@ -17,6 +17,8 @@ export async function customerNotifications(database, session, env = process.env
       FROM notification_outbox n JOIN booking_order o ON o.id=n.order_id WHERE n.customer_id=${customer.id}
       AND n.scheduled_at<=clock_timestamp() AND n.state<>'suppressed'
       AND (n.template<>'reminder' OR EXISTS(SELECT 1 FROM booking b WHERE b.id=n.booking_id AND b.state='confirmed' AND b.starts_at>clock_timestamp()))
+      AND (n.template NOT IN ('review_invitation','review_reminder') OR EXISTS(SELECT 1 FROM booking b WHERE b.id=n.booking_id
+        AND rentra_review_eligible(b.id,n.customer_id,b.rentable_id) AND NOT EXISTS(SELECT 1 FROM review r WHERE r.booking_id=b.id AND r.author_id=n.customer_id)))
       ORDER BY n.scheduled_at DESC,n.id DESC LIMIT 50`;
     return rows.map(r => ({ id: r.id, orderId: r.order_id, title: notificationLabels[r.template], reference: r.reference,
       simulation: r.visit_provenance !== 'real' || r.is_test_payment, delivery: r.state, read: Boolean(r.read_at), at: new Date(r.created_at).toISOString() }));
