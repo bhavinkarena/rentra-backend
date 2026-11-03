@@ -51,7 +51,10 @@ test(
     const types = (
       await sql`SELECT id FROM room_type WHERE rentable_id=${h.hotel} AND is_active`
     ).map((r) => r.id);
-    const start = addLocalDays(propertyToday(), 3);
+    // A Tuesday at least 3 days out, so start/start+1 are weekdays and the
+    // Saturday reset below never lands inside the two-night edit window.
+    let start = addLocalDays(propertyToday(), 3);
+    while (new Date(`${start}T00:00:00Z`).getUTCDay() !== 2) start = addLocalDays(start, 1);
 
     await t.test('grid shows defaults: all rooms open, weekday/weekend prices', async () => {
       const grid = await hotelAriGrid(sql, owner, h.hotel, { from: start, days: 14 });
