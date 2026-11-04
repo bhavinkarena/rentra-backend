@@ -139,6 +139,8 @@ test('updates reach onboarding clients; tasks need an active client', () => {
   assert.deepEqual(capabilitiesFor(suspended, 'client'), []);
   assert.equal(routeCapability('client', 'POST', '/updates/read'), 'client.updates.write');
   assert.equal(routeCapability('client', 'GET', '/tasks'), 'client.tasks.read');
+  assert.equal(routeCapability('client', 'GET', '/repayments'), 'client.finance.read');
+  assert.equal(routeCapability('client', 'POST', '/repayments/x/verify'), 'client.finance.write');
 });
 
 test('caretakers get only the two assigned-visit capabilities; team admin stays with the owner', () => {
