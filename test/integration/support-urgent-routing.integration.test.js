@@ -173,6 +173,21 @@ test(
         (i) => i.id === clean.id,
       );
       assert.equal(listed.alertFailed, true);
+      // 0099: customer cases carry their booking's property, and admins can filter by it.
+      assert.equal(listed.propertyId, f.listing);
+      const byProperty = (await listSupportRequests(sql, admin, { property: f.listing })).items;
+      assert.ok(byProperty.length > 0 && byProperty.every((i) => i.propertyId === f.listing));
+      assert.equal(
+        (await listSupportRequests(sql, admin, { property: randomUUID() })).items.length,
+        0,
+      );
+      // A customer case can never name a property other than its own booking's.
+      await assert.rejects(
+        sql`INSERT INTO support_request(id,reference,customer_id,property_id,order_id,category,subject,context,policy_version,request_key,request_hash)
+          SELECT ${randomUUID()},'SUP-QA0099MISMATCH',customer_id,${randomUUID()},order_id,category,subject,context,policy_version,${randomUUID()},request_hash
+          FROM support_request WHERE id=${clean.id}`,
+        { code: '23514' },
+      );
       const detail = await readSupportRequest(sql, admin, stranded.id);
       assert.ok(detail.firstResponseAt);
       assert.equal(detail.alerts.length, support.length);

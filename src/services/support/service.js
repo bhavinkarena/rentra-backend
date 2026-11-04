@@ -165,10 +165,13 @@ export async function createSupportRequest(database, actor, input, env = process
     if (existing) return { id: replay(existing, hash).id };
     if (photos.length && !store.configured()) throw new SupportError('UPLOADS_UNAVAILABLE','Photo storage is unavailable. Your request has not been saved.',503);
     const context = {};
+    let propertyId = value.propertyId;
     if (value.orderId) {
       const [order] =
         await tx`SELECT o.* FROM booking_order o JOIN rentable r ON r.id=o.rentable_id WHERE o.id=${value.orderId} AND ${actor.kind === 'owner' ? tx`r.client_id=${actorId}` : tx`o.customer_id=${actorId}`}`;
       if (!order || (value.propertyId && order.rentable_id !== value.propertyId)) throw missing();
+      // Customer cases carry their booking's property so admins can filter by property (0099).
+      if (actor.kind === 'customer') propertyId = order.rentable_id;
       Object.assign(context, {
         reference: order.reference,
         title: order.listing_snapshot?.title || 'Booked property',
@@ -203,7 +206,7 @@ export async function createSupportRequest(database, actor, input, env = process
     const id = randomUUID(),
       reference = 'SUP-' + id.replaceAll('-', '').slice(0, 16).toUpperCase();
     await tx`INSERT INTO support_request(id,reference,customer_id,client_id,property_id,order_id,privacy_request_id,category,subject,context,policy_version,request_key,request_hash,priority,discovered_at,late)
-      VALUES(${id},${reference},${actor.kind === 'customer' ? actorId : null},${actor.kind === 'owner' ? actorId : null},${value.propertyId},${value.orderId},${value.privacyRequestId},${value.category},${value.subject},${JSON.stringify(context)}::text::jsonb,${termsVersion},${value.requestKey},${hash},
+      VALUES(${id},${reference},${actor.kind === 'customer' ? actorId : null},${actor.kind === 'owner' ? actorId : null},${propertyId},${value.orderId},${value.privacyRequestId},${value.category},${value.subject},${JSON.stringify(context)}::text::jsonb,${termsVersion},${value.requestKey},${hash},
         ${issue ? issuePriority(value.stayIssue.issueType) : 'normal'},${issue ? value.stayIssue.discoveredAt : null},${issue ? issue.late : null})`;
     const [message] = await tx`INSERT INTO support_message(request_id,actor_kind,actor_id,body,state_after,request_key,request_hash) VALUES(${id},${actor.kind},${actorId},${value.body},'open',${value.requestKey},${hash}) RETURNING id`;
     for (const photo of photos) {
@@ -511,6 +514,7 @@ export async function listSupportRequests(database, actor, input = {}, env = pro
       ? input.participant
       : 'all',
     assignment = ['mine', 'unassigned'].includes(input.assignment) ? input.assignment : 'all',
+    property = actor.kind === 'admin' && uuid.safeParse(input.property).success ? input.property : null,
     view =
       actor.kind === 'admin' && ['urgent', 'aged', 'unassigned', 'failed_delivery'].includes(input.view)
         ? input.view
@@ -521,7 +525,7 @@ export async function listSupportRequests(database, actor, input = {}, env = pro
     tx`EXISTS(SELECT 1 FROM admin_alert a WHERE a.support_request_id=support_request.id AND a.email_state IN ('failed','blocked'))`;
   return database.begin(async (tx) => {
     const actorId = await authorize(tx, actor, env);
-    const condition = tx`${scope(tx, actor, actorId)} AND ${state === 'all' ? tx`true` : state === 'unresolved' ? tx`state<>'resolved'` : tx`state=${state}`} AND ${actor.kind !== 'admin' || participant === 'all' ? tx`true` : participant === 'client' ? tx`client_id IS NOT NULL` : tx`customer_id IS NOT NULL`} AND ${actor.kind !== 'admin' || assignment === 'all' ? tx`true` : assignment === 'mine' ? tx`assigned_to=${actorId}` : tx`assigned_to IS NULL`} AND ${
+    const condition = tx`${scope(tx, actor, actorId)} AND ${state === 'all' ? tx`true` : state === 'unresolved' ? tx`state<>'resolved'` : tx`state=${state}`} AND ${actor.kind !== 'admin' || participant === 'all' ? tx`true` : participant === 'client' ? tx`client_id IS NOT NULL` : tx`customer_id IS NOT NULL`} AND ${property ? tx`property_id=${property}` : tx`true`} AND ${actor.kind !== 'admin' || assignment === 'all' ? tx`true` : assignment === 'mine' ? tx`assigned_to=${actorId}` : tx`assigned_to IS NULL`} AND ${
       view === 'urgent' ? tx`priority='urgent' AND state<>'resolved'` : view === 'aged' ? aged(tx) : view === 'unassigned' ? tx`assigned_to IS NULL AND state<>'resolved'` : view === 'failed_delivery' ? failed(tx) : tx`true`}`;
     const order =
       view === 'urgent' ? tx`${aged(tx)} DESC,` : view === 'aged' ? tx`priority='urgent' DESC,` : tx``;
@@ -537,6 +541,7 @@ export async function listSupportRequests(database, actor, input = {}, env = pro
       participant,
       assignment,
       view,
+      property,
       hasNext: count > page * 20,
     };
   });
